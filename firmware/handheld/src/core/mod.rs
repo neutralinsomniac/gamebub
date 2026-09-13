@@ -113,6 +113,7 @@ impl CoreManager {
         self.core_handler = match core.id.as_str() {
             "Game-Bub.GB" => CoreHandlerImpl::Gameboy(crate::bitstream::gameboy::Gameboy::new()),
             "Game-Bub.GBA" => CoreHandlerImpl::Gba(crate::bitstream::gba::Gba::new()),
+            "Game-Bub.SNES" => CoreHandlerImpl::Snes(crate::bitstream::snes::Snes::new()),
             _ => CoreHandlerImpl::None,
         };
 
