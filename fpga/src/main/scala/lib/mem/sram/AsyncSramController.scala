@@ -27,6 +27,18 @@ object AsyncSramController {
  *
  * nCE is assumed to always be low.
  * Memory interface is word addressed and has byte strobe.
+ *
+ * An access takes two cycles (accept, access) and `done` pulses in the
+ * third. A request presented in that `done` cycle is accepted right away if
+ * it differs from the access just completed (address, direction, or write
+ * data / strobe), so back-to-back different accesses run every two cycles;
+ * an identical one is assumed to be the completed request still being held
+ * by its initiator and waits a cycle. A read right after a write also waits:
+ * WE rises at the start of the `done` cycle (the ODDR outputs D2 in the
+ * second half of the write cycle and the next D1 in the first half of the
+ * following one), so the data bus has to be driven through the `done` cycle
+ * for the SRAM's data hold time, and a read accepted then would have the
+ * SRAM driving the bus while we still do.
  */
 class AsyncSramController(addressWidth: Int, dataWidth: Int) extends Module {
   val io = IO(new Bundle {
@@ -45,6 +57,9 @@ class AsyncSramController(addressWidth: Int, dataWidth: Int) extends Module {
   val regDataDir = RegInit(false.B)
   val regWriteMaskN = RegInit(0.U(maskWidth.W))
   val regOeN = RegInit(true.B)
+  val regWrite = Reg(Bool())
+  /** Strobe of the request being / last served (regWriteMaskN is deasserted after the access). */
+  val regStrobe = Reg(UInt(maskWidth.W))
 
   val oddrWeN = Module(new ODDRWrapper(initial = true))
   oddrWeN.io.D1 := true.B
@@ -64,8 +79,13 @@ class AsyncSramController(addressWidth: Int, dataWidth: Int) extends Module {
       regDone := false.B
       regDataDir := false.B
 
-      when (io.mem.enable && !regDone) {
+      val differs = io.mem.address =/= regAddress || io.mem.write =/= regWrite ||
+        (io.mem.write && (io.mem.dataWrite =/= regDataOut || io.mem.writeStrobe =/= regStrobe))
+      val turnaround = regWrite && !io.mem.write
+      when (io.mem.enable && (!regDone || (differs && !turnaround))) {
         regAddress := io.mem.address
+        regWrite := io.mem.write
+        regStrobe := io.mem.writeStrobe
 
         when (io.mem.write) {
           state := State.write
@@ -94,8 +114,9 @@ class AsyncSramController(addressWidth: Int, dataWidth: Int) extends Module {
       state := State.idle
       regDone := true.B
       regWriteMaskN := Fill(maskWidth, true.B)
-      
-      // dataDir will turn off (back to input) next cycle.
+
+      // WE rises at the start of the next cycle; keep driving the data bus
+      // through it (dataDir turns off in idle, i.e. one cycle later).
     }
   }
 }
