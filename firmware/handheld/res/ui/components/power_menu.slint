@@ -37,6 +37,7 @@ export component PowerMenu inherits PopupWindow {
                 } else if (item == 1) {
                     Backend.reboot();
                 } else if (item == 2) {
+                    Global.power-menu-open = false;
                     root.close();
                 }
             }

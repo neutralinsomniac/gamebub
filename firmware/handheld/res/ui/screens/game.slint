@@ -30,13 +30,22 @@ export component GameScreen inherits ScreenBase {
         }
     }
 
+    // The power menu takes the focus from the core without opening the
+    // pause menu, and gives it back on close unless the pause menu was
+    // already open.
+    private property <bool> power-menu-open: Global.power-menu-open;
+    changed power-menu-open => {
+        if (self.power-menu-open) {
+            Backend.game-set-focused(false);
+        } else if (!self.menu-open) {
+            Backend.game-set-focused(true);
+        }
+    }
+
     i-focus-scope := FocusScope {
         key-released(event) => {
             if (event.text == "Home" || event.text == "h") && !Global.home-consumed {
                 set-menu-open(!root.menu-open);
-            }
-            if (event.text == "Power") {
-                set-menu-open(true);
             }
             if event.text == "b" && settings-open {
                 settings-open = false;

@@ -42,6 +42,8 @@ export global Global {
     in-out property <bool> home-pressed: false;
     // Whether the current pressing of Home was used for a shortcut key combo.
     in-out property <bool> home-consumed;
+    // Whether the power menu popup is open (the game screen pauses the core meanwhile).
+    in-out property <bool> power-menu-open: false;
     out property <ScreenId> current-screen: MainMenu;
     // Whether the UI is transparent. Start true for the boot animation.
     in-out property <bool> ui-transparent: true;
