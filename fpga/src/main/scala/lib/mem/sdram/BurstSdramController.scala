@@ -51,6 +51,25 @@ object BurstSdramController {
      * random accesses.
      */
     enableBurst: Boolean = true,
+
+    /**
+     * Extra clock cycles between a read command and its first data word
+     * reaching `regData`, on top of the CAS latency, should the round trip
+     * through the pins (the forwarded clock's phase, the SDRAM's access time
+     * and the input path) take more than a cycle. The SDRAM itself is still
+     * programmed with `casLatency`; the clock suspend that ends a burst is
+     * timed from the command, so it is not affected. With CAS latency m the
+     * chip drives a beat from the clock edge m - 1 after the READ so that it
+     * is valid at edge m (JEDEC), which the plain count already allows for.
+     */
+    readLatencyExtra: Int = 0,
+    /**
+     * Capture the read data on the falling edge of the clock, half a cycle
+     * before the rising edge that moves it into `regData`. Together with a
+     * forwarded clock phase this puts the capture point in the middle of the
+     * data valid window instead of at its edge.
+     */
+    readCaptureFalling: Boolean = false,
   ) {
     /** The physical data bus width (in bytes). */
     val dataWidthBytes: Int = dataWidth / 8
@@ -86,14 +105,16 @@ object BurstSdramController {
     val writeDuration = writePrechargeTime + prechargeDuration
 
     /** Cycles to wait during a read. */
-    val readDuration = casLatency + accessLength
+    val readDuration = casLatency + accessLength + readLatencyExtra
 
     /**
      * Cycles to wait before clock suspend during read.
      * 1 cycle because regCke is only set next cycle,
      * another cycle because CKE takes effect one cycle after that.
+     * Timed from the read command (like the SDRAM's burst), so the extra
+     * read latency plays no part.
      */
-    val readClockSuspendTime = readDuration - 2
+    val readClockSuspendTime = casLatency + accessLength - 2
 
     /** Number of clock cycles between auto-refresh commands. */
     val refreshInterval = ((timeRef / (1 << rowWidth)) / clockPeriod).floor.toInt
@@ -172,6 +193,7 @@ class BurstSdramController(config: BurstSdramController.Config) extends Module {
       addressWidth = config.logicalAddressWidth,
       dataWidth = config.logicalDataWidth
     )
+
   })
 
   private val nextState = Wire(State())
@@ -231,8 +253,19 @@ class BurstSdramController(config: BurstSdramController.Config) extends Module {
   val writeDone = regDelayCounter === (config.writeDuration - 1).U
   val readDone = regDelayCounter === (config.readDuration - 1).U
 
+  /** The read data as captured: on the falling edge when configured (see the config). */
+  /**
+   * The read data as captured: on the falling edge when configured (see the
+   * config). `dataIn_reg` in the netlist; a constraints file can place it in
+   * the IOB (its clock inversion is available there) for a fixed pin path.
+   */
+  private val dataIn = if (config.readCaptureFalling) {
+    withClock((!clock.asBool).asClock) { RegNext(io.signals.dataIn) }
+  } else {
+    io.signals.dataIn
+  }
   when (regState === State.read || regState === State.write) {
-    regData := io.signals.dataIn +: regData.init
+    regData := dataIn +: regData.init
   }
 
   nextState := regState
