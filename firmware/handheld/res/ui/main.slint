@@ -148,6 +148,7 @@ export component MainWindow inherits Window {
                 Global.home-pressed = false;
             }
             if (event.text == "Power" || event.text == "p") {
+                Global.power-menu-open = true;
                 power-menu.show();
             }
             accept
