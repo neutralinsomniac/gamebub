@@ -36,6 +36,8 @@ For other inquiries, contact us at support@gamebub.net.
 
 For an in-depth description of the project architecture, as of revision 2, see [here](https://github.com/elipsitz/gamebub/blob/v0.1/docs/architecture.md).
 
+A Nix flake (`flake.nix`) provides the complete FPGA and firmware toolchain: `nix develop`.
+
 The Game Bub handheld consists of a Xilinx XC7A100T FPGA to do the main emulation and I/O, and an ESP32-S3 microcontroller to do auxiliary tasks (configuring the FPGA, rendering the UI, loading ROM files from a microSD card and sending it to the FPGA).
 
 ### Directory Structure
