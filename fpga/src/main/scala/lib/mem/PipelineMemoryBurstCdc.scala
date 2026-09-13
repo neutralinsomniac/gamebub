@@ -1,6 +1,7 @@
 package lib.mem
 
 import chisel3._
+import chisel3.util.Cat
 import lib.fifo.SimpleFwftFifo
 import lib.log.Logger
 
@@ -59,6 +60,10 @@ class PipelineMemoryBurstCdc(
   // Whether there's space in the response fifo at the end of this cycle.
   val responseCanAccept = Wire(Bool())
   val responseBufferGood = Wire(Bool())
+  /** Slow-domain state for tests: busy, busyIsWrite, responsePresent, fifoEmpty, fifoFull; and the busy / response addresses. */
+  val slowDebug = Wire(UInt(5.W))
+  val slowDebugBusyAddress = Wire(UInt(addressWidth.W))
+  val slowDebugResponseAddress = Wire(UInt(addressWidth.W))
 
   // Portion in the slow clock domain
   withClock (io.slowClock) {
@@ -83,16 +88,34 @@ class PipelineMemoryBurstCdc(
     val regBusyAddress = Reg(UInt(addressWidth.W))
     val regBusyFifoDelayed = Reg(Bool())
     responseBufferGood := regResponsePresent && (regResponseAddress === regBusyAddress)
+    slowDebug := Cat(regBusy, regBusyIsWrite, regResponsePresent, requestFifo.io.read.empty, requestFifo.io.write.full)
+    slowDebugBusyAddress := regBusyAddress
+    slowDebugResponseAddress := regResponseAddress
 
     /// Whether the request we're about to push should be suppressed, because
     /// we're getting the result back at the end of this cycle.
     val suppressRequestPush = WireDefault(false.B)
+    /// A write has been pushed while a prefetch may be in flight ahead of
+    /// it: the prefetch reads the memory before the write reaches it, so
+    /// its response is stale (it may be the written word) and is dropped.
+    val regDiscardPrefetch = RegInit(false.B)
+    val skidStale = skidComplete && !skidIsWrite && skidIsPrefetch && regDiscardPrefetch
+    when (skidComplete) {
+      regDiscardPrefetch := false.B
+    }
+    when (skidStale) {
+      logger.info(cf"slow: dropping stale prefetch: addr=0x${skidAddress}%x")
+    }
 
-    io.initiator.ready := true.B
+    // A request pushed while the fifo is full is lost (and a read would
+    // then wait for its response forever), so hold the initiator off. The
+    // fifo only fills with writes, which complete for the initiator as soon
+    // as they are pushed.
+    io.initiator.ready := !requestFifo.io.write.full
     io.initiator.dataRead := regResponseDataRead
 
     // Response receiver
-    when (skidComplete) {
+    when (skidComplete && !skidStale) {
       logger.info(cf"slow: got response: addr=0x${skidAddress}%x isWrite=${skidIsWrite} (data=0x${skidDataRead}%x)")
 
       when (skidIsWrite) {
@@ -136,8 +159,10 @@ class PipelineMemoryBurstCdc(
           requestFifo.io.write.data.isWrite := true.B
           requestFifo.io.write.data.writeData := io.initiator.dataWrite
 
-          // Invalidate the read response buffer
+          // Invalidate the read response buffer, and the prefetch that may
+          // be in flight ahead of the write.
           regResponsePresent := false.B
+          regDiscardPrefetch := true.B
 
           when (io.initiator.enable && !io.initiator.isWrite) {
             // If we're placing data in the fifo, and there's read
@@ -161,9 +186,13 @@ class PipelineMemoryBurstCdc(
           io.initiator.ready := false.B
 
           when (regBusyFifoDelayed) {
-            regBusyFifoDelayed := false.B
-            when (!suppressRequestPush) {
+            when (suppressRequestPush) {
+              regBusyFifoDelayed := false.B
+            } .elsewhen (!requestFifo.io.write.full) {
+              // (Waits while the fifo is full: the write ahead of this read
+              // may have filled it.)
               logger.info(cf"slow: pushing delayed read to fifo")
+              regBusyFifoDelayed := false.B
               requestFifo.io.write.push := true.B
               requestFifo.io.write.data.address := regBusyAddress
               requestFifo.io.write.data.isWrite := false.B
