@@ -49,6 +49,7 @@ pub(super) enum CoreHandlerImpl {
     None,
     Gameboy(crate::bitstream::gameboy::Gameboy),
     Gba(crate::bitstream::gba::Gba),
+    Snes(crate::bitstream::snes::Snes),
 }
 
 impl CoreHandlerImpl {
@@ -57,6 +58,7 @@ impl CoreHandlerImpl {
             CoreHandlerImpl::None => None,
             CoreHandlerImpl::Gameboy(gameboy) => Some(gameboy),
             CoreHandlerImpl::Gba(gba) => Some(gba),
+            CoreHandlerImpl::Snes(snes) => Some(snes),
         }
     }
 }
