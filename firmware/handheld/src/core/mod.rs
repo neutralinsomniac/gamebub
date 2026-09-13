@@ -148,6 +148,7 @@ enum CoreHandlerImpl {
     None,
     Gameboy(crate::bitstream::gameboy::Gameboy),
     Gba(crate::bitstream::gba::Gba),
+    Snes(crate::bitstream::snes::Snes),
 }
 
 impl CoreHandlerImpl {
@@ -156,6 +157,7 @@ impl CoreHandlerImpl {
             CoreHandlerImpl::None => None,
             CoreHandlerImpl::Gameboy(gameboy) => Some(gameboy),
             CoreHandlerImpl::Gba(gba) => Some(gba),
+            CoreHandlerImpl::Snes(snes) => Some(snes),
         }
     }
 }
@@ -211,6 +213,7 @@ impl CoreManager {
         self.core_handler = match core.id.as_str() {
             "Game-Bub.GB" => CoreHandlerImpl::Gameboy(crate::bitstream::gameboy::Gameboy::new()),
             "Game-Bub.GBA" => CoreHandlerImpl::Gba(crate::bitstream::gba::Gba::new()),
+            "Game-Bub.SNES" => CoreHandlerImpl::Snes(crate::bitstream::snes::Snes::new()),
             _ => CoreHandlerImpl::None,
         };
 
