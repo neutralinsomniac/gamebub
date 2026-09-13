@@ -141,10 +141,11 @@ From the `/fpga` directory, build each bitstream with `scripts/build_core.py` (r
 $ python3 scripts/build_core.py --target gamebub_rev4 --name boot    --core-class net.gamebub.core.boot.HandheldBoot    --build-root build/boot
 $ python3 scripts/build_core.py --target gamebub_rev4 --name gameboy --core-class net.gamebub.core.gameboy.HandheldGameboy --build-root build/gameboy
 $ python3 scripts/build_core.py --target gamebub_rev4 --name gba     --core-class net.gamebub.core.gba.HandheldGba     --build-root build/gba
+$ python3 scripts/build_core.py --target gamebub_rev4 --name snes    --core-class net.gamebub.core.snes.HandheldSnes    --build-root build/snes
 ```
 
 Each build produces `<name>.bit` and the heatshrink-compressed `<name>.bit.hs` in its build
-root.
+root. The SNES core is experimental; see [docs/snes.md](snes.md).
 
 ## 6. Setting up the microSD card
 
@@ -158,14 +159,15 @@ system/
   gameboy.bios-cgb.bin
   gba.bit.hs
   gba.bios.bin
+  snes.bit.hs
 roms/
 ```
 
-* `boot.bit.hs`, `gameboy.bit.hs` and `gba.bit.hs` are the compressed bitstreams built
-  previously.
+* `boot.bit.hs`, `gameboy.bit.hs`, `gba.bit.hs` and `snes.bit.hs` are the compressed
+  bitstreams built previously (`snes.bit.hs` is optional).
 * `gameboy.bios-dmg.bin` and `gameboy.bios-cgb.bin` should be the bootrom files for the original Game Boy and Game Boy Color, or open-source alternatives (e.g. from [SameBoy](https://github.com/LIJI32/SameBoy)).
 * `gba.bios.bin` should be the Game Boy Advance bootrom. Either the official one, extracted from a GBA (best compatibility), or a free alternative ([e.g. this one](https://github.com/Cult-of-GBA/BIOS)).
-* `roms/` should be a directory containing ROM files (if desired), with `.gb`, `.gbc`, and `.gba` extensions. This directory can be further organized into more directories.
+* `roms/` should be a directory containing ROM files (if desired), with `.gb`, `.gbc`, `.gba`, `.sfc`, and `.smc` extensions. This directory can be further organized into more directories.
 
 ## 7. Flashing the MCU firmware
 

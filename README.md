@@ -22,6 +22,7 @@ Check out the [announcement blog post](https://eli.lipsitz.net/posts/introducing
 * Load and play ROM files from a microSD card (with built-in support for rumble, clock, accelerometer, gyroscope)
 * Multiplayer link cable functionality
 * Custom, from-scratch Game Boy and Game Boy Advance FPGA cores with great game compatibility
+* Experimental SNES core, ported from [MiSTer](https://github.com/MiSTer-devel/SNES_MiSTer) (see [docs/snes.md](docs/snes.md))
 * 14+ hour battery life 
 * Video output to TV or monitor via Game Bub Dock
 * Extensible hardware, designed for future improvements
