@@ -387,10 +387,18 @@ unsupported cartridge; register 0x0030 exposes its result and the driver
 logs whether its own analysis agrees), non-power-of-two ROMs are mirrored by
 address translation, the BSRAM is filled with 0xFF when the ROM transfer
 starts and the WRAM with the power-on pattern after SetupComplete (the
-status stays "setup" until then), the save file's write-back size is
-answered from `RAM_SIZE`, config bit 2 selects the latency-hiding mode per
-cartridge type, and colors pass through the color correction until a table
-is loaded. The driver's own writes are redundant with these and still work.
+status stays "setup" until then), the save-state program is written above
+the ROM (`SaveStateProgramLoader`), the save-state slots are scanned for
+valid states when the states file has been transferred and after every
+save (`SaveStateSlotScanner`: status bits 14:11, a load of an empty slot is
+ignored, stale slots beyond the file are cleared, and the states file's
+write-back size follows the last slot in use; the driver logs whether its
+own check agrees), a save or load request can take its slot from register
+0x0018 and times out after 5 s in hardware, the save file's write-back size
+is answered from `RAM_SIZE`, config bit 2 selects the latency-hiding mode
+per cartridge type, and colors pass through the color correction until a
+table is loaded. The driver's own writes are redundant with these and still
+work.
 
 ## Building
 
