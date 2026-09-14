@@ -21,9 +21,12 @@ built, hardware-validated (the driver's log says the glue's analysis
 agrees for Lufia 2, Yoshi's Island and Mega Man X2) and committed. Item 6
 (`SaveStateProgramLoader`) is built, hardware-tested (Yoshi's Island save
 and load) and committed. Item 7 (`SaveStateSlotScanner`, the slot register,
-the hardware timeout, load gating) is implemented and unit-tested; the
-driver logs whether the glue's slot scan agrees with its own. What is left
-is the packaging and the removal of the driver.
+the hardware timeout, load gating) is built, hardware-validated (the slot
+scans agree) and committed. The packaging is done and verified on hardware
+(both the built-in core and the package side by side: games, saves,
+states), and the built-in driver is deleted: the SNES ships as
+`cores/Game-Bub.SNES/` on the stock firmware. The plan is complete; this
+document stays as the record of the design and the framework facts.
 
 Findings from that step, folded into the text below:
 
