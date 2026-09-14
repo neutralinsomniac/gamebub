@@ -101,8 +101,8 @@ write reached it).
 | Memory | Where | Notes |
 | --- | --- | --- |
 | Cartridge ROM (<= 16 MiB) | SDRAM, byte 0 | Loaded by the MCU; non-power-of-two ROMs are mirrored up to the next power of two. Read through a 32 KiB 2-way cache with 16-byte lines and next-line prefetch (`LineReadCache`), fronted by a 16-line register buffer that answers hits in the request cycle and pulls the next line in the background (`LineBuffer`) |
-| BSRAM (save RAM, <= 256 KiB) | SRAM, byte 0x00000 | Loaded/saved by the MCU as `<rom>.srm`; 2-way 2 KiB word cache in the bridge |
-| WRAM (128 KiB) | SRAM, byte 0x40000 | Initialized by the MCU with the MiSTer power-on pattern |
+| BSRAM (save RAM, <= 256 KiB) | SRAM, byte 0x00000 | Filled with 0xFF by the glue when the ROM transfer starts, then loaded/saved by the MCU as `<rom>.srm`; 2-way 2 KiB word cache in the bridge |
+| WRAM (128 KiB) | SRAM, byte 0x40000 | Initialized by the glue with the MiSTer power-on pattern after SetupComplete (`SramFill`) |
 | VRAM (2 x 32 KiB) | block RAM | |
 | ARAM (64 KiB) | block RAM | |
 | Framebuffer | block RAM | 256 x 240 x 15 bpp, double buffered (framework) |
@@ -161,9 +161,12 @@ The memory path is built to keep those stalls rare:
 
 #### Stall policies
 
-Which accesses may stall the core is chosen per cartridge by the firmware
-through config register bits; the choice depends on which chips read ROM and
-BSRAM and whether the core exports their sampling instants.
+Which accesses may stall the core is chosen per cartridge through config
+register bits; the choice depends on which chips read ROM and BSRAM and
+whether the core exports their sampling instants. The firmware driver sets
+the mode's bits explicitly; bit 2 alone asks the glue for the mode that is
+safe for the cartridge type in `ROM_TYPE` (so a settings descriptor can
+offer it as one checkbox).
 
 * *Conservative* (all bits clear): stall while any ROM or BSRAM read is
   outstanding. Correct for every coprocessor; costs a cycle per BSRAM read and
@@ -171,7 +174,9 @@ BSRAM and whether the core exports their sampling instants.
 * *Latency hiding* (bit 2): only stall if a read is still outstanding when the
   S-CPU is about to latch data (`SYSCLKF_CE`). Hides all memory latency for
   the S-CPU; safe only when nothing else reads ROM or BSRAM. Used for base
-  cartridges, DSP-n and S-DD1.
+  cartridges, DSP-n and S-DD1. For a Super FX, SA-1 or CX4 cartridge (per
+  `ROM_TYPE`) the glue turns bit 2 into the modes below (bit 7; bits 9 and
+  10; none) instead.
 * *Super FX RAM latency hiding* (bit 7): BSRAM reads stall at `SYSCLKF_CE` or
   at the GSU's own sampling instant. `GSU.vhd` gained three outputs for this:
   `RAM_SAMPLE` (the cycle in which `RAM_ACCESS_CNT` reaches zero in a fetching
@@ -367,6 +372,18 @@ save states described above; the firmware embeds the 65816 program),
 (the core's `BLEND`), "Memory Latency Hiding" and two debug switches for the
 ROM miss path and the BSRAM cache (config register bits); they are not
 persisted across runs.
+
+Parts of the driver's job are also done by the glue, so that the core can
+eventually ship as an external core with no firmware driver (the plan is in
+`snes-external-core.md`): the framework's file commands are decoded (four
+command words; the ROM and states file sizes are recorded), the BSRAM is
+filled with 0xFF when the ROM transfer starts and the WRAM with the power-on
+pattern after SetupComplete (the status stays "setup" until then), the save
+file's write-back size is answered from `RAM_SIZE`, config bit 2 selects the
+latency-hiding mode per cartridge type and bit 15 takes the region from the
+header (once the glue analyzes it), and colors pass through the color
+correction until a table is loaded. The driver's own writes are redundant
+with these and still work.
 
 ## Building
 
