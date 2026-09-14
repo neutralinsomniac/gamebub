@@ -5,8 +5,7 @@ import lib.log.Logger
 import lib.mem.HandshakeMemoryCdc
 import net.gamebub.framework.interface.VideoFilterBasicV0
 import lib.mem.MemoryInterface
-import chisel3.util.SRAM
-import chisel3.util.MemoryReadPort
+import chisel3.util.{Fill, MemoryReadPort, SRAM}
 
 /**
  * Color correction matrix calculator
@@ -73,9 +72,14 @@ class ColorCorrection(
   val delayInput = RegNext(RegNext(RegNext(io.in)))
   when (!io.enable) {
     if (outputDepth > inputDepth) {
-      io.out.r := delayInput.r << (outputDepth - inputDepth)
-      io.out.g := delayInput.g << (outputDepth - inputDepth)
-      io.out.b := delayInput.b << (outputDepth - inputDepth)
+      // Expand by bit replication, so that full scale maps to full scale.
+      def expand(channel: UInt): UInt = {
+        val repeated = Fill((outputDepth + inputDepth - 1) / inputDepth, channel)
+        repeated(repeated.getWidth - 1, repeated.getWidth - outputDepth)
+      }
+      io.out.r := expand(delayInput.r)
+      io.out.g := expand(delayInput.g)
+      io.out.b := expand(delayInput.b)
     } else {
       io.out.r := delayInput.r >> (inputDepth - outputDepth)
       io.out.g := delayInput.g >> (inputDepth - outputDepth)
@@ -95,11 +99,22 @@ class ColorCorrection(
 }
 
 object ColorCorrection {
+  /**
+   * Instantiates the corrector behind the video filter interface, with its
+   * matrix and tables written through `memInterface` (matrix at 0x0000,
+   * input table at 0x4000, output table at 0x8000; 16-bit words).
+   *
+   * The tables have no reset value, so until the host has written them the
+   * output is undefined. With `passThroughUntilLoaded`, colors pass through
+   * unchanged (5-bit channels expanded to 8 by bit replication) until the
+   * first write: for a core that may run without a driver loading a table.
+   */
   def setup(
     clock: Clock,
     reset: Reset,
     videoFilter: VideoFilterBasicV0,
     memInterface: MemoryInterface,
+    passThroughUntilLoaded: Boolean = false,
   ): Unit = {
     withClockAndReset (videoFilter.clock, videoFilter.reset) {
       val colorCorrector = Module(new ColorCorrection(
@@ -109,7 +124,6 @@ object ColorCorrection {
         matrixDepth = 12,
         outputTableDepth = 10,
       ))
-      colorCorrector.io.enable := true.B
       colorCorrector.io.in := videoFilter.dataIn
       videoFilter.dataOut := colorCorrector.io.out.convertTo(videoFilter.dataOut)
 
@@ -121,6 +135,11 @@ object ColorCorrection {
         val mem = cdc.io.target
         mem.done := true.B
         mem.dataRead := DontCare
+        val loaded = RegInit(false.B)
+        when (mem.enable && mem.write) {
+          loaded := true.B
+        }
+        colorCorrector.io.enable := (!passThroughUntilLoaded).B || loaded
         val matrix = Reg(Vec(9, SInt((colorCorrector.matrixDepth + 2).W)))
         val inputTable = Reg(Vec(1 << colorCorrector.inputDepth, SInt((colorCorrector.internalDepth + 1).W)))
         val outputTable = SRAM(
