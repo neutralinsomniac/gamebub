@@ -19,8 +19,11 @@ Sequencing step 2 (item 3, `RomMirrorTable`) is built, hardware-tested
 place for now. Sequencing step 3 (item 2, `RomHeaderAnalyzer`) is
 built, hardware-validated (the driver's log says the glue's analysis
 agrees for Lufia 2, Yoshi's Island and Mega Man X2) and committed. Item 6
-(`SaveStateProgramLoader`) is implemented and unit-tested. Item 7 is not
-started.
+(`SaveStateProgramLoader`) is built, hardware-tested (Yoshi's Island save
+and load) and committed. Item 7 (`SaveStateSlotScanner`, the slot register,
+the hardware timeout, load gating) is implemented and unit-tested; the
+driver logs whether the glue's slot scan agrees with its own. What is left
+is the packaging and the removal of the driver.
 
 Findings from that step, folded into the text below:
 
@@ -244,23 +247,26 @@ Alternative: map ROM addresses 0xFF0000..0xFF0FFF straight to the BRAM in
 front of the cache. Rejected for now: it touches the hit path and the
 copy is trivial.
 
-### 7. Save-state control and slot bookkeeping in hardware
+### 7. Save-state control and slot bookkeeping in hardware (done)
 
-- New register 0x0018 `ssSlot` (2 bits). Register 0x0014 keeps its meaning
-  (bit 0 save, bit 1 load); when a write has bits 3:2 clear, take the slot
-  from 0x0018. The built-in driver's writes (slot in bits 3:2) still work.
-- Timeout: a counter started with `ssRunPending`; at 5 s of system clock
-  (about 430 M cycles at 85.9 MHz) clear the request and `ssRunPending`, as
-  the driver's cancel write does.
-- Slot validity: `slotValid(n)` = the slot lies within `statesLoadedSize`
-  (or was saved in this session and `ssSaveDone` fired) and its header has
-  the "SNES" magic at byte 8 with a sane size. Check by reading the two
-  header words through the analyzer's SDRAM port: on `FILE_WRITE_END 2`
-  (after zeroing the headers beyond the loaded size) and after every save.
+- New register 0x0018, the slot (2 bits). Register 0x0014 keeps its meaning
+  (bit 0 save, bit 1 load, slot in bits 3:2); with bit 4 set the slot comes
+  from 0x0018 instead, so a descriptor's actions are the fixed values 0x11
+  (save) and 0x12 (load). The built-in driver's writes still work.
+- Timeout: a counter running with `ssRunPending`; at 5 s of the 21.5 MHz
+  system clock (107 M cycles) the requests and `ssRunPending` are cleared,
+  as the driver's cancel write does.
+- Slot validity (`SaveStateSlotScanner`, on the SDRAM mux's side port like
+  the analyzer): a slot is valid when its header has the "SNES" magic at
+  byte 8 and a size of at least 4 words at bytes 4..7. Scanned on
+  `FILE_WRITE_END 2` (held busy; slots the file did not cover get their
+  size and magic words zeroed, so a stale state cannot pass the core's own
+  check either) and again after every save has finished. Exposed as status
+  bits 14:11; the driver logs whether its own check agrees.
 - `FILE_READ_START 2` answers `(last valid slot + 1) * 1 MiB`, 0 when none;
   the firmware then writes an empty `.ss`, exactly like today.
-- Load of an empty slot: ignore the request (no notification path). Save
-  failures likewise go unreported; the status register still exposes
+- Load of an empty slot: the request is ignored (no notification path).
+  Save failures likewise go unreported; the status register still exposes
   `SS_SAVE_DONE` for debugging.
 
 ### 8. Miscellany (done)
