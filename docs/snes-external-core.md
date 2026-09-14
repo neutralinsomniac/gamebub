@@ -17,8 +17,9 @@ committed as "fpga: Let the SNES glue do the driver's memory setup".
 Sequencing step 2 (item 3, `RomMirrorTable`) is built, hardware-tested
 (Lufia) and committed, with the firmware driver's own mirroring left in
 place for now. Sequencing step 3 (item 2, `RomHeaderAnalyzer`) is
-implemented and unit-tested (`RomHeaderAnalyzerSpec`); the driver logs
-whether the glue's analysis agrees with its own. Items 6 and 7 are not
+built, hardware-validated (the driver's log says the glue's analysis
+agrees for Lufia 2, Yoshi's Island and Mega Man X2) and committed. Item 6
+(`SaveStateProgramLoader`) is implemented and unit-tested. Item 7 is not
 started.
 
 Findings from that step, folded into the text below:
@@ -229,14 +230,15 @@ offset bit 7 xor bit 1), three cycles per word. Uses:
 Also fill WRAM again on the framework reset action (register 0x2000)? No:
 the driver does not either, and a warm reset on hardware keeps RAM.
 
-### 6. Save-state program from a BRAM ROM
+### 6. Save-state program from a ROM in the glue (done: `SaveStateProgramLoader`)
 
-Embed `savestates.bin` (3558 bytes) in the glue as a ROM (Chisel `VecInit`
-of the bytes, or a `$readmemh` Verilog blackbox) and copy it to SDRAM
-0xFF0000 at `SETUP_COMPLETE` with a tiny DMA (890 words). Save states are
-unavailable when `paddedRomSize > 0xFF0000`; gate `SS_AVAIL` in the status
-word and ignore requests in that case, as the driver's `save_states` flag
-does today.
+`savestates.bin` (3558 bytes, linked into the Chisel resources as
+`snes_savestates.bin`) is a `VecInit` ROM in the glue, written to SDRAM
+0xFF0000 after `SETUP_COMPLETE` (890 words through the SDRAM mux's side
+port, after the analyzer; `GET_STATUS` stays "setup" meanwhile). Not
+written when the padded ROM reaches the program's address (size code above
+13, i.e. 16 MiB); `SS_AVAIL` in the status word is cleared then, as the
+driver's `save_states` flag does today.
 
 Alternative: map ROM addresses 0xFF0000..0xFF0FFF straight to the BRAM in
 front of the cache. Rejected for now: it touches the hit path and the
