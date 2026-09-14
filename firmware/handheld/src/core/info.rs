@@ -156,11 +156,6 @@ pub fn list_cores() -> Vec<CoreListEntry> {
             name: "Game Boy Advance".try_into().unwrap(),
             author: "Game Bub".try_into().unwrap(),
         },
-        CoreListEntry {
-            id: "Game-Bub.SNES".try_into().unwrap(),
-            name: "Super Nintendo".try_into().unwrap(),
-            author: "Game Bub".try_into().unwrap(),
-        },
     ];
 
     // Iterate over possible core directories.
@@ -219,7 +214,6 @@ pub fn get_core(id: &str) -> Result<CoreInfo, String> {
     match id {
         "Game-Bub.GB" => return Ok(crate::bitstream::gameboy::Gameboy::get_core_info()),
         "Game-Bub.GBA" => return Ok(crate::bitstream::gba::Gba::get_core_info()),
-        "Game-Bub.SNES" => return Ok(crate::bitstream::snes::Snes::get_core_info()),
         _ => {}
     }
 

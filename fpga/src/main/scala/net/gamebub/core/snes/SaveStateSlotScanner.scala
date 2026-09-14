@@ -21,8 +21,7 @@ object SaveStateSlotScanner {
  *
  * A slot is valid when its header (written by the MiSTer save-state
  * program) has the magic "SNES" at byte 8 and a sane size at bytes 4..7
- * (bits 17:0, in 32-bit words, at least 4), the same test as the firmware
- * driver's `state_slot_valid`. `start` scans all slots: those beyond
+ * (bits 17:0, in 32-bit words, at least 4). `start` scans all slots: those beyond
  * `loadedSize` (the bytes of the states file the host transferred; the
  * region is all loaded after a save) get their size and magic words
  * zeroed instead, so that a stale state from another game cannot pass the

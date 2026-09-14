@@ -12,8 +12,7 @@ import lib.mem.MemoryInterface
  *
  * The firmware transfers an external core's files as 32-bit words (the
  * word size is not part of the file descriptor), so the save file could
- * not land in a 16-bit window; the built-in driver uses 32-bit words for
- * the SRAM too.
+ * not land in a 16-bit window.
  *
  * Host protocol as with the [[lib.mem.sram.AsyncSramController]]: the
  * request is held until `done` pulses (with the read data); the request

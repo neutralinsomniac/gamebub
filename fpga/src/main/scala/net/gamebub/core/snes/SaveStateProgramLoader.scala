@@ -23,8 +23,8 @@ object SaveStateProgramLoader {
 
 /**
  * Writes the MiSTer 65816 save-state program to the SDRAM above the ROM,
- * at ROM address 0xFF0000, so that a core without a firmware driver has
- * it. The program (3.5 KiB) is a ROM in the glue, written one word at a
+ * at ROM address 0xFF0000, where the core runs it from. The program
+ * (3.5 KiB) is a ROM in the glue, written one word at a
  * time through `mem` (the pipelined SDRAM port's protocol: address phase,
  * then the data phase with the write data) on `start`; `busy` is high
  * until the last word's data phase. The caller must not start it when the
