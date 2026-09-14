@@ -13,9 +13,10 @@ import chisel3.util._
  * (distributed RAM, read asynchronously on the ROM cache's request path)
  * maps each block the core may address to the block of the file that holds
  * its data: blocks below the ROM size map to themselves, blocks between the
- * ROM size and its padded size to their mirror (the firmware driver's
- * `header::mirror_address`, in block units; the mapping is linear within a
- * block when the ROM size is a multiple of the block size), and blocks
+ * ROM size and its padded size to their mirror (MiSTer's mirroring rule,
+ * `mirrorAddress` in `RomMirrorTableSpec`, in block units; the mapping is
+ * linear within a block when the ROM size is a multiple of the block
+ * size), and blocks
  * above the padded size (the save-state program at 0xFF0000) to themselves.
  *
  * A ROM file may carry a 512-byte copier header: the file is transferred
@@ -30,9 +31,8 @@ import chisel3.util._
  * table in about a thousand cycles; `busy` is high meanwhile and the
  * translation must not be used. A ROM size that is not a multiple of the
  * block size cannot be mirrored this way: the table is built as identity
- * and `supported` is low (the firmware driver still mirrors such ROMs by
- * duplicating data; without it they are unsupported). The table is also
- * built as identity after reset.
+ * and `supported` is low (no known dump has such a size). The table is
+ * also built as identity after reset.
  *
  * Addresses are SDRAM byte addresses; bit 24 (the save-state slots) passes
  * through untouched.

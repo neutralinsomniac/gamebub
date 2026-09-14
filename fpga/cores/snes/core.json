@@ -2,7 +2,7 @@
   "metadata": {
     "id": "Game-Bub.SNES",
     "name": "Super Nintendo",
-    "author": "Game Bub"
+    "author": "jeremy"
   },
   "bitstreams": [
     { "target": "gamebub_rev4", "filename": "snes_rev4.bit" }
