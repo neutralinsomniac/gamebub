@@ -1,0 +1,37 @@
+{
+  "files": [
+    {
+      "id": 0,
+      "label": "ROM",
+      "extensions": ["sfc", "smc"],
+      "optional": false,
+      "read_only": true,
+      "user_selected": true,
+      "address": "0x30000000",
+      "max_size": "0x1000200",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 1,
+      "label": "Save",
+      "extensions": ["srm"],
+      "optional": true,
+      "dependent_on_0": true,
+      "initialize": true,
+      "address": "0x40000000",
+      "max_size": "0x40000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 2,
+      "label": "States",
+      "extensions": ["ss"],
+      "optional": true,
+      "dependent_on_0": true,
+      "initialize": true,
+      "address": "0x31000000",
+      "max_size": "0x400000",
+      "max_transfer_speed": 10000
+    }
+  ]
+}
