@@ -61,6 +61,13 @@ const REG_RAM_MASK: u32 = 0x0000_000C;
 const REG_RAM_SIZE: u32 = 0x0000_0010;
 /// Save-state control: write `SAVE_STATE_SAVE` / `SAVE_STATE_LOAD` with the slot.
 const REG_SAVE_STATE: u32 = 0x0000_0014;
+/// The glue's own ROM header analysis (read-only): bits 7:0 ROM_TYPE, 11:8 the
+/// ROM size code, 15:12 the RAM size code, 17:16 the header found (0 LoROM,
+/// 1 HiROM, 2 ExHiROM), bit 18 PAL, bit 19 copier header, bit 20 a header was
+/// found, bit 21 unsupported, bit 22 the size can be mirrored by the glue.
+/// Compared with this driver's analysis after the ROM is loaded (see
+/// `check_glue_analysis`), on the way to a driverless core.
+const REG_ROM_INFO: u32 = 0x0000_0030;
 const REG_STATUS: u32 = 0x0000_0100;
 const REG_STAT_STALLS: u32 = 0x0000_1000;
 const REG_STAT_CYCLES: u32 = 0x0000_1004;
@@ -572,6 +579,39 @@ impl Snes {
         Ok(())
     }
 
+    /// Compare the glue's ROM header analysis (`REG_ROM_INFO`, valid once
+    /// the ROM transfer has ended) with this driver's, and log the outcome:
+    /// the glue's is what an external core would run with.
+    fn check_glue_analysis(&self, info: &RomInfo) -> Result<(), fpga::Error> {
+        let glue = Device::lock().fpga.read_u32(REG_ROM_INFO)?;
+        let header_index = match info.header_offset {
+            Some(0x00FFC0) => 1,
+            Some(0x40FFC0) => 2,
+            _ => 0,
+        };
+        // The driver strips the copier header before the transfer, so the
+        // glue never sees one.
+        let expected = (info.rom_type as u32)
+            | ((info.rom_size_code as u32) << 8)
+            | ((info.ram_size_code as u32) << 12)
+            | (header_index << 16)
+            | ((info.pal as u32) << 18)
+            | ((info.header_offset.is_some() as u32) << 20)
+            | ((Self::check_supported(info).is_err() as u32) << 21);
+        let mask = 0x3F_FFFF;
+        if glue & mask == expected {
+            log::info!("Glue ROM analysis agrees: {:#08x}", glue);
+        } else {
+            log::warn!(
+                "Glue ROM analysis differs: glue {:#08x}, driver {:#08x} (mirror supported: {})",
+                glue & mask,
+                expected,
+                glue >> 22 & 1
+            );
+        }
+        Ok(())
+    }
+
     /// Fill a region of the FPGA SRAM using `pattern(byte_offset)`.
     fn fill_sram(
         device: &mut Device,
@@ -1065,6 +1105,16 @@ impl CoreHandler for Snes {
             }
             FILE_STATES => self.states_loaded += data.len() as u32,
             _ => {}
+        }
+    }
+
+    fn on_after_file_load(&mut self, id: u16) {
+        if id == FILE_ROM {
+            if let Some(info) = self.rom_info.as_ref() {
+                if let Err(e) = self.check_glue_analysis(info) {
+                    log::warn!("Failed to read the glue's ROM analysis: {}", e);
+                }
+            }
         }
     }
 
