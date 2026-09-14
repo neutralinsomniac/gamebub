@@ -281,34 +281,38 @@ copy is trivial.
   `FILE_WRITE_END` of the ROM, which is also before them, and the driver's
   identical values then land on top.
 
-## Packaging
+## Packaging (done: `fpga/cores/snes/`, `scripts/package_core.py`)
 
-Directory `/sdcard/cores/Game-Bub.SNES/` (id must differ from the built-in
-one while both exist; use `Community.SNES` or similar during the transition):
+The descriptors live in `fpga/cores/snes/` (`core.json`, `files.json`,
+`settings.json`, field names per the serde derives in `core/info.rs`);
+`scripts/package_core.py --name snes --build-root build/snes --out <dir>`
+assembles `<dir>/cores/<id>/` with them and the uncompressed `snes.bit`
+from the build root as `snes_rev4.bit`. The directory name must equal the
+id (`get_core` looks the id up as a directory). While the built-in driver
+still exists, `--id Test.SNES` installs the package under another id, since
+a built-in id shadows an external one.
 
-```
-core.json
-files.json
-settings.json
-snes_rev4.bit
-```
+Two things the descriptors could not express, found while packaging:
 
-`core.json`:
+- **The file transfer word size is not a descriptor field** (`#[serde(skip)]`,
+  always 32-bit words), and the SRAM window was 16 bits wide, so the save
+  file would have lost every other half-word. `SramHostAdapter` now makes
+  the SRAM window 32-bit (two 16-bit accesses per host word) and the
+  built-in driver transfers its SRAM traffic as 32-bit words too.
+- **`list_cores` skipped directories** instead of non-directories
+  (`core/info.rs`), so no external core was ever listed; fixed (one
+  inverted condition, upstreamable).
 
-```json
-{
-  "metadata": { "id": "Community.SNES", "name": "Super Nintendo", "author": "Game Bub" },
-  "bitstreams": [ { "target": "gamebub_rev4", "filename": "snes_rev4.bit" } ],
-  "hardware": { "cartridge_enable": "no" }
-}
-```
+The config register's ROM miss path bits (11, 12) default on in hardware,
+since no setting writes them.
 
 `files.json` mirrors `Snes::get_core_info` (ids 0 ROM, 1 Save, 2 States;
-addresses 0x30000000, 0x40000000, 0x31000000; `max_size` 16 MiB + 512, 256 KiB,
-4 MiB; speeds 10000 KB/s; word sizes 32/16/32; the same optional /
-dependent_on_0 / initialize flags). Check the exact JSON field names and the
-`cartridge_enable` enum spelling against the serde derives in `info.rs`
-before writing them.
+addresses 0x30000000, 0x40000000, 0x31000000; `max_size` 16 MiB + 512,
+256 KiB, 4 MiB; 10000 KB/s; the same optional / dependent_on_0 /
+initialize flags; `optional` defaults to true, so the ROM says `false`).
+The debug settings (ROM miss path, BSRAM cache) are left out of
+`settings.json`: external settings persist, and the driver's
+`Debug:` switches exist for experiments only.
 
 `settings.json` (`mask` = the bits to keep, i.e. everything but the field;
 values pre-shifted): Reset Core (action, 0x2000, value 1); Save State

@@ -398,7 +398,15 @@ own check agrees), a save or load request can take its slot from register
 is answered from `RAM_SIZE`, config bit 2 selects the latency-hiding mode
 per cartridge type, and colors pass through the color correction until a
 table is loaded. The driver's own writes are redundant with these and still
-work.
+work. The host's SRAM window takes 32-bit words (`SramHostAdapter`, two
+16-bit accesses each), since an external core's files are always
+transferred that way.
+
+The core can also be installed as an external core, with no driver: the
+descriptors are in `fpga/cores/snes/` and
+`scripts/package_core.py --name snes --build-root build/snes --out <dir>`
+assembles `<dir>/cores/<id>/` (the JSON files and the uncompressed
+bitstream) for the SD card. See `snes-external-core.md`.
 
 ## Building
 

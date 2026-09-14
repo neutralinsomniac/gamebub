@@ -323,7 +323,9 @@ impl Snes {
                     max_size: SRAM_BSRAM_SIZE,
                     exact_size: 0,
                     max_transfer_speed: SRAM_TRANSFER_SPEED,
-                    transfer_word_size: fpga::FpgaSpiWordSize::Bits16,
+                    // The SRAM window takes 32-bit words (an external
+                    // core's files are always transferred that way).
+                    transfer_word_size: fpga::FpgaSpiWordSize::Bits32,
                 },
                 CoreFile {
                     id: FILE_STATES,
@@ -539,11 +541,13 @@ impl Snes {
         )
     }
 
-    /// Write to the SRAM window (16-bit words).
+    /// Write to the SRAM window (32-bit words, so `address` and the length
+    /// must be multiples of 4).
     fn sram_write(device: &mut Device, address: u32, data: &[u8]) -> Result<(), fpga::Error> {
+        debug_assert!(address % 4 == 0 && data.len() % 4 == 0);
         device.fpga.spi_write(
             Some(Hertz(SRAM_TRANSFER_SPEED * 1000 * 2)),
-            fpga::SpiCommand::new(fpga::FpgaSpiWordSize::Bits16),
+            fpga::SpiCommand::new(fpga::FpgaSpiWordSize::Bits32),
             SRAM_BASE + address,
             data,
         )
@@ -804,8 +808,11 @@ impl Snes {
         )?;
 
         // A save file shorter than the backup RAM leaves the rest to clear
-        // (a missing one was cleared entirely by the core manager).
+        // (a missing one was cleared entirely by the core manager; the glue
+        // also filled the whole BSRAM with 0xFF before the transfer). Whole
+        // 32-bit words: a file of an odd length loses its last partial word.
         if let Some(loaded) = self.save_loaded {
+            let loaded = loaded & !3;
             if loaded < self.save_size {
                 Self::fill_sram(
                     &mut Device::lock(),
