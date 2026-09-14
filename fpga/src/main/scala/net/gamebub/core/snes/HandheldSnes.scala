@@ -455,8 +455,8 @@ object HandheldSnes {
 
   /**
    * Fills a range of the SRAM with a constant or the WRAM power-on pattern,
-   * so that the memories are initialized by the glue rather than by the
-   * firmware (an external core has no driver to do it).
+   * so that the memories are initialized by the glue rather than by a
+   * firmware driver (the core has none).
    *
    * `start` (with `base` and `words`, 16-bit word addresses / count) is
    * sampled when idle; `busy` is high until the last word is written. The
@@ -557,7 +557,7 @@ object HandheldSnes {
  *  - 0x0004 ROM_TYPE, 0x0008 ROM_MASK, 0x000C RAM_MASK, 0x0010 RAM_SIZE
  *           (the MiSTer core's ROM header encoding; see the firmware).
  *           Written by the glue's header analysis at the end of the ROM
- *           transfer; the firmware driver may overwrite them.
+ *           transfer (writable over SPI for experiments).
  *  - 0x0030 (read-only) the header analysis: bits 7:0 ROM_TYPE, 11:8 the
  *           ROM size code, 15:12 the RAM size code, 17:16 which header
  *           (0 LoROM, 1 HiROM, 2 ExHiROM), bit 18 PAL, bit 19 copier header,
@@ -766,8 +766,8 @@ class HandheldSnes extends Module with Core {
   // Host registers
   //////////////////////////////////
   // N.B. the last field is bit 0 of the register. Reset value: both halves
-  // of the ROM miss path on (bits 11 and 12), which a settings descriptor
-  // does not touch; the firmware driver writes the whole register anyway.
+  // of the ROM miss path on (bits 11 and 12), which the settings do not
+  // touch.
   val configReg = RegInit(0x1800.U(16.W).asTypeOf(new Bundle {
     /**
      * Bit 15: region from the ROM header (`headerPal`, set by the glue's
@@ -1008,8 +1008,8 @@ class HandheldSnes extends Module with Core {
     entries =
       regCommandHost.zipWithIndex.map { case (reg, i) => (0x0000 + (4 * i) -> RegisterMap.Entry.rw(reg)) }
   )
-  // Memory initialization by the glue (so that an external core needs no
-  // driver): the BSRAM is filled with 0xFF when the ROM transfer starts (a
+  // Memory initialization by the glue (the core has no firmware driver to
+  // do it): the BSRAM is filled with 0xFF when the ROM transfer starts (a
   // save file shorter than the cartridge's RAM leaves the rest at 0xFF, as
   // on a cartridge; a missing one is cleared by the host anyway), running
   // in the background behind the ROM transfer, which goes to the SDRAM; the
@@ -1038,8 +1038,7 @@ class HandheldSnes extends Module with Core {
   romMirror.io.fileSize := regCommandHost(2)
   // ROM header analysis, at the same time (it reads the file through the
   // save-state port's side of the SDRAM mux, see the ROM section). When it
-  // finishes, the core's ROM registers take its results; the firmware
-  // driver's own writes, which come later, agree (it logs a mismatch).
+  // finishes, the core's ROM registers take its results.
   val romAnalyzer = Module(new RomHeaderAnalyzer)
   romAnalyzer.io.start := false.B
   romAnalyzer.io.fileSize := regCommandHost(2)
@@ -1148,8 +1147,7 @@ class HandheldSnes extends Module with Core {
           commandHostState := CommandState.busy
         }
       } .elsewhen (command === HostV0.CommandFileReadStart.U) {
-        // Word 0: the number of bytes to write back (the firmware driver
-        // overrides both with the same values).
+        // Word 0: the number of bytes to write back.
         when (fileId === 1.U) {
           regCommandHost(0) := saveFileSize
         } .elsewhen (fileId === 2.U) {
@@ -1407,8 +1405,8 @@ class HandheldSnes extends Module with Core {
   // Config bit 2 asks for hiding in whatever mode is safe for the loaded
   // cartridge (ROM_TYPE bits 7:4 name the coprocessor: 0x7 Super FX, 0x6
   // SA-1, 0x4 CX4); bits 7, 9 and 10 select the coprocessor modes directly
-  // and bit 8 (unsafe) is only ever explicit. The firmware driver sets the
-  // explicit bits; a settings descriptor can only offer bit 2.
+  // and bit 8 (unsafe) is only ever explicit. The "Memory Latency Hiding"
+  // setting writes bit 2; the explicit bits are for experiments over SPI.
   val romChip = romTypeReg(7, 4)
   val chipGsu = romChip === 0x7.U
   val chipSa1 = romChip === 0x6.U
@@ -1454,8 +1452,8 @@ class HandheldSnes extends Module with Core {
   // The slot comes with the write (bits 3:2) or, with bit 4 set, from the
   // slot register, so that a settings descriptor can request a save or a
   // load with a fixed value. A load of a slot that holds no state is
-  // ignored (the firmware driver checks too); a save is remembered so the
-  // slots are rescanned when it has finished.
+  // ignored; a save is remembered so the slots are rescanned when it has
+  // finished.
   val ssRequestSlot = Mux(ssControlWriteData(4), ssSlotReg, ssControlWriteData(3, 2))
   val ssSaveWrite = ssControlWrite && ssControlWriteData(0)
   val ssLoadWrite = ssControlWrite && ssControlWriteData(1) && ssSlotValid(ssRequestSlot)
@@ -1893,7 +1891,7 @@ class HandheldSnes extends Module with Core {
 
   // Video filter (color correction). The SNES outputs 15-bit RGB and wants
   // none: colors pass through until a host loads a table (the firmware
-  // driver loads an identity table; an external core loads nothing).
+  // loads none for an external core).
   ColorCorrection.setup(
     clock = clock,
     reset = reset,

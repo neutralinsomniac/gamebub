@@ -60,12 +60,11 @@ object RomHeaderAnalyzer {
 }
 
 /**
- * Analyzes the ROM file in the SDRAM the way the firmware driver's
- * `header.rs` (a port of MiSTer's `snes.cpp`) does, so that an external
- * core needs no driver: scores the three candidate internal headers
- * (LoROM, HiROM, ExHiROM), and from the winner derives the MiSTer core's
- * ROM_TYPE (coprocessor and mapper), the ROM and RAM size codes and the
- * region. Keep the two in sync.
+ * Analyzes the ROM file in the SDRAM the way MiSTer's
+ * `Main_MiSTer/support/snes/snes.cpp` does, so that the core needs no
+ * firmware driver: scores the three candidate internal headers (LoROM,
+ * HiROM, ExHiROM), and from the winner derives the MiSTer core's ROM_TYPE
+ * (coprocessor and mapper), the ROM and RAM size codes and the region.
  *
  * `start` (with `fileSize`, the bytes transferred, a copier header
  * included) runs the analysis: some seventy single-word reads through
@@ -266,7 +265,7 @@ class RomHeaderAnalyzer extends Module {
     } .elsewhen (mapper === 0x30.U && rtype === 0x25.U) {
       romType := romTypeBase | 0xC0.U // OBC1
     }
-    // Further chips OR onto the above (as the driver does).
+    // Further chips OR onto the above (as MiSTer does).
     val spc7110 = mapper === 0x3A.U && (rtype === 0xF5.U || rtype === 0xF9.U)
     val srtc = mapper === 0x35.U && rtype === 0x55.U
     val cx4 = mapper === 0x20.U && rtype === 0xF3.U

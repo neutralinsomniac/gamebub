@@ -78,14 +78,14 @@ check to make after every build. The cost of the 2x clock is half the
 SDRAM bandwidth, which the ROM cache's prefetch hides for everything but
 the miss latency.
 
-The firmware reads the whole ROM back after loading (`VERIFY_ROM` in
-`bitstream/snes/mod.rs`, per-chunk checksums) and logs the result; a
-mismatch there means the upload or the interface is corrupting data. It
-uploads to the SDRAM at 10 MB/s (`SDRAM_TRANSFER_SPEED`): a host write
-takes 4 core cycles through the CDC at the 2x clock and the controller only
-refreshes in gaps of 8 SDRAM cycles, so a faster stream would defer the
-refreshes and overflow the 512-word SPI request FIFO, which the firmware
-does not check.
+The firmware uploads to the SDRAM at 10 MB/s (`max_transfer_speed` in
+`fpga/cores/snes/files.json`): a host write takes 4 core cycles through the
+CDC at the 2x clock and the controller only refreshes in gaps of 8 SDRAM
+cycles, so a faster stream would defer the refreshes and overflow the
+512-word SPI request FIFO, which the firmware does not check. (The former
+firmware driver read the whole ROM back after loading to catch a corrupting
+upload or interface; a driverless core has no such check, so compare the
+SDRAM window over SPI if that is ever suspected again.)
 
 `BurstSdramControllerSpec` checks the controller against a cycle-level SDRAM
 model (JEDEC CAS latency semantics) in both timings (the rising-edge one
@@ -100,7 +100,7 @@ write reached it).
 
 | Memory | Where | Notes |
 | --- | --- | --- |
-| Cartridge ROM (<= 16 MiB) | SDRAM, byte 0 | The ROM file as loaded by the MCU (a copier header included). Read through a 32 KiB 2-way cache with 16-byte lines and next-line prefetch (`LineReadCache`), fronted by a 16-line register buffer that answers hits in the request cycle and pulls the next line in the background (`LineBuffer`); the cache's SDRAM requests go through `RomMirrorTable`, a 512-entry table of 32 KiB blocks (distributed RAM) that mirrors a non-power-of-two ROM up to the next power of two the way a cartridge's partial address decoding does, and adds the copier header offset. The table is rebuilt from the file size at the end of the ROM transfer. (The firmware driver still mirrors by duplicating data too, which is redundant; a ROM size that is not a multiple of 32 KiB gets an identity table and relies on it.) |
+| Cartridge ROM (<= 16 MiB) | SDRAM, byte 0 | The ROM file as loaded by the MCU (a copier header included). Read through a 32 KiB 2-way cache with 16-byte lines and next-line prefetch (`LineReadCache`), fronted by a 16-line register buffer that answers hits in the request cycle and pulls the next line in the background (`LineBuffer`); the cache's SDRAM requests go through `RomMirrorTable`, a 512-entry table of 32 KiB blocks (distributed RAM) that mirrors a non-power-of-two ROM up to the next power of two the way a cartridge's partial address decoding does, and adds the copier header offset. The table is rebuilt from the file size at the end of the ROM transfer. A ROM size that is not a multiple of 32 KiB cannot be mirrored this way (identity table; no known dump has one). |
 | BSRAM (save RAM, <= 256 KiB) | SRAM, byte 0x00000 | Filled with 0xFF by the glue when the ROM transfer starts, then loaded/saved by the MCU as `<rom>.srm`; 2-way 2 KiB word cache in the bridge |
 | WRAM (128 KiB) | SRAM, byte 0x40000 | Initialized by the glue with the MiSTer power-on pattern after SetupComplete (`SramFill`) |
 | VRAM (2 x 32 KiB) | block RAM | |
@@ -163,10 +163,10 @@ The memory path is built to keep those stalls rare:
 
 Which accesses may stall the core is chosen per cartridge through config
 register bits; the choice depends on which chips read ROM and BSRAM and
-whether the core exports their sampling instants. The firmware driver sets
-the mode's bits explicitly; bit 2 alone asks the glue for the mode that is
-safe for the cartridge type in `ROM_TYPE` (so a settings descriptor can
-offer it as one checkbox).
+whether the core exports their sampling instants. The "Memory Latency
+Hiding" setting writes bit 2 alone, which asks the glue for the mode that is
+safe for the cartridge type in `ROM_TYPE`; the mode bits can also be
+written explicitly (over SPI, for experiments).
 
 * *Conservative* (all bits clear): stall while any ROM or BSRAM read is
   outstanding. Correct for every coprocessor; costs a cycle per BSRAM read and
@@ -230,9 +230,10 @@ WRAM / BSRAM / queue full), by what the BSRAM bridge had at the SRAM (write /
 prefetch / demand read / nothing) and by S-CPU latch versus coprocessor
 sample, and keeps the stall count of the worst 2^20-cycle (49 ms) window since
 the last clear, because the totals average brief slowdowns (an area
-transition, a menu) away while the ear picks them up as a pitch dip. The
-firmware reads and clears them when a game is paused (`REG_STAT_*` in
-`firmware/handheld/src/bitstream/snes/mod.rs`).
+transition, a menu) away while the ear picks them up as a pitch dip. They
+are host registers 0x1000-0x1078 (write to clear; see the `HandheldSnes`
+header comment), readable over SPI; the former firmware driver logged them
+when a game was paused.
 
 #### Pitfalls met along the way
 
@@ -330,8 +331,7 @@ On Game Bub the program is fetched from the SDRAM like any ROM data (the core
 addresses it at `0xFF0000`, above any real ROM; the glue writes it there
 after SetupComplete from a copy embedded in the bitstream,
 `SaveStateProgramLoader`, unless the padded ROM reaches that address, which
-also clears `SS_AVAIL`; the firmware driver writes it too, redundantly), and
-the 64-bit port is adapted to the SDRAM by
+also clears `SS_AVAIL`), and the 64-bit port is adapted to the SDRAM by
 `snes.SaveStateMemoryPort` (two 32-bit accesses per word, little-endian) with
 the slots at byte address `0x1000000`. The SDRAM is shared with the ROM cache
 through `lib.mem.PipelineMemoryLowPriorityMux`, which gives the save-state
@@ -342,16 +342,18 @@ load), so the glue stalls the core's clock for every transfer instead
 (stat `0x1078`): a full state costs roughly 64k transfers, i.e. tens of
 milliseconds of stalls on top of the second or so the program itself takes.
 
-The firmware drives it through register `0x0014` (save / load request plus
-slot) and the status register (`SS_AVAIL`, `SS_BUSY`, "save done", "request
-pending", "in progress"). Requests come from the core's settings menu, i.e.
-while the game is paused and the core has no focus, so the glue runs the
-core's clock without focus (no input, no sound) from the request until the
-program has finished, and the driver waits for that. Because the core only
-acts at an NMI / IRQ, a game that is waiting with interrupts off never gets
-there; the driver gives up after 5 s and cancels the request (a write with
-both request bits clear), which stops the clock again - the request itself
-stays armed in the core until the next reset. The four slots are one core
+The settings menu drives it through register `0x0014` (the "Save State" /
+"Load State" actions write 0x11 / 0x12: a request taking its slot from
+register `0x0018`, the "State Slot" list) and the status register
+(`SS_AVAIL`, `SS_BUSY`, "save done", "request pending", "in progress", the
+valid slots). Requests come from the settings menu, i.e. while the game is
+paused and the core has no focus, so the glue runs the core's clock without
+focus (no input, no sound) from the request until the program has finished.
+Because the core only acts at an NMI / IRQ, a game that is waiting with
+interrupts off never gets there; the glue gives up after 5 s and cancels the
+request (as a write with both request bits clear does), which stops the
+clock again - the request itself stays armed in the core until the next
+reset. A load of a slot holding no state is ignored. The four slots are one core
 file, `<rom>.ss` next to the ROM (whole 1 MiB slots up to the last one in
 use), which the core manager loads into the SDRAM with the ROM and writes
 back when the core exits, like the `.srm` save: a state reaches the SD card
@@ -359,54 +361,51 @@ on "Exit Core" or power-off, not when it is taken.
 
 ### Firmware
 
-`firmware/handheld/src/bitstream/snes/` contains the core handler (the core
-is "Game-Bub.SNES" in the core list; the core manager transfers the ROM and
-the `.srm` save file next to it into the core's SDRAM and SRAM windows).
-`header.rs` is a port of MiSTer's ROM analysis
-(`Main_MiSTer/support/snes/snes.cpp`): header scoring for LoROM/HiROM/ExHiROM,
-coprocessor detection, ROM/RAM size codes and region, adapted to work from a
-seekable file instead of an in-memory ROM. `.sfc` and `.smc` files (with or
-without a 512-byte copier header) are accepted. The bitstream is expected at
-`system/snes.bit.hs` on the SD card. Non-power-of-two ROMs are mirrored up to
-the next power of two as they load. The core's settings (pause menu,
-"Settings") are "Reset Core", "Save State" / "Load State" / "State Slot" (the
-save states described above; the glue embeds the 65816 program),
-"Region" (auto-detected from the header, or forced), "Pseudo Transparency"
-(the core's `BLEND`), "Memory Latency Hiding" and two debug switches for the
-ROM miss path and the BSRAM cache (config register bits); they are not
-persisted across runs.
-
-Parts of the driver's job are also done by the glue, so that the core can
-eventually ship as an external core with no firmware driver (the plan is in
-`snes-external-core.md`): the framework's file commands are decoded (four
-command words; the ROM and states file sizes are recorded), the ROM header
-is analyzed by the glue at the end of the ROM transfer (`RomHeaderAnalyzer`,
-a port of `header.rs`: it writes `ROM_TYPE`, the masks and `RAM_SIZE`, the
-header's region for config bit 15, and fails SetupComplete for an
-unsupported cartridge; register 0x0030 exposes its result and the driver
-logs whether its own analysis agrees), non-power-of-two ROMs are mirrored by
-address translation, the BSRAM is filled with 0xFF when the ROM transfer
-starts and the WRAM with the power-on pattern after SetupComplete (the
-status stays "setup" until then), the save-state program is written above
-the ROM (`SaveStateProgramLoader`), the save-state slots are scanned for
-valid states when the states file has been transferred and after every
-save (`SaveStateSlotScanner`: status bits 14:11, a load of an empty slot is
-ignored, stale slots beyond the file are cleared, and the states file's
-write-back size follows the last slot in use; the driver logs whether its
-own check agrees), a save or load request can take its slot from register
-0x0018 and times out after 5 s in hardware, the save file's write-back size
-is answered from `RAM_SIZE`, config bit 2 selects the latency-hiding mode
-per cartridge type, and colors pass through the color correction until a
-table is loaded. The driver's own writes are redundant with these and still
-work. The host's SRAM window takes 32-bit words (`SramHostAdapter`, two
-16-bit accesses each), since an external core's files are always
-transferred that way.
-
-The core can also be installed as an external core, with no driver: the
-descriptors are in `fpga/cores/snes/` and
+The SNES is an external core: the stock firmware runs it from
+`/sdcard/cores/Game-Bub.SNES/`, which holds the descriptors in
+`fpga/cores/snes/` (`core.json`; `files.json`: the ROM as `.sfc` / `.smc`,
+the `.srm` save file and the `.ss` states file next to it, with their SDRAM /
+SRAM windows and transfer speeds; `settings.json`: "Reset Core", "Save State"
+/ "Load State" / "State Slot", "Region" (from the header, or forced), "Pseudo
+Transparency" (the core's `BLEND`) and "Memory Latency Hiding", as register
+writes) and the uncompressed bitstream.
 `scripts/package_core.py --name snes --build-root build/snes --out <dir>`
-assembles `<dir>/cores/<id>/` (the JSON files and the uncompressed
-bitstream) for the SD card. See `snes-external-core.md`.
+assembles that directory from a build. There is no SNES code in the
+firmware; the history of getting there, and the framework facts it relies
+on, are in `snes-external-core.md`.
+
+Everything a driver would do, the glue does from the framework's file
+commands (four command words; the ROM and states file sizes are recorded):
+
+* At the end of the ROM transfer, `RomHeaderAnalyzer` (a port of MiSTer's
+  `Main_MiSTer/support/snes/snes.cpp`: header scoring for
+  LoROM/HiROM/ExHiROM, coprocessor detection, ROM/RAM size codes, region)
+  writes `ROM_TYPE`, the masks and `RAM_SIZE`, the header's region for
+  config bit 15, and makes SetupComplete fail for an unsupported cartridge
+  (SPC7110, Satellaview, Sufami Turbo, competition carts, ROMs above
+  16 MiB); register 0x0030 exposes its result. A 512-byte copier header is
+  detected from the file size and skipped by address translation.
+* `RomMirrorTable` mirrors a non-power-of-two ROM by address translation on
+  the cache's SDRAM requests (see the memory map).
+* The BSRAM is filled with 0xFF when the ROM transfer starts and the WRAM
+  with the power-on pattern after SetupComplete (`SramFill`; the status
+  stays "setup" until done); the save file's write-back size is answered
+  from `RAM_SIZE`.
+* The save-state program is written above the ROM
+  (`SaveStateProgramLoader`), the slots are scanned when the states file
+  has been transferred and after every save (`SaveStateSlotScanner`: status
+  bits 14:11, a load of an empty slot is ignored, stale slots beyond the
+  file are cleared, the states file's write-back size follows the last slot
+  in use), a request can take its slot from register 0x0018, and a request
+  the game never services times out after 5 s.
+* Config bit 2 selects the latency-hiding mode per cartridge type, colors
+  pass through the color correction until a table is loaded, and the host's
+  SRAM window takes 32-bit words (`SramHostAdapter`, two 16-bit accesses
+  each), since an external core's files are always transferred that way.
+
+Lost with the driver: user-facing messages for unsupported cartridges and
+save-state failures (an unsupported cartridge shows as a generic core
+error), the ROM read-back verification and the stall-statistics log.
 
 ## Building
 
