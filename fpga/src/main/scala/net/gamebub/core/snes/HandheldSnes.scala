@@ -452,6 +452,68 @@ object HandheldSnes {
     io.writeIssued := writeRequest
     io.pending := readOutstanding || nearlyFull
   }
+
+  /**
+   * Fills a range of the SRAM with a constant or the WRAM power-on pattern,
+   * so that the memories are initialized by the glue rather than by the
+   * firmware (an external core has no driver to do it).
+   *
+   * `start` (with `base` and `words`, 16-bit word addresses / count) is
+   * sampled when idle; `busy` is high until the last word is written. The
+   * WRAM pattern is the MiSTer's: byte `a` of the region is 0x66 when bit 8
+   * and bit 2 of `a` differ, 0x99 otherwise (some games rely on non-zero
+   * power-on RAM); both bytes of a word share it, so it is bit 7 xor bit 1
+   * of the word offset. Every output is registered and a word takes three
+   * cycles at the [[AsyncSramController]] (accept, access, done): the next
+   * address is presented in the cycle after `done`, which keeps the engine
+   * off the SRAM controller's combinational accept path.
+   */
+  class SramFill extends Module {
+    val io = IO(new Bundle {
+      val start = Input(Bool())
+      val base = Input(UInt(18.W))
+      /** Number of 16-bit words to write (1 to 2^18). */
+      val words = Input(UInt(19.W))
+      /** False: fill with 0xFFFF; true: the WRAM power-on pattern. */
+      val wramPattern = Input(Bool())
+      val busy = Output(Bool())
+      val mem = Flipped(new MemoryInterface(addressWidth = 18, dataWidth = 16))
+    })
+
+    val busy = RegInit(false.B)
+    val base = Reg(UInt(18.W))
+    val offset = Reg(UInt(19.W))
+    val remaining = Reg(UInt(19.W))
+    val pattern = Reg(Bool())
+
+    val wramWord = Mux(offset(7) ^ offset(1), 0x6666.U(16.W), 0x9999.U(16.W))
+    io.mem.enable := busy
+    io.mem.write := true.B
+    io.mem.address := base + offset(17, 0)
+    io.mem.dataWrite := Mux(pattern, wramWord, 0xFFFF.U(16.W))
+    io.mem.writeStrobe := "b11".U
+    io.busy := busy
+
+    when (!busy) {
+      when (io.start) {
+        busy := true.B
+        base := io.base
+        offset := 0.U
+        remaining := io.words
+        pattern := io.wramPattern
+      }
+    } .elsewhen (io.mem.done) {
+      // The word is written: step to the next one at this edge, so that it
+      // is on the interface in the cycle after done (the controller is
+      // free then; the arbiter released the port on seeing the completed
+      // request still held in the done cycle).
+      offset := offset + 1.U
+      remaining := remaining - 1.U
+      when (remaining === 1.U) {
+        busy := false.B
+      }
+    }
+  }
 }
 
 /**
@@ -476,18 +538,27 @@ object HandheldSnes {
  * 0x5xxx_xxxx and the framework's command interface at 0xF0xx_xxxx, like
  * the other cores. Registers:
  *  - 0x0000 config: bit 0 PAL, bit 1 BLEND (hi-res pseudo-transparency),
- *           bit 2 latency hiding, bit 7 Super FX RAM latency hiding, bit 8
+ *           bit 2 latency hiding in the mode that is safe for the cartridge
+ *           type in ROM_TYPE, bit 7 Super FX RAM latency hiding, bit 8
  *           Super FX ROM latency hiding (experimental, unsafe), bit 9 SA-1 ROM
  *           latency hiding, bit 10 SA-1 BW-RAM latency hiding (see the stall
  *           control below and the `configReg` fields), bit 11 ROM early
  *           answers, bit 12 ROM eager issue (the two halves of the ROM miss
  *           path, separately switchable for A/B tests), bit 13 BSRAM cache
- *           off, bit 14 BSRAM cache way 0 only (debug). With `DebugAudio`:
+ *           off, bit 14 BSRAM cache way 0 only (debug), bit 15 region from
+ *           the ROM header instead of bit 0. With `DebugAudio`:
  *           bit 3 1 kHz test tone instead of the core's audio, bit 4 tone at
  *           full scale, bit 5 play the capture buffer through the audio path,
  *           bit 6 capture sample periods (ungated clocks) instead of samples.
  *  - 0x0004 ROM_TYPE, 0x0008 ROM_MASK, 0x000C RAM_MASK, 0x0010 RAM_SIZE
  *           (the MiSTer core's ROM header encoding; see the firmware)
+ *
+ * Framework commands (0xF0xx_xxxx): the file commands carry the file id and,
+ * for FileWriteEnd, the size; the glue records the ROM and states file
+ * sizes, fills the BSRAM with 0xFF when the ROM transfer starts and the
+ * WRAM with its power-on pattern after SetupComplete (reporting the "setup"
+ * status until that is done), and answers FileReadStart of the save file
+ * with the cartridge RAM size. See the command interface below.
  *  - 0x0014 save states: write bit 0 to request a save, bit 1 to request a
  *           load (of / into the slot in bits 3:2, which the write also sets);
  *           the request is handed to the core at its next clock and acted on
@@ -616,6 +687,19 @@ class HandheldSnes extends Module with Core {
   /** A one-cycle reset requested through register 0x2000. */
   val regCoreResetOnce = RegInit(false.B)
   regCoreResetOnce := false.B
+  /**
+   * File sizes reported by the host at the end of each transfer (bytes): the
+   * ROM file (including a copier header, if any) and the states file.
+   */
+  val romFileSize = RegInit(0.U(25.W))
+  val statesFileSize = RegInit(0.U(23.W))
+  /**
+   * The ROM header says PAL. Written by the glue's header analysis (to
+   * come); used when config bit 15 selects the automatic region.
+   */
+  val headerPal = RegInit(false.B)
+  /** The WRAM initialization requested by SetupComplete has not started yet (the fill engine was busy). */
+  val wramFillPending = RegInit(false.B)
 
   //////////////////////////////////
   // Memory arbitration
@@ -625,8 +709,24 @@ class HandheldSnes extends Module with Core {
   // traffic must not hold up the SA-1's BW-RAM reads.
   val sramArbiter = Module(new MemoryArbiter(addressWidth = 18, dataWidth = 16, n = 3, fair = true))
   val sramHost = Wire(new MemoryInterface(addressWidth = 19, dataWidth = 16))
-  sramArbiter.io.initiator(0) <> sramHost
-  sramArbiter.io.initiator(0).address := sramHost.address >> 1 // the host is byte addressed
+  // The fill engine (memory initialization, see the command interface) takes
+  // the host's port while it runs rather than a fourth arbiter port, to keep
+  // the arbiter's target mux, which is on the core's critical path to the
+  // SRAM controller, as it is. The command interface guarantees the host
+  // has no SRAM transfer in flight then.
+  val sramFill = Module(new SramFill())
+  locally {
+    val port = sramArbiter.io.initiator(0)
+    port.enable := Mux(sramFill.io.busy, sramFill.io.mem.enable, sramHost.enable)
+    port.write := Mux(sramFill.io.busy, sramFill.io.mem.write, sramHost.write)
+    port.address := Mux(sramFill.io.busy, sramFill.io.mem.address, sramHost.address >> 1) // the host is byte addressed
+    port.dataWrite := Mux(sramFill.io.busy, sramFill.io.mem.dataWrite, sramHost.dataWrite)
+    port.writeStrobe := Mux(sramFill.io.busy, sramFill.io.mem.writeStrobe, sramHost.writeStrobe)
+    sramFill.io.mem.done := port.done && sramFill.io.busy
+    sramFill.io.mem.dataRead := port.dataRead
+    sramHost.done := port.done && !sramFill.io.busy
+    sramHost.dataRead := port.dataRead
+  }
   // SDRAM: the host and the ROM cache (below).
   val sdramArbiter = Module(new PipelineMemoryArbiter(addressWidth = 25, dataWidth = 32, n = 2))
   val sdramHost = Wire(new MemoryInterface(addressWidth = 25, dataWidth = 32))
@@ -642,6 +742,12 @@ class HandheldSnes extends Module with Core {
   //////////////////////////////////
   // N.B. the last field is bit 0 of the register.
   val configReg = RegInit(0.U.asTypeOf(new Bundle {
+    /**
+     * Bit 15: region from the ROM header (`headerPal`, set by the glue's
+     * header analysis) instead of bit 0. Lets a settings descriptor offer
+     * Auto / NTSC / PAL as plain register values.
+     */
+    val regionAuto = Bool()
     /** Bit 14 (debug): the BSRAM cache uses way 0 only (direct-mapped, half size). */
     val bsramOneWay = Bool()
     /** Bit 13 (debug): the BSRAM cache is off (every read goes to the SRAM). */
@@ -694,10 +800,14 @@ class HandheldSnes extends Module with Core {
     /** Bit 3 (debug): replace the audio with a 1 kHz test tone (-12 dBFS sine). */
     val testTone = Bool()
     /**
-     * Bit 2: when set, the core is only stalled if a memory access is still
-     * outstanding when the CPU is about to latch data (SYSCLKF_CE). Hides the
-     * memory latency completely for the CPU, but is not safe for
-     * coprocessors that access ROM on their own schedule (GSU, SA-1).
+     * Bit 2: memory latency hiding, in the mode that is safe for the loaded
+     * cartridge (from ROM_TYPE, see `hidingBase` and friends below): for a
+     * base cartridge the core is only stalled if a memory access is still
+     * outstanding when the CPU is about to latch data (SYSCLKF_CE), which
+     * hides the memory latency completely for the CPU; a Super FX cartridge
+     * gets the RAM hiding of bit 7, an SA-1 cartridge the ROM and BW-RAM
+     * hiding of bits 9 and 10, and a CX4 cartridge none (it accesses ROM on
+     * its own schedule and exports no sampling instants).
      */
     val latencyHiding = Bool()
     /** Bit 1: pseudo-transparency blending in hi-res modes */
@@ -855,14 +965,40 @@ class HandheldSnes extends Module with Core {
   //////////////////////////////////
   // Framework command interface
   //////////////////////////////////
+  // The host writes a command and up to three arguments to the four words
+  // (FileWriteEnd: id, size, 0) and reads a result from word 0.
   val commandHostState = RegInit(CommandState.idle)
-  val regCommandHost = Reg(Vec(2, UInt(32.W)))
+  val regCommandHost = Reg(Vec(4, UInt(32.W)))
   commandInterface <> RegisterMap(
     addressWidth = 16,
     dataWidth = 32,
     entries =
       regCommandHost.zipWithIndex.map { case (reg, i) => (0x0000 + (4 * i) -> RegisterMap.Entry.rw(reg)) }
   )
+  // Memory initialization by the glue (so that an external core needs no
+  // driver): the BSRAM is filled with 0xFF when the ROM transfer starts (a
+  // save file shorter than the cartridge's RAM leaves the rest at 0xFF, as
+  // on a cartridge; a missing one is cleared by the host anyway), running
+  // in the background behind the ROM transfer, which goes to the SDRAM; the
+  // WRAM gets its power-on pattern after SetupComplete. The fill engine
+  // borrows the host's SRAM port, so a file transfer to the SRAM (the save
+  // file) waits for it: FileWriteStart is held busy until the engine is
+  // idle. SetupComplete completes right away (its host timeout is short)
+  // and the status stays "setup" until the WRAM fill has finished (the host
+  // waits much longer for "halt").
+  val bsramFillStart = WireDefault(false.B)
+  val wramFillStart = WireDefault(false.B)
+  sramFill.io.start := bsramFillStart || wramFillStart
+  sramFill.io.base := Mux(wramFillStart, SramMap.WramBase.U, SramMap.BsramBase.U)
+  sramFill.io.words := Mux(wramFillStart, (128 * 1024 / 2).U, (256 * 1024 / 2).U)
+  sramFill.io.wramPattern := wramFillStart
+  when (wramFillPending && !sramFill.io.busy) {
+    wramFillStart := true.B
+    wramFillPending := false.B
+  }
+  val setupReady = regCoreSetup && !wramFillPending && !sramFill.io.busy
+  /** Bytes of cartridge RAM to write back to the save file (the RAM size code, capped at the BSRAM). */
+  val saveFileSize = Mux(ramSizeReg === 0.U, 0.U, ((1024.U(26.W) << ramSizeReg)(25, 0).min((256 * 1024).U)))
   // Host -> Core commands
   io.host.commandHost.busy := commandHostState === CommandState.busy
   io.host.commandHost.done := commandHostState === CommandState.done
@@ -870,32 +1006,58 @@ class HandheldSnes extends Module with Core {
   when (io.host.commandHost.request) {
     when (commandHostState === CommandState.idle) {
       val command = regCommandHost(0)(15, 0)
+      val fileId = regCommandHost(1)(15, 0)
+      val fileSize = regCommandHost(2)
       for (reg <- regCommandHost) {
         reg := 0.U
       }
       commandHostState := CommandState.done
 
       when (command === HostV0.CommandGetStatus.U) {
-        when (regCoreSetup) {
+        when (setupReady) {
           regCommandHost(0) := Mux(regCoreReset, HostV0.StatusCoreHalt.U, HostV0.StatusCoreRun.U)
         } .otherwise {
-          // No pre-setup initialization to do.
           regCommandHost(0) := HostV0.StatusSetup.U
         }
       } .elsewhen (command === HostV0.CommandSetupComplete.U) {
-        // No post-setup initialization to do.
         regCoreSetup := true.B
+        wramFillPending := true.B
       } .elsewhen (command === HostV0.CommandCoreRun.U) {
         regCoreReset := false.B
       } .elsewhen (command === HostV0.CommandCoreHalt.U) {
         regCoreReset := true.B
       } .elsewhen (command === HostV0.CommandNotifyFocus.U) {
         regCoreFocus := regCommandHost(1)(0)
-      } .elsewhen (command(15, 8) === 0x03.U) {
-        // File command: the files go straight to the SDRAM / SRAM windows.
+      } .elsewhen (command === HostV0.CommandFileWriteStart.U) {
+        // The files go straight to the SDRAM / SRAM windows.
+        when (fileId === 0.U) {
+          bsramFillStart := true.B
+        } .elsewhen (sramFill.io.busy) {
+          commandHostState := CommandState.busy
+        }
+      } .elsewhen (command === HostV0.CommandFileWriteEnd.U) {
+        when (fileId === 0.U) {
+          romFileSize := fileSize
+        } .elsewhen (fileId === 2.U) {
+          statesFileSize := fileSize
+        }
+      } .elsewhen (command === HostV0.CommandFileReadStart.U) {
+        // Word 0: the number of bytes to write back. The states file's
+        // (the slots in use) is not computed yet; the firmware driver
+        // overrides both.
+        when (fileId === 1.U) {
+          regCommandHost(0) := saveFileSize
+        }
+      } .elsewhen (command === HostV0.CommandFileReadEnd.U) {
+        // Nothing to do.
       } .otherwise {
         // Unknown command
         commandHostState := CommandState.error
+      }
+    } .elsewhen (commandHostState === CommandState.busy) {
+      // FileWriteStart of a file bound for the SRAM: wait for the fill engine.
+      when (!sramFill.io.busy) {
+        commandHostState := CommandState.done
       }
     }
   } .otherwise {
@@ -942,7 +1104,7 @@ class HandheldSnes extends Module with Core {
   core.io.ROM_MASK := romMaskReg
   core.io.RAM_MASK := ramMaskReg
   core.io.RAM_SIZE := ramSizeReg
-  core.io.PAL := configReg.pal
+  core.io.PAL := Mux(configReg.regionAuto, headerPal, configReg.pal)
   core.io.BLEND := configReg.blend
 
   //////////////////////////////////
@@ -1101,17 +1263,32 @@ class HandheldSnes extends Module with Core {
   // ROM); also at the SA-1 side's sampling instants for SA-1 (bits 9 and 10).
   // Otherwise the core stalls for as long as a read is outstanding. A nearly
   // full write queue stalls the core in every mode.
-  val romHidden = configReg.latencyHiding || configReg.gsuRomLatencyHiding || configReg.sa1RomLatencyHiding
-  val bsramHidden = configReg.latencyHiding || configReg.gsuRamLatencyHiding || configReg.sa1BwramLatencyHiding
-  val romLatch = core.io.SYSCLKF_CE || (configReg.gsuRomLatencyHiding && core.io.GSU_ROM_SAMPLE) ||
-    (configReg.sa1RomLatencyHiding && core.io.SA1_ROM_SAMPLE)
+  //
+  // Config bit 2 asks for hiding in whatever mode is safe for the loaded
+  // cartridge (ROM_TYPE bits 7:4 name the coprocessor: 0x7 Super FX, 0x6
+  // SA-1, 0x4 CX4); bits 7, 9 and 10 select the coprocessor modes directly
+  // and bit 8 (unsafe) is only ever explicit. The firmware driver sets the
+  // explicit bits; a settings descriptor can only offer bit 2.
+  val romChip = romTypeReg(7, 4)
+  val chipGsu = romChip === 0x7.U
+  val chipSa1 = romChip === 0x6.U
+  val chipCx4 = romChip === 0x4.U
+  val hidingBase = configReg.latencyHiding && !chipGsu && !chipSa1 && !chipCx4
+  val hidingGsuRam = configReg.gsuRamLatencyHiding || (configReg.latencyHiding && chipGsu)
+  val hidingGsuRom = configReg.gsuRomLatencyHiding
+  val hidingSa1Rom = configReg.sa1RomLatencyHiding || (configReg.latencyHiding && chipSa1)
+  val hidingSa1Bwram = configReg.sa1BwramLatencyHiding || (configReg.latencyHiding && chipSa1)
+  val romHidden = hidingBase || hidingGsuRom || hidingSa1Rom
+  val bsramHidden = hidingBase || hidingGsuRam || hidingSa1Bwram
+  val romLatch = core.io.SYSCLKF_CE || (hidingGsuRom && core.io.GSU_ROM_SAMPLE) ||
+    (hidingSa1Rom && core.io.SA1_ROM_SAMPLE)
   // The S-CPU's clock enable fires every S-CPU cycle whether or not it reads
   // BSRAM; while the GSU / SA-1 owns the RAM bus the S-CPU cannot be reading
   // it, so only the coprocessor's own sampling instants count then.
-  val bsramOwned = (configReg.gsuRamLatencyHiding && core.io.GSU_RAM_OWNED) ||
-    (configReg.sa1BwramLatencyHiding && core.io.SA1_BWRAM_OWNED)
-  val bsramSample = (configReg.gsuRamLatencyHiding && core.io.GSU_RAM_SAMPLE) ||
-    (configReg.sa1BwramLatencyHiding && core.io.SA1_BWRAM_SAMPLE)
+  val bsramOwned = (hidingGsuRam && core.io.GSU_RAM_OWNED) ||
+    (hidingSa1Bwram && core.io.SA1_BWRAM_OWNED)
+  val bsramSample = (hidingGsuRam && core.io.GSU_RAM_SAMPLE) ||
+    (hidingSa1Bwram && core.io.SA1_BWRAM_SAMPLE)
   val bsramLatch = (core.io.SYSCLKF_CE && !bsramOwned) || bsramSample
   // A ROM read whose data arrives this cycle is forwarded to ROM_Q already.
   val romOutstanding = romPending && !romBuffer.io.respValid
@@ -1550,11 +1727,14 @@ class HandheldSnes extends Module with Core {
     io.sdram.dataDir := sdram.io.signals.dataDir
   }
 
-  // Video filter (color correction; the firmware loads an identity table)
+  // Video filter (color correction). The SNES outputs 15-bit RGB and wants
+  // none: colors pass through until a host loads a table (the firmware
+  // driver loads an identity table; an external core loads nothing).
   ColorCorrection.setup(
     clock = clock,
     reset = reset,
     videoFilter = io.videoFilter,
     memInterface = colorCorrectInterface,
+    passThroughUntilLoaded = true,
   )
 }
