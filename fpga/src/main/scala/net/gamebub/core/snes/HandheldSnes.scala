@@ -530,7 +530,8 @@ object HandheldSnes {
  *           2-way line cache whose SDRAM requests are translated by
  *           [[RomMirrorTable]] (mirrors of a non-power-of-two ROM, the
  *           header offset); the MiSTer save-state
- *           program at 0xFF0000 (also loaded by the MCU); save-state slots
+ *           program at 0xFF0000 (written by the glue after SetupComplete,
+ *           [[SaveStateProgramLoader]]); save-state slots
  *           (4 x 1 MiB) at 0x1000000, written and read by the core's
  *           save-state port and copied to / from the SD card by the MCU
  *  - SRAM:  BSRAM at byte 0 (256 KiB), WRAM at byte 0x40000 (128 KiB)
@@ -1012,7 +1013,6 @@ class HandheldSnes extends Module with Core {
     wramFillStart := true.B
     wramFillPending := false.B
   }
-  val setupReady = regCoreSetup && !wramFillPending && !sramFill.io.busy
   // ROM mirroring: the translation table is rebuilt from the file size at
   // the end of the ROM transfer (FileWriteEnd is held busy meanwhile, about
   // a thousand cycles). It reads the size from the command word directly,
@@ -1038,6 +1038,20 @@ class HandheldSnes extends Module with Core {
     headerPal := r.pal
     romUnsupported := r.unsupported
   }
+  // The save-state program is written above the ROM after SetupComplete
+  // (through the same side port), unless the padded ROM reaches its
+  // address, in which case save states are unavailable (`ssAvailable`).
+  val ssProgramLoader = Module(new SaveStateProgramLoader)
+  ssProgramLoader.io.start := false.B
+  val ssProgramFits = romAnalyzer.io.result.romSizeCode <= SaveStateProgramLoader.MaxRomSizeCode.U
+  val ssProgramPending = RegInit(false.B)
+  when (ssProgramPending && !romAnalyzer.io.busy) {
+    ssProgramLoader.io.start := true.B
+    ssProgramPending := false.B
+  }
+  /** Setup is complete and the post-setup memory initialization has finished. */
+  val setupReady = regCoreSetup && !wramFillPending && !sramFill.io.busy &&
+    !ssProgramPending && !ssProgramLoader.io.busy
   romInfoWire := Cat(
     romMirror.io.supported,
     romAnalyzer.io.result.unsupported,
@@ -1079,6 +1093,7 @@ class HandheldSnes extends Module with Core {
         } .otherwise {
           regCoreSetup := true.B
           wramFillPending := true.B
+          ssProgramPending := ssProgramFits
         }
       } .elsewhen (command === HostV0.CommandCoreRun.U) {
         regCoreReset := false.B
@@ -1177,7 +1192,8 @@ class HandheldSnes extends Module with Core {
   // (or IRQ) vector and runs a 65816 program from ROM address 0xFF0000 that
   // streams the machine state through the core's 64-bit "DDR" port, or
   // restores it from there. The port is adapted to the SDRAM below (the
-  // slots live above the ROM); the program is loaded by the firmware.
+  // slots live above the ROM); the program is written by the glue after
+  // SetupComplete (SaveStateProgramLoader, above).
   //
   // Save / load requests are edge-detected by the core, so a register write
   // arms a request that is presented to the core until it has clocked once
@@ -1212,7 +1228,7 @@ class HandheldSnes extends Module with Core {
     ssSaveRequest || ssLoadRequest,
     ssSaveDone,
     core.io.SS_BUSY,
-    core.io.SS_AVAIL,
+    core.io.SS_AVAIL && ssProgramFits,
     core.io.TURBO_ALLOW,
     core.io.GSU_ACTIVE,
     core.io.FIELD,
@@ -1238,19 +1254,27 @@ class HandheldSnes extends Module with Core {
   val sdramMux = Module(new PipelineMemoryLowPriorityMux(addressWidth = 25, dataWidth = 32))
   sdramArbiter.io.initiator(1) <> sdramMux.io.target
   sdramMux.io.main <> romCache.io.out
-  // The header analyzer borrows the side port while it runs (during setup,
-  // when the save-state port is idle); the file's layout, untranslated.
+  // The header analyzer and the save-state program loader borrow the side
+  // port while they run (during setup, when the save-state port is idle;
+  // never both at once); the file's layout, untranslated.
   locally {
     val side = sdramMux.io.side
     val analyzing = romAnalyzer.io.busy
-    side.enable := Mux(analyzing, romAnalyzer.io.mem.enable, ssPort.io.mem.enable)
-    side.address := Mux(analyzing, romAnalyzer.io.mem.address, ssPort.io.mem.address)
-    side.isWrite := Mux(analyzing, romAnalyzer.io.mem.isWrite, ssPort.io.mem.isWrite)
-    side.writeStrobe := Mux(analyzing, romAnalyzer.io.mem.writeStrobe, ssPort.io.mem.writeStrobe)
-    side.dataWrite := Mux(analyzing, romAnalyzer.io.mem.dataWrite, ssPort.io.mem.dataWrite)
+    val loading = ssProgramLoader.io.busy
+    val setup = analyzing || loading
+    val a = romAnalyzer.io.mem
+    val l = ssProgramLoader.io.mem
+    val s = ssPort.io.mem
+    side.enable := Mux(setup, Mux(analyzing, a.enable, l.enable), s.enable)
+    side.address := Mux(setup, Mux(analyzing, a.address, l.address), s.address)
+    side.isWrite := Mux(setup, Mux(analyzing, a.isWrite, l.isWrite), s.isWrite)
+    side.writeStrobe := Mux(setup, Mux(analyzing, a.writeStrobe, l.writeStrobe), s.writeStrobe)
+    side.dataWrite := Mux(setup, Mux(analyzing, a.dataWrite, l.dataWrite), s.dataWrite)
     romAnalyzer.io.mem.ready := side.ready && analyzing
     romAnalyzer.io.mem.dataRead := side.dataRead
-    ssPort.io.mem.ready := side.ready && !analyzing
+    ssProgramLoader.io.mem.ready := side.ready && loading && !analyzing
+    ssProgramLoader.io.mem.dataRead := side.dataRead
+    ssPort.io.mem.ready := side.ready && !setup
     ssPort.io.mem.dataRead := side.dataRead
   }
   // The cache's requests (misses and prefetches, in the core's ROM address
