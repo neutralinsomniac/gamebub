@@ -14,9 +14,12 @@ expanded per cartridge type, config bit 15 = region from the header, colors
 pass through the color correction until a table is loaded). Built and
 verified on hardware with the existing firmware (Lufia, Yoshi's Island);
 committed as "fpga: Let the SNES glue do the driver's memory setup".
-Sequencing step 2 (item 3, `RomMirrorTable`) is implemented and unit-tested
-(`RomMirrorTableSpec`), with the firmware driver's own mirroring left in
-place for now. Items 2, 6 and 7 are not started.
+Sequencing step 2 (item 3, `RomMirrorTable`) is built, hardware-tested
+(Lufia) and committed, with the firmware driver's own mirroring left in
+place for now. Sequencing step 3 (item 2, `RomHeaderAnalyzer`) is
+implemented and unit-tested (`RomHeaderAnalyzerSpec`); the driver logs
+whether the glue's analysis agrees with its own. Items 6 and 7 are not
+started.
 
 Findings from that step, folded into the text below:
 
@@ -114,13 +117,17 @@ Per command:
 - `FILE_READ_START 2`: answer with `slotsUsed * 1 MiB` (item 7).
 - `FILE_READ_END`: nothing.
 
-### 2. Header analyzer FSM
+### 2. Header analyzer FSM (done: `RomHeaderAnalyzer`)
 
 A port of `header::analyze` and `score_header` to a state machine reading
-the SDRAM through a new low-priority port on the SDRAM arbiter (or by reusing
-the host write path's read side). Inputs: `romFileSize`, `romOffset`.
-Outputs: `romTypeReg`, `romMaskReg`, `ramMaskReg`, `ramSizeReg`,
-`headerPal`, `unsupported`, `headerFound`.
+the SDRAM through the save-state port's side of the low-priority mux
+(idle during setup). Inputs: the file size from the `FILE_WRITE_END`
+command word. Outputs: `romTypeReg`, `romMaskReg`, `ramMaskReg`,
+`ramSizeReg`, `headerPal`, `unsupported`, `headerFound`, exposed read-only
+at register 0x0030; the driver logs whether its own analysis agrees
+(`check_glue_analysis`), which is how the port gets validated across a ROM
+library before the driver goes. Some seventy single-word reads, a few
+thousand cycles, held busy in `FILE_WRITE_END`.
 
 Steps, all 32-bit reads relative to `romOffset`:
 

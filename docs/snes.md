@@ -376,14 +376,18 @@ persisted across runs.
 Parts of the driver's job are also done by the glue, so that the core can
 eventually ship as an external core with no firmware driver (the plan is in
 `snes-external-core.md`): the framework's file commands are decoded (four
-command words; the ROM and states file sizes are recorded), the BSRAM is
-filled with 0xFF when the ROM transfer starts and the WRAM with the power-on
-pattern after SetupComplete (the status stays "setup" until then), the save
-file's write-back size is answered from `RAM_SIZE`, config bit 2 selects the
-latency-hiding mode per cartridge type and bit 15 takes the region from the
-header (once the glue analyzes it), and colors pass through the color
-correction until a table is loaded. The driver's own writes are redundant
-with these and still work.
+command words; the ROM and states file sizes are recorded), the ROM header
+is analyzed by the glue at the end of the ROM transfer (`RomHeaderAnalyzer`,
+a port of `header.rs`: it writes `ROM_TYPE`, the masks and `RAM_SIZE`, the
+header's region for config bit 15, and fails SetupComplete for an
+unsupported cartridge; register 0x0030 exposes its result and the driver
+logs whether its own analysis agrees), non-power-of-two ROMs are mirrored by
+address translation, the BSRAM is filled with 0xFF when the ROM transfer
+starts and the WRAM with the power-on pattern after SetupComplete (the
+status stays "setup" until then), the save file's write-back size is
+answered from `RAM_SIZE`, config bit 2 selects the latency-hiding mode per
+cartridge type, and colors pass through the color correction until a table
+is loaded. The driver's own writes are redundant with these and still work.
 
 ## Building
 
