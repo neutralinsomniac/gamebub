@@ -525,8 +525,11 @@ object HandheldSnes {
  * the core observes single-cycle memory just like on the MiSTer.
  *
  * Memory map:
- *  - SDRAM: cartridge ROM (byte address 0, up to 16 MiB), loaded by the MCU,
- *           read through a 32 KiB 2-way line cache; the MiSTer save-state
+ *  - SDRAM: cartridge ROM file (byte address 0, up to 16 MiB plus a copier
+ *           header), loaded by the MCU as is and read through a 32 KiB
+ *           2-way line cache whose SDRAM requests are translated by
+ *           [[RomMirrorTable]] (mirrors of a non-power-of-two ROM, the
+ *           header offset); the MiSTer save-state
  *           program at 0xFF0000 (also loaded by the MCU); save-state slots
  *           (4 x 1 MiB) at 0x1000000, written and read by the core's
  *           save-state port and copied to / from the SD card by the MCU
@@ -997,6 +1000,13 @@ class HandheldSnes extends Module with Core {
     wramFillPending := false.B
   }
   val setupReady = regCoreSetup && !wramFillPending && !sramFill.io.busy
+  // ROM mirroring: the translation table is rebuilt from the file size at
+  // the end of the ROM transfer (FileWriteEnd is held busy meanwhile, about
+  // a thousand cycles). It reads the size from the command word directly,
+  // in the decode cycle.
+  val romMirror = Module(new RomMirrorTable)
+  romMirror.io.build := false.B
+  romMirror.io.fileSize := regCommandHost(2)
   /** Bytes of cartridge RAM to write back to the save file (the RAM size code, capped at the BSRAM). */
   val saveFileSize = Mux(ramSizeReg === 0.U, 0.U, ((1024.U(26.W) << ramSizeReg)(25, 0).min((256 * 1024).U)))
   // Host -> Core commands
@@ -1038,6 +1048,8 @@ class HandheldSnes extends Module with Core {
       } .elsewhen (command === HostV0.CommandFileWriteEnd.U) {
         when (fileId === 0.U) {
           romFileSize := fileSize
+          romMirror.io.build := true.B
+          commandHostState := CommandState.busy
         } .elsewhen (fileId === 2.U) {
           statesFileSize := fileSize
         }
@@ -1055,8 +1067,9 @@ class HandheldSnes extends Module with Core {
         commandHostState := CommandState.error
       }
     } .elsewhen (commandHostState === CommandState.busy) {
-      // FileWriteStart of a file bound for the SRAM: wait for the fill engine.
-      when (!sramFill.io.busy) {
+      // FileWriteStart of a file bound for the SRAM waits for the fill
+      // engine; FileWriteEnd of the ROM for the mirror table.
+      when (!sramFill.io.busy && !romMirror.io.busy) {
         commandHostState := CommandState.done
       }
     }
@@ -1176,6 +1189,13 @@ class HandheldSnes extends Module with Core {
   sdramArbiter.io.initiator(1) <> sdramMux.io.target
   sdramMux.io.main <> romCache.io.out
   sdramMux.io.side <> ssPort.io.mem
+  // The cache's requests (misses and prefetches, in the core's ROM address
+  // space) are translated to the file's layout in the SDRAM: mirrors of a
+  // non-power-of-two ROM and the copier header offset (see RomMirrorTable).
+  // The cache tags stay in the core's address space, so hits are untouched.
+  // (The table is instantiated with the command interface, which builds it.)
+  romMirror.io.in := romCache.io.out.address
+  sdramMux.io.main.address := romMirror.io.out
   val romBuffer = Module(new LineBuffer(addressWidth = 25, numLines = 16, wordsPerLine = 4))
   romCache.io.in <> romBuffer.io.out
   romBuffer.io.outLine := romCache.io.line
