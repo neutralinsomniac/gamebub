@@ -142,6 +142,8 @@ const STATUS_SS_SAVE_DONE: u32 = 1 << 8;
 /// A save / load is in progress: the core runs without focus until the
 /// program has finished (or the request is cancelled).
 const STATUS_SS_ACTIVE: u32 = 1 << 10;
+/// Bits 14:11: the slots the glue's scan found holding a state.
+const STATUS_SS_SLOT_VALID_SHIFT: u32 = 11;
 
 // SDRAM layout (byte addresses), see HandheldSnes.SdramMap.
 /// The MiSTer save-state program, fetched by the core at ROM address 0xFF0000.
@@ -844,13 +846,26 @@ impl Snes {
             && size_words << 2 <= SDRAM_SAVE_STATE_SLOT_SIZE)
     }
 
-    /// Find the slots the states file filled (once it is loaded).
+    /// Find the slots the states file filled (once it is loaded), and log
+    /// whether the glue's own scan (status bits 14:11) agrees.
     fn check_state_slots(&mut self) -> Result<(), SnesError> {
         let mut device = Device::lock();
+        let mut valid_bits = 0u32;
         for slot in 0..SAVE_STATE_SLOTS {
             let loaded = self.states_loaded >= (slot + 1) * SDRAM_SAVE_STATE_SLOT_SIZE;
             self.state_valid[slot as usize] =
                 loaded && Self::state_slot_valid(&mut device, slot)?;
+            valid_bits |= (self.state_valid[slot as usize] as u32) << slot;
+        }
+        let glue_bits = (device.fpga.read_u32(REG_STATUS)? >> STATUS_SS_SLOT_VALID_SHIFT) & 0xF;
+        if glue_bits == valid_bits {
+            log::info!("Glue save-state slot scan agrees: {:#x}", glue_bits);
+        } else {
+            log::warn!(
+                "Glue save-state slot scan differs: glue {:#x}, driver {:#x}",
+                glue_bits,
+                valid_bits
+            );
         }
         Ok(())
     }

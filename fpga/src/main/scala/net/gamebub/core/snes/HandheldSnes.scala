@@ -574,19 +574,24 @@ object HandheldSnes {
  * the save file with the cartridge RAM size. See the command interface
  * below.
  *  - 0x0014 save states: write bit 0 to request a save, bit 1 to request a
- *           load (of / into the slot in bits 3:2, which the write also sets);
- *           the request is handed to the core at its next clock and acted on
- *           at the game's next NMI (or IRQ). The core runs without focus from
- *           the request until the program has finished (status bit 10); a
- *           write with bits 1:0 clear cancels that. Reads back the slot in
- *           bits 3:2.
+ *           load (of / into the slot in bits 3:2, or in register 0x0018
+ *           when bit 4 is set; the write also sets the slot); the request
+ *           is handed to the core at its next clock and acted on at the
+ *           game's next NMI (or IRQ). The core runs without focus from the
+ *           request until the program has finished (status bit 10), at
+ *           most 5 s; a write with bits 1:0 clear cancels that. A load of
+ *           a slot holding no state (status bits 14:11) is ignored. Reads
+ *           back the slot in bits 3:2.
+ *  - 0x0018 the save-state slot for requests with bit 4 set (bits 1:0).
  *  - 0x0100 status (read-only): bit 0 HIGH_RES, bit 1 V224_MODE, bit 2 INTERLACE,
  *           bit 3 FIELD, bit 4 GSU_ACTIVE, bit 5 TURBO_ALLOW, bit 6 SS_AVAIL
  *           (the cartridge type supports save states), bit 7 SS_BUSY (the
  *           save-state program is running), bit 8 a save has completed
  *           since the last save request (its header was written), bit 9 a
  *           save / load request has not been taken by the core yet, bit 10
- *           a save / load is in progress (the core runs without focus)
+ *           a save / load is in progress (the core runs without focus),
+ *           bits 14:11 the slots holding a state (scanned when the states
+ *           file has been transferred and after every save)
  *  - With `DebugAudio`: 0x0020 bit 0 capture run (ring buffer records raw DSP
  *           samples while set; clear to freeze), 0x0024 (read-only) next write
  *           index, 0x1xxxxx the capture buffer, 4096 x 32-bit (left in bits
@@ -886,13 +891,15 @@ class HandheldSnes extends Module with Core {
   val statRegBsramConflicts = RegInit(0.U(32.W))
   /** Stall cycles while a save-state transfer to / from the SDRAM was outstanding. */
   val statRegStallsSaveState = RegInit(0.U(32.W))
-  val statusWire = Wire(UInt(11.W))
+  val statusWire = Wire(UInt(15.W))
   /** What the glue's ROM header analysis found (register 0x0030, read-only; see the command interface). */
   val romInfoWire = Wire(UInt(23.W))
   /** Save-state control register (0x0014): the write strobe and data, acted on below. */
   val ssControlWrite = WireDefault(false.B)
   val ssControlWriteData = WireDefault(0.U(32.W))
   val ssSlot = RegInit(0.U(2.W))
+  /** Slot register (0x0018): the slot a request with bit 4 set uses (a settings descriptor's "State Slot"). */
+  val ssSlotReg = RegInit(0.U(2.W))
   /** Debug: audio capture running (ring buffer of raw DSP samples). */
   val captureRunReg = RegInit(false.B)
   val captureIndexWire = Wire(UInt(CaptureIndexBits.W))
@@ -937,6 +944,7 @@ class HandheldSnes extends Module with Core {
           ssControlWrite := write
           ssControlWriteData := data
         })),
+      0x0018 -> RegisterMap.Entry.rw(ssSlotReg),
       0x0030 -> RegisterMap.Entry.r(romInfoWire),
       0x0100 -> RegisterMap.Entry.r(statusWire),
     ) ++ (if (debugAudio) Seq(
@@ -1052,6 +1060,18 @@ class HandheldSnes extends Module with Core {
   /** Setup is complete and the post-setup memory initialization has finished. */
   val setupReady = regCoreSetup && !wramFillPending && !sramFill.io.busy &&
     !ssProgramPending && !ssProgramLoader.io.busy
+  // Save-state slots: scanned when the states file has been transferred
+  // (FileWriteEnd 2, held busy; slots the file did not cover are cleared)
+  // and again after every save, so that a load of an empty slot can be
+  // refused and FileReadStart 2 can answer with the slots in use.
+  val ssSlotScanner = Module(new SaveStateSlotScanner)
+  val ssSlotScanFromFile = WireDefault(false.B)
+  val ssSlotRescan = WireDefault(false.B)
+  ssSlotScanner.io.start := ssSlotScanFromFile || ssSlotRescan
+  ssSlotScanner.io.loadedSize := Mux(ssSlotScanFromFile, regCommandHost(2)(22, 0), SaveStateSlotScanner.FullSize.U)
+  val ssSlotValid = ssSlotScanner.io.valid
+  /** Bytes of the states file to write back: whole slots up to the last one holding a state. */
+  val statesFileSizeUsed = (ssSlotScanner.io.usedSlots << log2Ceil(SaveStateSlotScanner.SlotSize))(22, 0)
   romInfoWire := Cat(
     romMirror.io.supported,
     romAnalyzer.io.result.unsupported,
@@ -1116,13 +1136,16 @@ class HandheldSnes extends Module with Core {
           commandHostState := CommandState.busy
         } .elsewhen (fileId === 2.U) {
           statesFileSize := fileSize
+          ssSlotScanFromFile := true.B
+          commandHostState := CommandState.busy
         }
       } .elsewhen (command === HostV0.CommandFileReadStart.U) {
-        // Word 0: the number of bytes to write back. The states file's
-        // (the slots in use) is not computed yet; the firmware driver
-        // overrides both.
+        // Word 0: the number of bytes to write back (the firmware driver
+        // overrides both with the same values).
         when (fileId === 1.U) {
           regCommandHost(0) := saveFileSize
+        } .elsewhen (fileId === 2.U) {
+          regCommandHost(0) := statesFileSizeUsed
         }
       } .elsewhen (command === HostV0.CommandFileReadEnd.U) {
         // Nothing to do.
@@ -1134,7 +1157,7 @@ class HandheldSnes extends Module with Core {
       // FileWriteStart of a file bound for the SRAM waits for the fill
       // engine; FileWriteEnd of the ROM for the mirror table and the
       // header analysis.
-      when (!sramFill.io.busy && !romMirror.io.busy && !romAnalyzer.io.busy) {
+      when (!sramFill.io.busy && !romMirror.io.busy && !romAnalyzer.io.busy && !ssSlotScanner.io.busy) {
         commandHostState := CommandState.done
       }
     }
@@ -1224,6 +1247,7 @@ class HandheldSnes extends Module with Core {
   core.io.SS_TOSD := true.B
 
   statusWire := Cat(
+    ssSlotValid,
     ssRunPending,
     ssSaveRequest || ssLoadRequest,
     ssSaveDone,
@@ -1254,26 +1278,26 @@ class HandheldSnes extends Module with Core {
   val sdramMux = Module(new PipelineMemoryLowPriorityMux(addressWidth = 25, dataWidth = 32))
   sdramArbiter.io.initiator(1) <> sdramMux.io.target
   sdramMux.io.main <> romCache.io.out
-  // The header analyzer and the save-state program loader borrow the side
-  // port while they run (during setup, when the save-state port is idle;
-  // never both at once); the file's layout, untranslated.
+  // The header analyzer, the save-state program loader and the slot
+  // scanner borrow the side port while they run (during setup, or right
+  // after a save, when the save-state port is idle; never two at once);
+  // the file's layout, untranslated.
   locally {
     val side = sdramMux.io.side
-    val analyzing = romAnalyzer.io.busy
-    val loading = ssProgramLoader.io.busy
-    val setup = analyzing || loading
-    val a = romAnalyzer.io.mem
-    val l = ssProgramLoader.io.mem
-    val s = ssPort.io.mem
-    side.enable := Mux(setup, Mux(analyzing, a.enable, l.enable), s.enable)
-    side.address := Mux(setup, Mux(analyzing, a.address, l.address), s.address)
-    side.isWrite := Mux(setup, Mux(analyzing, a.isWrite, l.isWrite), s.isWrite)
-    side.writeStrobe := Mux(setup, Mux(analyzing, a.writeStrobe, l.writeStrobe), s.writeStrobe)
-    side.dataWrite := Mux(setup, Mux(analyzing, a.dataWrite, l.dataWrite), s.dataWrite)
-    romAnalyzer.io.mem.ready := side.ready && analyzing
-    romAnalyzer.io.mem.dataRead := side.dataRead
-    ssProgramLoader.io.mem.ready := side.ready && loading && !analyzing
-    ssProgramLoader.io.mem.dataRead := side.dataRead
+    val engines = Seq(romAnalyzer.io.mem, ssProgramLoader.io.mem, ssSlotScanner.io.mem)
+    val busy = Seq(romAnalyzer.io.busy, ssProgramLoader.io.busy, ssSlotScanner.io.busy)
+    val setup = busy.reduce(_ || _)
+    def select[T <: Data](field: PipelineMemoryInterface => T): T =
+      PriorityMux(busy :+ true.B, (engines :+ ssPort.io.mem).map(field))
+    side.enable := select(_.enable)
+    side.address := select(_.address)
+    side.isWrite := select(_.isWrite)
+    side.writeStrobe := select(_.writeStrobe)
+    side.dataWrite := select(_.dataWrite)
+    for ((engine, i) <- engines.zipWithIndex) {
+      engine.ready := side.ready && busy(i) && !busy.take(i).foldLeft(false.B)(_ || _)
+      engine.dataRead := side.dataRead
+    }
     ssPort.io.mem.ready := side.ready && !setup
     ssPort.io.mem.dataRead := side.dataRead
   }
@@ -1419,25 +1443,49 @@ class HandheldSnes extends Module with Core {
     ssSaveRequest := false.B
     ssLoadRequest := false.B
   }
+  // The slot comes with the write (bits 3:2) or, with bit 4 set, from the
+  // slot register, so that a settings descriptor can request a save or a
+  // load with a fixed value. A load of a slot that holds no state is
+  // ignored (the firmware driver checks too); a save is remembered so the
+  // slots are rescanned when it has finished.
+  val ssRequestSlot = Mux(ssControlWriteData(4), ssSlotReg, ssControlWriteData(3, 2))
+  val ssSaveWrite = ssControlWrite && ssControlWriteData(0)
+  val ssLoadWrite = ssControlWrite && ssControlWriteData(1) && ssSlotValid(ssRequestSlot)
+  val ssLastWasSave = RegInit(false.B)
   when (ssControlWrite) {
     when (ssControlWriteData(0)) {
       ssSaveRequest := true.B
       ssSaveDone := false.B
+      ssLastWasSave := true.B
     }
-    when (ssControlWriteData(1)) {
+    when (ssLoadWrite) {
       ssLoadRequest := true.B
+      ssLastWasSave := false.B
     }
-    ssSlot := ssControlWriteData(3, 2)
+    ssSlot := ssRequestSlot
   }
   when (ssPort.io.headerWritten) {
     ssSaveDone := true.B
   }
+  // A game that waits with interrupts off never runs the program: give up
+  // after 5 s, as a cancelling write does.
+  val ssTimeout = RegInit(0.U(log2Ceil(5 * ClockSystemHz + 1).W))
+  val ssTimedOut = ssRunPending && ssTimeout === (5 * ClockSystemHz).U
+  ssTimeout := Mux(ssRunPending, ssTimeout + 1.U, 0.U)
   val regSsBusy = RegNext(core.io.SS_BUSY, false.B)
   when (regSsBusy && !core.io.SS_BUSY) {
     ssRunPending := false.B
+    when (ssLastWasSave) {
+      ssSlotRescan := true.B
+    }
+  }
+  when (ssTimedOut) {
+    ssSaveRequest := false.B
+    ssLoadRequest := false.B
+    ssRunPending := false.B
   }
   when (ssControlWrite) {
-    ssRunPending := ssControlWriteData(1, 0) =/= 0.U
+    ssRunPending := ssSaveWrite || ssLoadWrite
   }
   when (hostReset) {
     ssSaveRequest := false.B
