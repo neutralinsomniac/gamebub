@@ -727,7 +727,12 @@ class HandheldSnes extends Module with Core {
   // a port may take the SRAM in another's done cycle: the S-CPU's WRAM
   // traffic must not hold up the SA-1's BW-RAM reads.
   val sramArbiter = Module(new MemoryArbiter(addressWidth = 18, dataWidth = 16, n = 3, fair = true))
-  val sramHost = Wire(new MemoryInterface(addressWidth = 19, dataWidth = 16))
+  // The host sees the SRAM as a 32-bit window (the firmware transfers an
+  // external core's files as 32-bit words): SramHostAdapter splits each
+  // access into two 16-bit ones.
+  val sramHost = Wire(new MemoryInterface(addressWidth = 19, dataWidth = 32))
+  val sramHostAdapter = Module(new SramHostAdapter)
+  sramHostAdapter.io.host <> sramHost
   // The fill engine (memory initialization, see the command interface) takes
   // the host's port while it runs rather than a fourth arbiter port, to keep
   // the arbiter's target mux, which is on the core's critical path to the
@@ -736,15 +741,16 @@ class HandheldSnes extends Module with Core {
   val sramFill = Module(new SramFill())
   locally {
     val port = sramArbiter.io.initiator(0)
-    port.enable := Mux(sramFill.io.busy, sramFill.io.mem.enable, sramHost.enable)
-    port.write := Mux(sramFill.io.busy, sramFill.io.mem.write, sramHost.write)
-    port.address := Mux(sramFill.io.busy, sramFill.io.mem.address, sramHost.address >> 1) // the host is byte addressed
-    port.dataWrite := Mux(sramFill.io.busy, sramFill.io.mem.dataWrite, sramHost.dataWrite)
-    port.writeStrobe := Mux(sramFill.io.busy, sramFill.io.mem.writeStrobe, sramHost.writeStrobe)
+    val host = sramHostAdapter.io.sram
+    port.enable := Mux(sramFill.io.busy, sramFill.io.mem.enable, host.enable)
+    port.write := Mux(sramFill.io.busy, sramFill.io.mem.write, host.write)
+    port.address := Mux(sramFill.io.busy, sramFill.io.mem.address, host.address)
+    port.dataWrite := Mux(sramFill.io.busy, sramFill.io.mem.dataWrite, host.dataWrite)
+    port.writeStrobe := Mux(sramFill.io.busy, sramFill.io.mem.writeStrobe, host.writeStrobe)
     sramFill.io.mem.done := port.done && sramFill.io.busy
     sramFill.io.mem.dataRead := port.dataRead
-    sramHost.done := port.done && !sramFill.io.busy
-    sramHost.dataRead := port.dataRead
+    host.done := port.done && !sramFill.io.busy
+    host.dataRead := port.dataRead
   }
   // SDRAM: the host and the ROM cache (below).
   val sdramArbiter = Module(new PipelineMemoryArbiter(addressWidth = 25, dataWidth = 32, n = 2))
@@ -759,8 +765,10 @@ class HandheldSnes extends Module with Core {
   //////////////////////////////////
   // Host registers
   //////////////////////////////////
-  // N.B. the last field is bit 0 of the register.
-  val configReg = RegInit(0.U.asTypeOf(new Bundle {
+  // N.B. the last field is bit 0 of the register. Reset value: both halves
+  // of the ROM miss path on (bits 11 and 12), which a settings descriptor
+  // does not touch; the firmware driver writes the whole register anyway.
+  val configReg = RegInit(0x1800.U(16.W).asTypeOf(new Bundle {
     /**
      * Bit 15: region from the ROM header (`headerPal`, set by the glue's
      * header analysis) instead of bit 0. Lets a settings descriptor offer

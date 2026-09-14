@@ -1,0 +1,70 @@
+{
+  "settings": [
+    {
+      "id": 0,
+      "label": "Reset Core",
+      "address": "0x2000",
+      "type": "action",
+      "value": 1
+    },
+    {
+      "id": 6,
+      "label": "Save State",
+      "address": "0x14",
+      "type": "action",
+      "value": "0x11"
+    },
+    {
+      "id": 7,
+      "label": "Load State",
+      "address": "0x14",
+      "type": "action",
+      "value": "0x12"
+    },
+    {
+      "id": 8,
+      "label": "State Slot",
+      "address": "0x18",
+      "mask": "0xFFFFFFFC",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "1", "value": 0 },
+        { "label": "2", "value": 1 },
+        { "label": "3", "value": 2 },
+        { "label": "4", "value": 3 }
+      ]
+    },
+    {
+      "id": 1,
+      "label": "Region",
+      "address": "0x0",
+      "mask": "0xFFFF7FFE",
+      "default": "0x8000",
+      "type": "list",
+      "items": [
+        { "label": "Auto", "value": "0x8000" },
+        { "label": "NTSC", "value": 0 },
+        { "label": "PAL", "value": 1 }
+      ]
+    },
+    {
+      "id": 2,
+      "label": "Pseudo Transparency",
+      "address": "0x0",
+      "mask": "0xFFFFFFFD",
+      "default": 0,
+      "type": "checkbox",
+      "value": 2
+    },
+    {
+      "id": 3,
+      "label": "Memory Latency Hiding",
+      "address": "0x0",
+      "mask": "0xFFFFFFFB",
+      "default": 4,
+      "type": "checkbox",
+      "value": 4
+    }
+  ]
+}
