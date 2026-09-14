@@ -327,8 +327,11 @@ the RTL checks before it lets a load proceed. Plain cartridges, DSP-n, CX4,
 Super FX and SA-1 are supported (`SS_AVAIL`); S-DD1 is not.
 
 On Game Bub the program is fetched from the SDRAM like any ROM data (the core
-addresses it at `0xFF0000`, above any real ROM; the firmware writes it there
-after the ROM), and the 64-bit port is adapted to the SDRAM by
+addresses it at `0xFF0000`, above any real ROM; the glue writes it there
+after SetupComplete from a copy embedded in the bitstream,
+`SaveStateProgramLoader`, unless the padded ROM reaches that address, which
+also clears `SS_AVAIL`; the firmware driver writes it too, redundantly), and
+the 64-bit port is adapted to the SDRAM by
 `snes.SaveStateMemoryPort` (two 32-bit accesses per word, little-endian) with
 the slots at byte address `0x1000000`. The SDRAM is shared with the ROM cache
 through `lib.mem.PipelineMemoryLowPriorityMux`, which gives the save-state
@@ -367,7 +370,7 @@ without a 512-byte copier header) are accepted. The bitstream is expected at
 `system/snes.bit.hs` on the SD card. Non-power-of-two ROMs are mirrored up to
 the next power of two as they load. The core's settings (pause menu,
 "Settings") are "Reset Core", "Save State" / "Load State" / "State Slot" (the
-save states described above; the firmware embeds the 65816 program),
+save states described above; the glue embeds the 65816 program),
 "Region" (auto-detected from the header, or forced), "Pseudo Transparency"
 (the core's `BLEND`), "Memory Latency Hiding" and two debug switches for the
 ROM miss path and the BSRAM cache (config register bits); they are not
