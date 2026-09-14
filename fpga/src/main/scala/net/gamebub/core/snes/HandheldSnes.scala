@@ -554,14 +554,24 @@ object HandheldSnes {
  *           full scale, bit 5 play the capture buffer through the audio path,
  *           bit 6 capture sample periods (ungated clocks) instead of samples.
  *  - 0x0004 ROM_TYPE, 0x0008 ROM_MASK, 0x000C RAM_MASK, 0x0010 RAM_SIZE
- *           (the MiSTer core's ROM header encoding; see the firmware)
+ *           (the MiSTer core's ROM header encoding; see the firmware).
+ *           Written by the glue's header analysis at the end of the ROM
+ *           transfer; the firmware driver may overwrite them.
+ *  - 0x0030 (read-only) the header analysis: bits 7:0 ROM_TYPE, 11:8 the
+ *           ROM size code, 15:12 the RAM size code, 17:16 which header
+ *           (0 LoROM, 1 HiROM, 2 ExHiROM), bit 18 PAL, bit 19 copier header,
+ *           bit 20 a header was found, bit 21 unsupported cartridge, bit 22
+ *           the ROM size can be mirrored by the address translation
  *
  * Framework commands (0xF0xx_xxxx): the file commands carry the file id and,
  * for FileWriteEnd, the size; the glue records the ROM and states file
- * sizes, fills the BSRAM with 0xFF when the ROM transfer starts and the
- * WRAM with its power-on pattern after SetupComplete (reporting the "setup"
- * status until that is done), and answers FileReadStart of the save file
- * with the cartridge RAM size. See the command interface below.
+ * sizes, analyzes the ROM header and builds the mirror table at the end of
+ * the ROM transfer (held busy meanwhile), fills the BSRAM with 0xFF when
+ * the ROM transfer starts and the WRAM with its power-on pattern after
+ * SetupComplete (reporting the "setup" status until that is done; an
+ * unsupported cartridge fails SetupComplete), and answers FileReadStart of
+ * the save file with the cartridge RAM size. See the command interface
+ * below.
  *  - 0x0014 save states: write bit 0 to request a save, bit 1 to request a
  *           load (of / into the slot in bits 3:2, which the write also sets);
  *           the request is handed to the core at its next clock and acted on
@@ -697,8 +707,8 @@ class HandheldSnes extends Module with Core {
   val romFileSize = RegInit(0.U(25.W))
   val statesFileSize = RegInit(0.U(23.W))
   /**
-   * The ROM header says PAL. Written by the glue's header analysis (to
-   * come); used when config bit 15 selects the automatic region.
+   * The ROM header says PAL. Written by the glue's header analysis; used
+   * when config bit 15 selects the automatic region.
    */
   val headerPal = RegInit(false.B)
   /** The WRAM initialization requested by SetupComplete has not started yet (the fill engine was busy). */
@@ -876,6 +886,8 @@ class HandheldSnes extends Module with Core {
   /** Stall cycles while a save-state transfer to / from the SDRAM was outstanding. */
   val statRegStallsSaveState = RegInit(0.U(32.W))
   val statusWire = Wire(UInt(11.W))
+  /** What the glue's ROM header analysis found (register 0x0030, read-only; see the command interface). */
+  val romInfoWire = Wire(UInt(23.W))
   /** Save-state control register (0x0014): the write strobe and data, acted on below. */
   val ssControlWrite = WireDefault(false.B)
   val ssControlWriteData = WireDefault(0.U(32.W))
@@ -924,6 +936,7 @@ class HandheldSnes extends Module with Core {
           ssControlWrite := write
           ssControlWriteData := data
         })),
+      0x0030 -> RegisterMap.Entry.r(romInfoWire),
       0x0100 -> RegisterMap.Entry.r(statusWire),
     ) ++ (if (debugAudio) Seq(
       0x0020 -> RegisterMap.Entry.rw(captureRunReg),
@@ -1007,6 +1020,35 @@ class HandheldSnes extends Module with Core {
   val romMirror = Module(new RomMirrorTable)
   romMirror.io.build := false.B
   romMirror.io.fileSize := regCommandHost(2)
+  // ROM header analysis, at the same time (it reads the file through the
+  // save-state port's side of the SDRAM mux, see the ROM section). When it
+  // finishes, the core's ROM registers take its results; the firmware
+  // driver's own writes, which come later, agree (it logs a mismatch).
+  val romAnalyzer = Module(new RomHeaderAnalyzer)
+  romAnalyzer.io.start := false.B
+  romAnalyzer.io.fileSize := regCommandHost(2)
+  /** The analysis found the cartridge unsupported: SetupComplete fails. */
+  val romUnsupported = RegInit(false.B)
+  when (RegNext(romAnalyzer.io.busy, false.B) && !romAnalyzer.io.busy) {
+    val r = romAnalyzer.io.result
+    romTypeReg := r.romType
+    romMaskReg := ((1024.U(25.W) << r.romSizeCode)(24, 0) - 1.U)(23, 0)
+    ramMaskReg := Mux(r.ramSizeCode === 0.U, 0.U, ((1024.U(25.W) << r.ramSizeCode)(24, 0) - 1.U)(23, 0))
+    ramSizeReg := r.ramSizeCode
+    headerPal := r.pal
+    romUnsupported := r.unsupported
+  }
+  romInfoWire := Cat(
+    romMirror.io.supported,
+    romAnalyzer.io.result.unsupported,
+    romAnalyzer.io.result.headerFound,
+    romAnalyzer.io.result.copierHeader,
+    romAnalyzer.io.result.pal,
+    romAnalyzer.io.result.headerIndex,
+    romAnalyzer.io.result.ramSizeCode,
+    romAnalyzer.io.result.romSizeCode,
+    romAnalyzer.io.result.romType,
+  )
   /** Bytes of cartridge RAM to write back to the save file (the RAM size code, capped at the BSRAM). */
   val saveFileSize = Mux(ramSizeReg === 0.U, 0.U, ((1024.U(26.W) << ramSizeReg)(25, 0).min((256 * 1024).U)))
   // Host -> Core commands
@@ -1030,8 +1072,14 @@ class HandheldSnes extends Module with Core {
           regCommandHost(0) := HostV0.StatusSetup.U
         }
       } .elsewhen (command === HostV0.CommandSetupComplete.U) {
-        regCoreSetup := true.B
-        wramFillPending := true.B
+        // An unsupported cartridge (per the header analysis) fails the
+        // setup; the firmware reports a core error instead of running it.
+        when (romUnsupported) {
+          commandHostState := CommandState.error
+        } .otherwise {
+          regCoreSetup := true.B
+          wramFillPending := true.B
+        }
       } .elsewhen (command === HostV0.CommandCoreRun.U) {
         regCoreReset := false.B
       } .elsewhen (command === HostV0.CommandCoreHalt.U) {
@@ -1049,6 +1097,7 @@ class HandheldSnes extends Module with Core {
         when (fileId === 0.U) {
           romFileSize := fileSize
           romMirror.io.build := true.B
+          romAnalyzer.io.start := true.B
           commandHostState := CommandState.busy
         } .elsewhen (fileId === 2.U) {
           statesFileSize := fileSize
@@ -1068,8 +1117,9 @@ class HandheldSnes extends Module with Core {
       }
     } .elsewhen (commandHostState === CommandState.busy) {
       // FileWriteStart of a file bound for the SRAM waits for the fill
-      // engine; FileWriteEnd of the ROM for the mirror table.
-      when (!sramFill.io.busy && !romMirror.io.busy) {
+      // engine; FileWriteEnd of the ROM for the mirror table and the
+      // header analysis.
+      when (!sramFill.io.busy && !romMirror.io.busy && !romAnalyzer.io.busy) {
         commandHostState := CommandState.done
       }
     }
@@ -1188,7 +1238,21 @@ class HandheldSnes extends Module with Core {
   val sdramMux = Module(new PipelineMemoryLowPriorityMux(addressWidth = 25, dataWidth = 32))
   sdramArbiter.io.initiator(1) <> sdramMux.io.target
   sdramMux.io.main <> romCache.io.out
-  sdramMux.io.side <> ssPort.io.mem
+  // The header analyzer borrows the side port while it runs (during setup,
+  // when the save-state port is idle); the file's layout, untranslated.
+  locally {
+    val side = sdramMux.io.side
+    val analyzing = romAnalyzer.io.busy
+    side.enable := Mux(analyzing, romAnalyzer.io.mem.enable, ssPort.io.mem.enable)
+    side.address := Mux(analyzing, romAnalyzer.io.mem.address, ssPort.io.mem.address)
+    side.isWrite := Mux(analyzing, romAnalyzer.io.mem.isWrite, ssPort.io.mem.isWrite)
+    side.writeStrobe := Mux(analyzing, romAnalyzer.io.mem.writeStrobe, ssPort.io.mem.writeStrobe)
+    side.dataWrite := Mux(analyzing, romAnalyzer.io.mem.dataWrite, ssPort.io.mem.dataWrite)
+    romAnalyzer.io.mem.ready := side.ready && analyzing
+    romAnalyzer.io.mem.dataRead := side.dataRead
+    ssPort.io.mem.ready := side.ready && !analyzing
+    ssPort.io.mem.dataRead := side.dataRead
+  }
   // The cache's requests (misses and prefetches, in the core's ROM address
   // space) are translated to the file's layout in the SDRAM: mirrors of a
   // non-power-of-two ROM and the copier header offset (see RomMirrorTable).
