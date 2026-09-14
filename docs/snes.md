@@ -100,7 +100,7 @@ write reached it).
 
 | Memory | Where | Notes |
 | --- | --- | --- |
-| Cartridge ROM (<= 16 MiB) | SDRAM, byte 0 | Loaded by the MCU; non-power-of-two ROMs are mirrored up to the next power of two. Read through a 32 KiB 2-way cache with 16-byte lines and next-line prefetch (`LineReadCache`), fronted by a 16-line register buffer that answers hits in the request cycle and pulls the next line in the background (`LineBuffer`) |
+| Cartridge ROM (<= 16 MiB) | SDRAM, byte 0 | The ROM file as loaded by the MCU (a copier header included). Read through a 32 KiB 2-way cache with 16-byte lines and next-line prefetch (`LineReadCache`), fronted by a 16-line register buffer that answers hits in the request cycle and pulls the next line in the background (`LineBuffer`); the cache's SDRAM requests go through `RomMirrorTable`, a 512-entry table of 32 KiB blocks (distributed RAM) that mirrors a non-power-of-two ROM up to the next power of two the way a cartridge's partial address decoding does, and adds the copier header offset. The table is rebuilt from the file size at the end of the ROM transfer. (The firmware driver still mirrors by duplicating data too, which is redundant; a ROM size that is not a multiple of 32 KiB gets an identity table and relies on it.) |
 | BSRAM (save RAM, <= 256 KiB) | SRAM, byte 0x00000 | Filled with 0xFF by the glue when the ROM transfer starts, then loaded/saved by the MCU as `<rom>.srm`; 2-way 2 KiB word cache in the bridge |
 | WRAM (128 KiB) | SRAM, byte 0x40000 | Initialized by the glue with the MiSTer power-on pattern after SetupComplete (`SramFill`) |
 | VRAM (2 x 32 KiB) | block RAM | |

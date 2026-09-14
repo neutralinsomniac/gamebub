@@ -11,9 +11,12 @@ and `ColorCorrection.scala` (items 1, 4, 5 and 8: four command words with a
 busy state, file sizes latched, BSRAM / WRAM fills by an `SramFill` engine on
 the host's SRAM port, save size answered on FileReadStart, config bit 2
 expanded per cartridge type, config bit 15 = region from the header, colors
-pass through the color correction until a table is loaded). Verified by
-`root.compile`, the `SramFillSpec` unit test and the rev4 elaboration; not
-built or hardware-tested. Items 2, 3, 6 and 7 are not started.
+pass through the color correction until a table is loaded). Built and
+verified on hardware with the existing firmware (Lufia, Yoshi's Island);
+committed as "fpga: Let the SNES glue do the driver's memory setup".
+Sequencing step 2 (item 3, `RomMirrorTable`) is implemented and unit-tested
+(`RomMirrorTableSpec`), with the firmware driver's own mirroring left in
+place for now. Items 2, 6 and 7 are not started.
 
 Findings from that step, folded into the text below:
 
@@ -151,34 +154,36 @@ Keep the existing host registers 0x0004..0x0010 writable so the built-in
 driver and debugging over SPI keep working; the analyzer writes them once at
 `SETUP_COMPLETE` and later host writes override.
 
-### 3. Mirroring: block translation table on the ROM miss path
+### 3. Mirroring: block translation table on the ROM miss path (done)
 
-Replace data duplication with address translation. The core's ROM address
-space is 16 MiB; a table of 4096 entries indexed by ROM address bits 23:12
-holds the 12-bit source block for each 4 KiB block. Entry `b` is
-`mirror_address(b << 12, romSize) >> 12` for `b << 12 >= romSize` and `b`
-otherwise. The iterative `mirror_address` runs once per block in a small
-FSM at `FILE_WRITE_END` (4096 iterations of at most 24 steps, under 100k
-cycles).
+Address translation instead of data duplication: `RomMirrorTable`. The
+core's ROM address space is 16 MiB; a table of 512 entries indexed by ROM
+address bits 23:15 holds the 9-bit file block for each 32 KiB block (block
+RAM was 96 % used, so distributed RAM, which also reads asynchronously;
+every real dump is a multiple of 32 KiB). Entry `b` is
+`mirror_address(b << 15, romSize) >> 15` for `romSize <= b << 15 < padded`
+and `b` otherwise. The iterative `mirror_address` runs per block in a small
+FSM at `FILE_WRITE_END` of the ROM, which is held busy meanwhile (about a
+thousand cycles); the table is identity after reset.
 
-The miss path then forms the SDRAM address as
-`{table[addr[23:12]], addr[11:0]} + romOffset`. Look the table up in the
-cycle the miss is detected (in parallel with the tag compare) so it adds
-no latency; the `+512` offset is a 25-bit add on the issue side, not on the
-hit path. Verify timing on `core_snes.xdc` after the change; if the add
-hurts, register it (the miss latency is many cycles anyway).
+The translation sits on the cache's request path (`romCache.io.out` to the
+low-priority mux), so cache tags stay in the core's address space and hits
+are untouched: `{table[addr[23:15]] + carry, (addr[14:0] + romOffset)[14:0]}`
+where `romOffset` is 512 when the file size has bit 9 set (copier header)
+and `carry` is the 15-bit add's carry-out (the file is linear, so the next
+file block follows). Each entry also carries a flag "within the padded ROM":
+blocks above it (the save-state program at 0xFF0000, written to the SDRAM
+directly) get neither offset nor carry, and bit 24 (save-state slots) passes
+through. The cache's
+eager issue is combinational from its input, so the lookup adds a
+distributed-RAM read plus a 9-bit increment to that path; to be checked in
+the routed timing of the next build.
 
-ROM sizes that are not a multiple of 4 KiB are refused (the driver refused
-sizes that are not a multiple of 4 bytes; real dumps are multiples of
-32 KiB). Removing `mirror_segments`/`mirror_chunk` from the driver later is
-optional; the table also serves the built-in path if the driver simply stops
-mirroring.
-
-Fallback if the translation proves awkward in the cache: a copy engine that
-walks the mirror segments and duplicates data, as the driver does. It needs
-the size at the start of the transfer to run concurrently with it, which the
-framework does not provide, so it would have to run after `FILE_WRITE_END`
-and can exceed the 10 ms budget for large ROMs. Prefer the table.
+A ROM size that is not a multiple of 32 KiB gets an identity table and
+`supported` low; the firmware driver still duplicates data for such ROMs
+today, and the analyzer (item 2) will refuse them once the driver is gone.
+A 16 MiB ROM with a copier header would overflow into the save-state slots
+and is likewise for the analyzer to refuse.
 
 ### 4. Config register: derive the stall mode and region in hardware
 
