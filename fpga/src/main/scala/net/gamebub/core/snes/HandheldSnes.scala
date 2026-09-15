@@ -88,8 +88,16 @@ object HandheldSnes {
 
   /** NTSC frame: 262 lines of 1364 master clocks. */
   val MasterClocksPerFrame = 262 * 1364
-  /** PAL frame: 312 lines (the core keeps the NTSC master clock, so 50.5 Hz). */
+  /** PAL frame: 312 lines of 1364 master clocks (50.0 Hz at `MasterClockPalHz`). */
   val MasterClocksPerFramePal = 312 * 1364
+  /** The NTSC master-clock rate, as the core's DSP assumes it (`MCLK_NTSC_FREQ`). */
+  val MasterClockNtscHz = 21477270
+  /**
+   * The PAL master-clock rate (`MCLK_PAL_FREQ`). The physical clock stays
+   * at the NTSC rate; the core's clock enable withholds edges so that the
+   * core sees this rate on average (see `palPace`).
+   */
+  val MasterClockPalHz = 21281370
   /** Output frame height: the PPU's 224 or 239 visible lines, padded like a TV would show them. */
   val OutputLines = 240
 
@@ -622,9 +630,9 @@ class HandheldSnes extends Module with Core {
   private val debugAudio = DebugAudio
 
   /**
-   * NTSC frame period. A PAL game's 312-line frame is 19 % longer
-   * (`MasterClocksPerFramePal`); the display drivers follow a slower source
-   * with their vertical front porch.
+   * NTSC frame period. A PAL game's 312-line frame at the PAL master-clock
+   * rate is 20 % longer (`MasterClocksPerFramePal`, `MasterClockPalHz`); the
+   * display drivers follow a slower source with their vertical front porch.
    */
   val FramePeriod = MasterClocksPerFrame.toDouble / ClockSystemHz
   /** Display clock: the lowest the revision's display driver accepts, like the other cores. */
@@ -1211,7 +1219,9 @@ class HandheldSnes extends Module with Core {
   core.io.ROM_MASK := romMaskReg
   core.io.RAM_MASK := ramMaskReg
   core.io.RAM_SIZE := ramSizeReg
-  core.io.PAL := Mux(configReg.regionAuto, headerPal, configReg.pal)
+  /** The region the core runs at: the ROM header's, or the setting's. */
+  val regionPal = Mux(configReg.regionAuto, headerPal, configReg.pal)
+  core.io.PAL := regionPal
   core.io.BLEND := configReg.blend
 
   //////////////////////////////////
@@ -1442,7 +1452,30 @@ class HandheldSnes extends Module with Core {
   // the gated domain) and the PPU counters reach the release point: the
   // firmware halts and runs the core from the pause menu, without focus.
   // And it runs, without focus, for a save-state request (`ssRunPending`).
-  coreRun := (regCoreFocus || hostReset || ssRunPending) && !stall
+  val coreWant = (regCoreFocus || hostReset || ssRunPending) && !stall
+  // PAL master clock. A PAL SNES runs its master clock at 21.281 MHz, 0.9 %
+  // below NTSC (the MiSTer retunes its PLL). Here the physical clock stays
+  // at the NTSC rate and the core's clock enable withholds one edge in ~110,
+  // paced by a phase accumulator over the cycles the core would otherwise
+  // run, so the core sees exactly `MasterClockPalHz` on average: a 50.0 Hz
+  // frame and 32 kHz DSP samples. The 47 ns hole is far shorter than a
+  // memory stall, and everything outside the core is qualified with `tick`.
+  // The accumulator restarts whenever the region is NTSC, so a region change
+  // starts it from zero.
+  val palPace = RegInit(0.U(25.W))
+  val palSkip = WireDefault(false.B)
+  when (!regionPal) {
+    palPace := 0.U
+  } .elsewhen (coreWant) {
+    val sum = palPace + (MasterClockNtscHz - MasterClockPalHz).U
+    when (sum >= MasterClockNtscHz.U) {
+      palPace := sum - MasterClockNtscHz.U
+      palSkip := true.B
+    } .otherwise {
+      palPace := sum
+    }
+  }
+  coreRun := coreWant && !palSkip
   // Save-state requests: cleared once the core has sampled them, set by a
   // register write (which wins in the same cycle), dropped by a host reset.
   when (coreRun) {
@@ -1502,7 +1535,7 @@ class HandheldSnes extends Module with Core {
   when (regCoreFocus) {
     when (coreRun) {
       statRegCycles := statRegCycles + 1.U
-    } .otherwise {
+    } .elsewhen (!palSkip) {
       statRegStalls := statRegStalls + 1.U
       when (stallRom) { statRegStallsRom := statRegStallsRom + 1.U }
       when (stallWram) { statRegStallsWram := statRegStallsWram + 1.U }
@@ -1759,16 +1792,16 @@ class HandheldSnes extends Module with Core {
   // enables from the nominal master clock, one sample per 128 enables) that
   // runs on the same ticks from the same reset, so it stays phase locked to
   // the DSP and sees every sample exactly once. The DSP divides the PAL
-  // master-clock rate (21.281 MHz) when the region is PAL, although the core
-  // is clocked at the NTSC rate either way, so the replica follows the same
-  // live PAL input; a fixed NTSC modulus would drift 0.9 % and skip a sample
-  // every ~110 in PAL mode.
+  // master-clock rate (21.281 MHz) when the region is PAL (which the core's
+  // clock enable then delivers on average, see `palPace`), so the replica
+  // follows the same live PAL input; a fixed NTSC modulus would drift 0.9 %
+  // and skip a sample every ~110 in PAL mode.
   val sampleCeSum = RegInit(0.U(25.W))
   val sampleCe = WireDefault(false.B)
   val sampleCeCount = RegInit(0.U(7.W))
   val sampleStrobe = WireDefault(false.B)
   /** The DSP's `MCLK_FREQ`: `MCLK_PAL_FREQ` or `MCLK_NTSC_FREQ` in `DSP_PKG`. */
-  val sampleCeModulus = Mux(core.io.PAL, 21281370.U(25.W), 21477270.U(25.W))
+  val sampleCeModulus = Mux(core.io.PAL, MasterClockPalHz.U(25.W), MasterClockNtscHz.U(25.W))
   when (!core.io.RESET_N) {
     sampleCeSum := 0.U
     sampleCeCount := 0.U
@@ -1789,7 +1822,7 @@ class HandheldSnes extends Module with Core {
   // the strobe was derived from.
   val sampleValid = RegNext(sampleStrobe, false.B)
 
-  val audioAdapter = Module(new AudioRateAdapter(nominalPeriod = 128.0 * 21477270 / 4096000, fifoDepth = 256, gainShift = 12))
+  val audioAdapter = Module(new AudioRateAdapter(nominalPeriod = 128.0 * MasterClockNtscHz / 4096000, fifoDepth = 256, gainShift = 12))
   // Debug playback of the capture buffer (see below) feeds the adapter
   // instead of the core.
   val playSample = RegInit(0.U(32.W))
