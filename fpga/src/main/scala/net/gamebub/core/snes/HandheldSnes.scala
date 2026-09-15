@@ -1756,20 +1756,26 @@ class HandheldSnes extends Module with Core {
   // rate-servo'd, interpolating reader on the ungated clock.
   //
   // Sample boundaries come from a replica of the DSP's CEGen (4.096 MHz
-  // enables from the 21.477 MHz nominal clock, one sample per 128 enables)
-  // that runs on the same ticks from the same reset, so it stays phase locked
-  // to the DSP and sees every sample exactly once.
+  // enables from the nominal master clock, one sample per 128 enables) that
+  // runs on the same ticks from the same reset, so it stays phase locked to
+  // the DSP and sees every sample exactly once. The DSP divides the PAL
+  // master-clock rate (21.281 MHz) when the region is PAL, although the core
+  // is clocked at the NTSC rate either way, so the replica follows the same
+  // live PAL input; a fixed NTSC modulus would drift 0.9 % and skip a sample
+  // every ~110 in PAL mode.
   val sampleCeSum = RegInit(0.U(25.W))
   val sampleCe = WireDefault(false.B)
   val sampleCeCount = RegInit(0.U(7.W))
   val sampleStrobe = WireDefault(false.B)
+  /** The DSP's `MCLK_FREQ`: `MCLK_PAL_FREQ` or `MCLK_NTSC_FREQ` in `DSP_PKG`. */
+  val sampleCeModulus = Mux(core.io.PAL, 21281370.U(25.W), 21477270.U(25.W))
   when (!core.io.RESET_N) {
     sampleCeSum := 0.U
     sampleCeCount := 0.U
   } .elsewhen (tick) {
     val sum = sampleCeSum + 4096000.U
-    when (sum >= 21477270.U) {
-      sampleCeSum := sum - 21477270.U
+    when (sum >= sampleCeModulus) {
+      sampleCeSum := sum - sampleCeModulus
       sampleCe := true.B
     } .otherwise {
       sampleCeSum := sum
