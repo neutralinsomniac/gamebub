@@ -274,10 +274,13 @@ bit 2) to rows 0-238, matching where a TV would show them, with black padding
 rows written by the glue during the vertical blank so a mode switch leaves no
 stale rows (`HandheldSnes` generates its own `hblank` / `vblank` for the
 framework's row counter). Interlace is shown as one frame per field (bob
-deinterlacing at half vertical resolution). PAL games run at the NTSC master
-clock (312 lines, 50.5 Hz); the display drivers follow a slower source with
-their vertical front porch (the rev4 ILI9806E driver can stretch a frame by
-31 %, enough for PAL; the rev1-3 drivers cannot and refresh unsynchronized).
+deinterlacing at half vertical resolution). PAL games see the PAL master-clock
+rate (21.281 MHz, 312 lines, 50.0 Hz): the physical clock stays at the NTSC
+rate and the core's clock enable withholds one edge in ~110, paced by a phase
+accumulator, so the average rate is exact (the MiSTer retunes its PLL
+instead). The display drivers follow a slower source with their vertical
+front porch (the rev4 ILI9806E driver can stretch a frame by 31 %, enough for
+PAL; the rev1-3 drivers cannot and refresh unsynchronized).
 PAL is untested on the LCD; if the panel dislikes 50 Hz, frame-rate
 conversion is the fallback.
 
