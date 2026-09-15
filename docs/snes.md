@@ -288,9 +288,11 @@ activity within the frame), the samples arrive with jitter in real time;
 sampling them directly at the DAC rate frequency-modulates the audio at the
 frame rate, audible as a fast warble on sustained notes (diagnosed on Chrono
 Trigger's flute). The glue re-times them: a phase-locked replica of the DSP's
-clock-enable generator marks each new sample, which is pushed into a FIFO and
-read out on the ungated clock by a rate-servo'd, linearly interpolating reader
-(`lib.audio.AudioRateAdapter`, ~4 ms latency, ~50 ms loop time constant).
+clock-enable generator (dividing the PAL or NTSC master-clock rate as the DSP
+does, following the same `PAL` input) marks each new sample, which is pushed
+into a FIFO and read out on the ungated clock by a rate-servo'd, linearly
+interpolating reader (`lib.audio.AudioRateAdapter`, ~4 ms latency, ~50 ms
+loop time constant).
 
 Debug facilities, synthesized when `HandheldSnes.DebugAudio` is set (config
 register bits 3-6, registers 0x0020 / 0x0024 and a capture buffer at host
