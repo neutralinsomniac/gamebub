@@ -364,7 +364,7 @@ on "Exit Core" or power-off, not when it is taken.
 ### Firmware
 
 The SNES is an external core: the stock firmware runs it from
-`/sdcard/cores/Game-Bub.SNES/`, which holds the descriptors in
+`/sdcard/cores/jeremy.SNES/`, which holds the descriptors in
 `fpga/cores/snes/` (`core.json`; `files.json`: the ROM as `.sfc` / `.smc`,
 the `.srm` save file and the `.ss` states file next to it, with their SDRAM /
 SRAM windows and transfer speeds; `settings.json`: "Reset Core", "Save State"

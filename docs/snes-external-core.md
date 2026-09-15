@@ -25,7 +25,7 @@ the hardware timeout, load gating) is built, hardware-validated (the slot
 scans agree) and committed. The packaging is done and verified on hardware
 (both the built-in core and the package side by side: games, saves,
 states), and the built-in driver is deleted: the SNES ships as
-`cores/Game-Bub.SNES/` on the stock firmware. The plan is complete; this
+`cores/jeremy.SNES/` on the stock firmware. The plan is complete; this
 document stays as the record of the design and the framework facts.
 
 Findings from that step, folded into the text below:
