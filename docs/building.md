@@ -160,7 +160,7 @@ system/
   gba.bit.hs
   gba.bios.bin
 cores/
-  Game-Bub.SNES/
+  jeremy.SNES/
     core.json
     files.json
     settings.json
@@ -170,7 +170,7 @@ roms/
 
 * `boot.bit.hs`, `gameboy.bit.hs` and `gba.bit.hs` are the compressed
   bitstreams built previously.
-* `cores/Game-Bub.SNES/` is the SNES, an external core (optional): assemble
+* `cores/jeremy.SNES/` is the SNES, an external core (optional): assemble
   it from its build with, in `fpga/`,
   `python3 scripts/package_core.py --name snes --build-root build/snes --out <sdcard>`,
   which copies the descriptors from `fpga/cores/snes/` and the uncompressed
