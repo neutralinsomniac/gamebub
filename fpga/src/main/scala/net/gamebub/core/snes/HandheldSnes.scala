@@ -69,9 +69,16 @@ object HandheldSnes {
     val step = 360.0 / (8 * SdramDivider)
     (360.0 * SdramClockPhaseNs * ClockSdramHz / 1e9 / step).round * step
   }
-  /** Host SPI receiver clock: as close to 200 MHz as possible without exceeding it. */
-  val SpiDivider = (MmcmVcoHz / 200_000_000).ceil.toInt
+  /**
+   * Host SPI receiver clock: the lowest the framework accepts (above
+   * 160 MHz, see [[ClocksV0]]), 168.75 MHz. The other cores run it at
+   * 187.9 MHz; the SNES fills the device (85 % of the slices), and at
+   * 196.9 MHz the receiver's paths into the request FIFO were the ones
+   * that failed timing, by placement luck, from one netlist to the next.
+   */
+  val SpiDivider = (MmcmVcoHz / 160_000_000).floor.toInt
   val ClockSpiHz = (MmcmVcoHz / SpiDivider).toInt
+  require(ClockSpiHz > 160_000_000)
 
   object CommandState extends ChiselEnum {
     val idle, busy, error, done = Value
