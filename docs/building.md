@@ -212,3 +212,14 @@ $ python3 flash_nvs.py --serial serialno --revision 2
 ```
 
 The device should automatically reboot into the main menu.
+
+## Release package
+
+`make release` in the repository root assembles a flashable package for people who do not
+want to compile anything: `build/release/gamebub-handheld-<version>-snes-<commit>.zip`, holding
+the UF2 (firmware plus the built-in boot/Game Boy/GBA bitstreams and free BIOS replacements
+of its system partition), the SNES core package for `cores/`, a README from
+`release/README.template.md` and checksums. It builds the firmware itself but takes the
+bitstreams from `fpga/build/` as they are (`make bitstreams` rebuilds all four), and needs
+free BIOS replacements in `BIOS_DIR` (default `fpga/build/official-v1.0.1`); `HW=rev3` selects
+another board revision.
