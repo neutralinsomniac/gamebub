@@ -134,8 +134,11 @@ generated from the installer's own template); it still takes about 60 GB in the 
 ~10 minutes to install.
 The wrapped `vivado` runs inside an FHS environment, so this also works on NixOS.
 
-From the `/fpga` directory, build each bitstream with `scripts/build_core.py` (replace
-`gamebub_rev4` with your board revision):
+From the `/fpga` directory, `make all` builds every bitstream and `make snes` (or `boot`,
+`gameboy`, `gba`) one of them, for `gamebub_rev4` unless you pass `TARGET=gamebub_rev3`;
+the Makefile enters `nix develop ..#vivado` itself when Vivado is not on the PATH. The
+underlying commands are `scripts/build_core.py` (replace `gamebub_rev4` with your board
+revision):
 
 ```sh
 $ python3 scripts/build_core.py --target gamebub_rev4 --name boot    --core-class net.gamebub.core.boot.HandheldBoot    --build-root build/boot
@@ -171,7 +174,7 @@ roms/
 * `boot.bit.hs`, `gameboy.bit.hs` and `gba.bit.hs` are the compressed
   bitstreams built previously.
 * `cores/jeremy.SNES/` is the SNES, an external core (optional): assemble
-  it from its build with, in `fpga/`,
+  it from its build with, in `fpga/`, `make package` (into `build/package/`) or
   `python3 scripts/package_core.py --name snes --build-root build/snes --out <sdcard>`,
   which copies the descriptors from `fpga/cores/snes/` and the uncompressed
   bitstream (see `docs/snes.md`).
