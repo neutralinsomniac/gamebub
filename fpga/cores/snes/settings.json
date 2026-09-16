@@ -65,6 +65,18 @@
       "default": 4,
       "type": "checkbox",
       "value": 4
+    },
+    {
+      "id": 4,
+      "label": "APU Clock",
+      "address": "0x0",
+      "mask": "0xFFFEFFFF",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "Free-running", "value": 0 },
+        { "label": "Lockstep with CPU", "value": "0x10000" }
+      ]
     }
   ]
 }

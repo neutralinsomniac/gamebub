@@ -33,9 +33,10 @@ case class SnesCoreConfig(
 /**
  * The vendored MiSTer SNES core (fpga/verilog/snes/rtl/main.v).
  *
- * Port names match `main.v` exactly. Everything is clocked by MCLK/ACLK
- * (nominally 21.477 MHz); the surrounding glue in
- * `net.gamebub.core.snes.HandheldSnes` handles memory, video and input.
+ * Port names match `main.v` exactly. The S-CPU, PPU and coprocessors are
+ * clocked by MCLK, the APU (SMP and DSP) by ACLK (both nominally
+ * 21.477 MHz); the surrounding glue in `net.gamebub.core.snes.HandheldSnes`
+ * handles memory, video and input.
  */
 class SnesCore(config: SnesCoreConfig) extends ExtModule(Map(
   "USE_DLH" -> (if (config.dsp) 1 else 0),
@@ -56,6 +57,15 @@ class SnesCore(config: SnesCoreConfig) extends ExtModule(Map(
     val RESET_N = Input(Bool())
     val MCLK = Input(Clock())
     val ACLK = Input(Clock())
+    /**
+     * Game Bub additions to main.v: MCLK may be a gated copy of ACLK.
+     * MCLK_EN is high in the ACLK cycle that delivers an MCLK edge (the
+     * APU takes the S-CPU's port writes exactly once with it); DSP_PAL says
+     * whether ACLK runs at the PAL master-clock rate (the DSP derives its
+     * 32 kHz sample rate from the rate it assumes).
+     */
+    val MCLK_EN = Input(Bool())
+    val DSP_PAL = Input(Bool())
 
     val ROM_TYPE = Input(UInt(8.W))
     val ROM_MASK = Input(UInt(24.W))
