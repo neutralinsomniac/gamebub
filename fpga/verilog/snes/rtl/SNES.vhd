@@ -10,6 +10,13 @@ entity SNES is
 	port(
 		MCLK			: in std_logic;
 		DSPCLK		: in std_logic;
+		-- Game Bub: MCLK may be a gated copy of DSPCLK (the APU runs free while
+		-- the S-CPU waits for memory). MCLK_EN is high in the DSPCLK cycle that
+		-- delivers an MCLK edge; DSP_PAL says whether DSPCLK runs at the PAL
+		-- master-clock rate (the DSP derives its sample rate from it). Tie
+		-- MCLK_EN high and DSP_PAL to PAL when both clocks are the same.
+		MCLK_EN		: in std_logic;
+		DSP_PAL		: in std_logic;
 		
 		RST_N			: in std_logic;
 		ENABLE		: in std_logic;
@@ -376,6 +383,7 @@ begin
 		EN_R		   => SMP_EN_R,
 		EN_F		   => SMP_EN_F,
 		SYSCLKF_CE	=> INT_SYSCLKF_CE,
+		MCLK_EN		=> MCLK_EN,
 		
 		A				=> SMP_A,
 		DI				=> SMP_DI,
@@ -410,7 +418,7 @@ begin
 		CLK			=> DSPCLK,
 		RST_N			=> RST_N,
 		ENABLE		=> DSP_EN,
-		PAL			=> PAL,
+		PAL			=> DSP_PAL,
 		
 		FREQ			=> DSP_FREQ,
 				
