@@ -9,7 +9,8 @@
       "user_selected": true,
       "address": "0x30000000",
       "max_size": "0x1000200",
-      "max_transfer_speed": 10000
+      "max_transfer_speed": 10000,
+      "verify": true
     },
     {
       "id": 1,

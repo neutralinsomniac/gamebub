@@ -3,7 +3,6 @@ package net.gamebub.core.snes
 import chisel3._
 import chisel3.util._
 import HandheldSnes.CommandState
-import lib.audio.AudioRateAdapter
 import lib.mem.cache.{LineBuffer, LineReadCache}
 import lib.mem.{MemoryArbiter, MemoryInterface, MemoryMap, PipelineInterfaceBridge, PipelineMemoryArbiter, PipelineMemoryBurstCdc, PipelineMemoryInterface, PipelineMemoryLowPriorityMux, RegisterMap}
 import lib.mem.sdram.BurstSdramController
@@ -101,8 +100,9 @@ object HandheldSnes {
   val MasterClockNtscHz = 21477270
   /**
    * The PAL master-clock rate (`MCLK_PAL_FREQ`). The physical clock stays
-   * at the NTSC rate; the core's clock enable withholds edges so that the
-   * core sees this rate on average (see `palPace`).
+   * at the NTSC rate; the S-CPU side's clock enable withholds edges so that
+   * it sees this rate on average (see `palPace`). The APU's clock is not
+   * paced: a PAL console has the same APU crystal as an NTSC one.
    */
   val MasterClockPalHz = 21281370
   /** Output frame height: the PPU's 224 or 239 visible lines, padded like a TV would show them. */
@@ -534,10 +534,17 @@ object HandheldSnes {
 /**
  * SNES core, wrapping the vendored MiSTer core (`fpga/verilog/snes`).
  *
- * Clocked at 21.477 MHz (the SNES master clock). The core itself runs on a
- * gated copy of that clock: whenever an external memory access (ROM in
- * SDRAM, WRAM / BSRAM in SRAM) is outstanding, the core clock is stopped so
- * the core observes single-cycle memory just like on the MiSTer.
+ * Clocked at 21.477 MHz (the SNES master clock). The S-CPU side of the
+ * core runs on a gated copy of that clock: whenever an external memory
+ * access (ROM in SDRAM, WRAM / BSRAM in SRAM) is outstanding, its clock is
+ * stopped so the core observes single-cycle memory just like on the MiSTer.
+ * The APU (SMP, DSP, ARAM in BRAM) runs on its own, free-running copy that
+ * only stops with the S-CPU's for a pause, so a stalling game slows down
+ * without its music dropping in pitch, as on a real console, whose APU has
+ * its own crystal. Both are the same physical clock with edges removed, so
+ * paths between them are timed as one domain; the S-CPU's one-cycle port
+ * write strobe is qualified in the core with `MCLK_EN` (the gated clock's
+ * enable) so a stall does not repeat it.
  *
  * Memory map:
  *  - SDRAM: cartridge ROM file (byte address 0, up to 16 MiB plus a copier
@@ -565,7 +572,8 @@ object HandheldSnes {
  *           answers, bit 12 ROM eager issue (the two halves of the ROM miss
  *           path, separately switchable for A/B tests), bit 13 BSRAM cache
  *           off, bit 14 BSRAM cache way 0 only (debug), bit 15 region from
- *           the ROM header instead of bit 0. With `DebugAudio`:
+ *           the ROM header instead of bit 0, bit 16 APU clock in lockstep
+ *           with the S-CPU's (A/B switch, see `configReg`). With `DebugAudio`:
  *           bit 3 1 kHz test tone instead of the core's audio, bit 4 tone at
  *           full scale, bit 5 play the capture buffer through the audio path,
  *           bit 6 capture sample periods (ungated clocks) instead of samples.
@@ -783,7 +791,13 @@ class HandheldSnes extends Module with Core {
   // N.B. the last field is bit 0 of the register. Reset value: both halves
   // of the ROM miss path on (bits 11 and 12), which the settings do not
   // touch.
-  val configReg = RegInit(0x1800.U(16.W).asTypeOf(new Bundle {
+  val configReg = RegInit(0x1800.U(17.W).asTypeOf(new Bundle {
+    /**
+     * Bit 16: the APU's clock follows the S-CPU's exactly (stalls and PAL
+     * pacing included), as before the APU got its own clock. A/B switch:
+     * the free-running APU changes only what a game sees on the APU ports.
+     */
+    val apuLockstep = Bool()
     /**
      * Bit 15: region from the ROM header (`headerPal`, set by the glue's
      * header analysis) instead of bit 0. Lets a settings descriptor offer
@@ -1195,11 +1209,29 @@ class HandheldSnes extends Module with Core {
   val coreClock = BUFGCE(clock, coreRun)
   /** True in the cycle after a core clock edge was delivered (core outputs are fresh). */
   val tick = RegNext(coreRun, false.B)
+  /**
+   * The APU's clock: `coreRun` without the memory stalls and the PAL pacing
+   * (see the class comment). The APU has no external memory of its own, so
+   * it never has to wait; the S-CPU's port writes are qualified with
+   * `MCLK_EN` in the core, every other signal from the gated side is a
+   * level or an idempotent multi-cycle write (the save-state bus), and the
+   * gated side's inputs from the APU (the ports, save-state reads, ARAM)
+   * are stable by its next delivered edge because the APU's edges are a
+   * superset of its own.
+   */
+  val apuRun = Wire(Bool())
+  val apuClock = BUFGCE(clock, apuRun)
+  /** True in the cycle after an APU clock edge was delivered. */
+  val apuTick = RegNext(apuRun, false.B)
 
   val core = Module(new SnesCore(SnesCoreConfig(savestates = true)))
   core.tieOffUnused()
   core.io.MCLK := coreClock
-  core.io.ACLK := coreClock
+  core.io.ACLK := apuClock
+  core.io.MCLK_EN := coreRun
+  // The APU's clock is at the NTSC rate in both regions, like a console's
+  // (in lockstep it is paced like the S-CPU's, so the DSP is told the region).
+  core.io.DSP_PAL := configReg.apuLockstep && core.io.PAL
   // Like the MiSTer top level, release the core's reset only when the PPU's
   // H/V counters wrap (HVCNT_ATZERO): the counters run through reset, so
   // this starts the CPU at the top of a frame and gives stable video from
@@ -1460,13 +1492,15 @@ class HandheldSnes extends Module with Core {
   // firmware halts and runs the core from the pause menu, without focus.
   // And it runs, without focus, for a save-state request (`ssRunPending`).
   val coreWant = (regCoreFocus || hostReset || ssRunPending) && !stall
+  apuRun := Mux(configReg.apuLockstep, coreRun, regCoreFocus || hostReset || ssRunPending)
   // PAL master clock. A PAL SNES runs its master clock at 21.281 MHz, 0.9 %
   // below NTSC (the MiSTer retunes its PLL). Here the physical clock stays
   // at the NTSC rate and the core's clock enable withholds one edge in ~110,
   // paced by a phase accumulator over the cycles the core would otherwise
   // run, so the core sees exactly `MasterClockPalHz` on average: a 50.0 Hz
-  // frame and 32 kHz DSP samples. The 47 ns hole is far shorter than a
-  // memory stall, and everything outside the core is qualified with `tick`.
+  // frame. The 47 ns hole is far shorter than a memory stall, and
+  // everything outside the core is qualified with `tick`. The APU is not
+  // paced (`apuRun`).
   // The accumulator restarts whenever the region is NTSC, so a region change
   // starts it from zero.
   val palPace = RegInit(0.U(25.W))
@@ -1631,26 +1665,32 @@ class HandheldSnes extends Module with Core {
   val hblank = Wire(Bool())
   val vblank = Wire(Bool())
 
-  withClock (coreClock) {
-    // Single-port RAM with 1-cycle read latency and write-first semantics
-    // (matches the `dpram` used by the MiSTer core).
-    def singlePortRam(depth: Int, address: UInt, dataIn: UInt, write: Bool): UInt = {
-      val mem = SyncReadMem(depth, UInt(8.W))
-      val readData = mem.read(address)
-      when (write) {
-        mem.write(address, dataIn)
-      }
-      Mux(RegNext(write, false.B), RegNext(dataIn), readData)
+  // Single-port RAM with 1-cycle read latency and write-first semantics
+  // (matches the `dpram` used by the MiSTer core), in the caller's clock.
+  def singlePortRam(depth: Int, address: UInt, dataIn: UInt, write: Bool): UInt = {
+    val mem = SyncReadMem(depth, UInt(8.W))
+    val readData = mem.read(address)
+    when (write) {
+      mem.write(address, dataIn)
     }
+    Mux(RegNext(write, false.B), RegNext(dataIn), readData)
+  }
 
+  // ARAM belongs to the APU. The save-state program on the S-CPU side also
+  // reads and writes it (main.v muxes the bus): its accesses hold for one
+  // gated cycle, i.e. one or more APU cycles, so a write repeats harmlessly
+  // and a read's data is ready by the S-CPU's next edge.
+  withClock (apuClock) {
+    core.io.ARAM_Q := singlePortRam(64 * 1024, core.io.ARAM_ADDR, core.io.ARAM_D, !core.io.ARAM_CE_N && !core.io.ARAM_WE_N)
+  }
+
+  withClock (coreClock) {
     val vramOeDelayed = RegNext(core.io.VRAM_OE_N, true.B)
     val vramReadable = !core.io.VRAM_OE_N && !vramOeDelayed
     val vram1 = singlePortRam(32 * 1024, core.io.VRAM1_ADDR(14, 0), core.io.VRAM1_DO, !core.io.VRAM1_WE_N)
     val vram2 = singlePortRam(32 * 1024, core.io.VRAM2_ADDR(14, 0), core.io.VRAM2_DO, !core.io.VRAM2_WE_N)
     core.io.VRAM1_DI := Mux(vramReadable, vram1, 0xFF.U)
     core.io.VRAM2_DI := Mux(vramReadable, vram2, 0xFF.U)
-
-    core.io.ARAM_Q := singlePortRam(64 * 1024, core.io.ARAM_ADDR, core.io.ARAM_D, !core.io.ARAM_CE_N && !core.io.ARAM_WE_N)
 
     // Video: DOTCLK is a 50% clock at the pixel rate (4 master clocks per
     // pixel, 2 in 512-pixel modes); the PPU presents a new pixel on each
@@ -1787,59 +1827,18 @@ class HandheldSnes extends Module with Core {
   // Audio
   //////////////////////////////////
   // The DSP emits a sample every 128 of its clock enables, i.e. every
-  // 128 * 21477270 / 4096000 = 671.16 core clocks (~32 kHz) - but the core
-  // clock is gated while memory accesses are outstanding, and the stalls are
-  // bursty (they follow the CPU's activity within the frame), so in real time
-  // the samples arrive with jitter. Sampling the raw output at the DAC rate
-  // would frequency-modulate the audio at the frame rate (a fast warble on
-  // sustained notes), so the samples are re-timed through a FIFO with a
-  // rate-servo'd, interpolating reader on the ungated clock.
-  //
-  // Sample boundaries come from a replica of the DSP's CEGen (4.096 MHz
-  // enables from the nominal master clock, one sample per 128 enables) that
-  // runs on the same ticks from the same reset, so it stays phase locked to
-  // the DSP and sees every sample exactly once. The DSP divides the PAL
-  // master-clock rate (21.281 MHz) when the region is PAL (which the core's
-  // clock enable then delivers on average, see `palPace`), so the replica
-  // follows the same live PAL input; a fixed NTSC modulus would drift 0.9 %
-  // and skip a sample every ~110 in PAL mode.
-  val sampleCeSum = RegInit(0.U(25.W))
-  val sampleCe = WireDefault(false.B)
-  val sampleCeCount = RegInit(0.U(7.W))
-  val sampleStrobe = WireDefault(false.B)
-  /** The DSP's `MCLK_FREQ`: `MCLK_PAL_FREQ` or `MCLK_NTSC_FREQ` in `DSP_PKG`. */
-  val sampleCeModulus = Mux(core.io.PAL, MasterClockPalHz.U(25.W), MasterClockNtscHz.U(25.W))
-  when (!core.io.RESET_N) {
-    sampleCeSum := 0.U
-    sampleCeCount := 0.U
-  } .elsewhen (tick) {
-    val sum = sampleCeSum + 4096000.U
-    when (sum >= sampleCeModulus) {
-      sampleCeSum := sum - sampleCeModulus
-      sampleCe := true.B
-    } .otherwise {
-      sampleCeSum := sum
-    }
-  }
-  when (sampleCe) {
-    sampleCeCount := sampleCeCount + 1.U
-    sampleStrobe := sampleCeCount === 127.U
-  }
-  // Delay by one clock so the sample register has been updated by the tick
-  // the strobe was derived from.
-  val sampleValid = RegNext(sampleStrobe, false.B)
-
-  val audioAdapter = Module(new AudioRateAdapter(nominalPeriod = 128.0 * MasterClockNtscHz / 4096000, fifoDepth = 256, gainShift = 12))
-  // Debug playback of the capture buffer (see below) feeds the adapter
-  // instead of the core.
-  val playSample = RegInit(0.U(32.W))
-  val playValid = WireDefault(false.B)
-  val playCapture = debugAudio.B && configReg.playCapture
-  audioAdapter.io.inValid := Mux(playCapture, playValid, sampleValid)
-  audioAdapter.io.inLeft := Mux(playCapture, playSample(31, 16).asSInt, core.io.AUDIO_L.asSInt)
-  audioAdapter.io.inRight := Mux(playCapture, playSample(15, 0).asSInt, core.io.AUDIO_R.asSInt)
-  io.audio.left := audioAdapter.io.outLeft
-  io.audio.right := audioAdapter.io.outRight
+  // 128 * 21477270 / 4096000 = 671.16 APU clocks (~32 kHz). The APU's clock
+  // runs free (`apuRun`), so the output register updates at that rate
+  // whatever the S-CPU side is doing, and the framework samples it at the
+  // DAC rate like the other cores' audio (a zero-order hold). Before the
+  // APU had its own clock the samples shared the S-CPU's stalls, bursty
+  // within the frame, which frequency-modulated the audio at the frame rate
+  // (a fast warble on sustained notes); a rate-servo'd, interpolating FIFO
+  // re-timed them then, and its servo made the pitch ramp up for ~200 ms
+  // after every pause. With the APU free-running there is no jitter left to
+  // remove.
+  io.audio.left := core.io.AUDIO_L.asSInt
+  io.audio.right := core.io.AUDIO_R.asSInt
 
   captureIndexWire := 0.U
   captureInterface.dataRead := 0.U
@@ -1859,8 +1858,41 @@ class HandheldSnes extends Module with Core {
     io.audio.right := toneOut
   }
 
+  // Sample boundaries for the capture come from a replica of the DSP's
+  // CEGen (4.096 MHz enables from the master clock, one sample per 128
+  // enables) that runs on the same APU ticks from the same reset, so it
+  // stays phase locked to the DSP and sees every sample exactly once. The
+  // DSP is told the clock is at the NTSC rate in both regions (`DSP_PAL`),
+  // so the modulus is fixed.
+  val sampleCeSum = RegInit(0.U(25.W))
+  val sampleCe = WireDefault(false.B)
+  val sampleCeCount = RegInit(0.U(7.W))
+  val sampleStrobe = WireDefault(false.B)
+  /** The DSP's `MCLK_FREQ`: `MCLK_NTSC_FREQ` in `DSP_PKG`, `DSP_PAL` being tied low. */
+  val sampleCeModulus = MasterClockNtscHz.U(25.W)
+  when (!core.io.RESET_N) {
+    sampleCeSum := 0.U
+    sampleCeCount := 0.U
+  } .elsewhen (apuTick) {
+    val sum = sampleCeSum + 4096000.U
+    when (sum >= sampleCeModulus) {
+      sampleCeSum := sum - sampleCeModulus
+      sampleCe := true.B
+    } .otherwise {
+      sampleCeSum := sum
+    }
+  }
+  when (sampleCe) {
+    sampleCeCount := sampleCeCount + 1.U
+    sampleStrobe := sampleCeCount === 127.U
+  }
+  // Delay by one clock so the sample register has been updated by the tick
+  // the strobe was derived from.
+  val sampleValid = RegNext(sampleStrobe, false.B)
+
   // Debug capture: the raw DSP output (or, with config bit 6, the number of
-  // ungated clocks between consecutive DSP samples, i.e. the stall jitter).
+  // ungated clocks between consecutive DSP samples: 671 / 672 with the APU
+  // running free, unless it was paused).
   val captureStrobe = sampleValid
   val capturePeriodCounter = RegInit(0.U(32.W))
   capturePeriodCounter := Mux(captureStrobe, 0.U, capturePeriodCounter + 1.U)
@@ -1873,13 +1905,19 @@ class HandheldSnes extends Module with Core {
   when (captureRunReg && captureStrobe) {
     captureIndex := captureIndex + 1.U
   }
+  // Playback of the capture buffer through the audio path, at ~32 kHz
+  // (config bit 5).
+  val playSample = RegInit(0.U(32.W))
   val playCounter = RegInit(0.U(10.W))
   val playIndex = RegInit(0.U(CaptureIndexBits.W))
   val playStrobe = configReg.playCapture && playCounter === 670.U
   playCounter := Mux(playStrobe || !configReg.playCapture, 0.U, playCounter + 1.U)
   when (playStrobe) { playIndex := playIndex + 1.U }
   when (RegNext(playStrobe, false.B)) { playSample := captureBuffer.readPorts(0).data }
-  playValid := RegNext(RegNext(playStrobe, false.B), false.B)
+  when (configReg.playCapture) {
+    io.audio.left := playSample(31, 16).asSInt
+    io.audio.right := playSample(15, 0).asSInt
+  }
   captureBuffer.readPorts(0).enable := Mux(configReg.playCapture, playStrobe, captureInterface.enable && !captureInterface.write)
   captureBuffer.readPorts(0).address := Mux(configReg.playCapture, playIndex, captureInterface.address(CaptureIndexBits + 1, 2))
   captureInterface.dataRead := captureBuffer.readPorts(0).data
@@ -1889,7 +1927,7 @@ class HandheldSnes extends Module with Core {
   //////////////////////////////////
   // SRAM and SDRAM controllers
   //////////////////////////////////
-  val sramController = Module(new AsyncSramController(addressWidth = 18, dataWidth = 16))
+  val sramController = Module(new AsyncSramController(addressWidth = 18, dataWidth = 16, registeredOutputs = true))
   io.sram.ceN := false.B
   io.sram.weN := sramController.io.signals.weN
   io.sram.oeN := sramController.io.signals.oeN
