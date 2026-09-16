@@ -82,6 +82,11 @@ pub struct CoreFile {
     /// If true, the file is not automatically loaded at startup.
     #[serde(default)]
     pub on_demand: bool,
+    /// If true, the region is read back after the transfer and compared with
+    /// what was sent (a diagnostic for the SPI upload path and the memory
+    /// behind the window; costs about the transfer time again).
+    #[serde(default)]
+    pub verify: bool,
 
     /// The address to load the file to.
     #[serde(default)]

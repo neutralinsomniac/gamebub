@@ -36,3 +36,31 @@ set_input_delay  -clock sdram_clk_pin -max  6.0 [get_ports {sdram_dq[*]}]
 set_input_delay  -clock sdram_clk_pin -min  2.5 [get_ports {sdram_dq[*]}]
 # The falling-edge capture register in the IOB: a fixed pad-to-flop path.
 set_property IOB TRUE [get_cells -hier -filter {NAME =~ *sdram/dataIn_reg*}]
+
+# Asynchronous SRAM (WRAM / BSRAM, IS61WV25616BLL-10). The controller gives
+# every access a full 46.56 ns cycle, with the write pulse (an ODDR in the
+# OLOGIC) in the second half, so the chip's own timing is met with more
+# than 15 ns to spare on paper. What is not fine is skew between the
+# controller's output registers: left in the fabric they reach the pins
+# anywhere from 2 to 9 ns after the clock, differently on every placement,
+# and one placement whose upper byte enable arrived a few hundred
+# picoseconds later than the rest corrupted WRAM writes on every boot
+# (Lufia II's intro, September 2026; found by bisecting cell moves down to
+# that one register). The controller therefore has a second register stage
+# for the pins (`registeredOutputs`), packed into the I/O blocks here, so
+# that address, data and control all have the same fixed delay as the
+# write-enable ODDR, and the read data is captured in the ILOGIC. The
+# budgets below (system clock edge, insertion delay included) fail a build
+# in which a register ever leaves its I/O block: outputs within 11.5 ns of
+# the edge (an I/O block register makes it in about 9.5 ns, a fabric one
+# takes 12 or more); the write enable is excluded, being launched from
+# both edges by the ODDR. The read data is valid from 22 ns after the edge
+# (address out, 10 ns access, trace) and holds past 10 ns after the next
+# one (output hold from the address change).
+set sram_clock [get_clocks -of_objects [get_pins handheld_top/core/pll/pll/CLKOUT0]]
+set_property IOB TRUE [get_ports {sram_a[*] sram_io[*] sram_ub_n sram_lb_n sram_oe_n}]
+set_output_delay -clock $sram_clock -max 35.0 [get_ports {sram_a[*] sram_ub_n sram_lb_n sram_oe_n}]
+set_output_delay -clock $sram_clock -max 33.0 [get_ports {sram_io[*]}]
+set_output_delay -clock $sram_clock -min -1.0 [get_ports {sram_a[*] sram_io[*] sram_ub_n sram_lb_n sram_oe_n}]
+set_input_delay  -clock $sram_clock -max 22.0 [get_ports {sram_io[*]}]
+set_input_delay  -clock $sram_clock -min 10.0 [get_ports {sram_io[*]}]
