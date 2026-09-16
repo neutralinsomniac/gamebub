@@ -96,6 +96,32 @@ initiator off while its 4-entry request fifo is full, and drops a prefetch
 that completes after a write was pushed (it read the memory before the
 write reached it).
 
+### SRAM interface timing
+
+WRAM and BSRAM live in the external asynchronous SRAM (IS61WV25616BLL-10)
+behind `AsyncSramController`, which for this core runs with
+`registeredOutputs`: a request is accepted in one cycle, the address, data,
+byte enables and output enable pass through a second register stage in the
+next, the chip sees them for a full 46.56 ns cycle after that (the write
+pulse, from an ODDR, in its second half; read data captured at the end),
+and `done` follows. The chip's own budget is met with more than 15 ns to
+spare on every line. What the interface turned out to be sensitive to is
+*skew between the output registers*: left in the fabric, they reached the
+pins anywhere between 2 and 9 ns after the clock edge, differently on
+every placement, and one placement whose upper byte enable arrived a few
+hundred picoseconds later than the others corrupted WRAM writes on every
+boot (the Lufia II intro band of September 2026, found by bisecting cell
+moves on that placement down to the single register driving `sram_ub_n`).
+The second stage exists so that those registers can sit in the I/O blocks
+(`IOB TRUE` in `core_snes.xdc`), where every pin gets the same fixed delay
+as the write-enable ODDR and the read data is captured in the ILOGIC, while
+the first stage stays next to the accept logic and keeps the 46 ns request
+path short. The constraint file also gives the pins output and input delay
+budgets that fail a build if a register ever leaves its I/O block again;
+check the `sram_*` rows of the I/O timing after a build. The extra cycle
+per access is covered by the latency-hiding mode, which only stalls the core
+when it is about to latch.
+
 ### Memory map
 
 | Memory | Where | Notes |
@@ -124,6 +150,22 @@ external access is outstanding, the clock is stopped and the core sees
 single-cycle memory, exactly as on the MiSTer. The glue (memory bridges, video
 capture, statistics) runs on the ungated system clock; pulses from the core
 domain are consumed with the `tick` qualifier.
+
+Only the S-CPU side (CPU, PPU, coprocessors) is gated. The APU (SMP, DSP and
+ARAM, which is block RAM) has no external memory to wait for and runs on a
+second `BUFGCE` (`ACLK`) that stops only for a pause, so a stalling game slows
+down without its music dropping in pitch, as on a real console, whose APU has
+its own crystal. Both clocks are the same net with edges removed, so Vivado
+times the paths between them as one domain. Two Game Bub inputs on `main.v`
+make the core safe for this: `MCLK_EN` (the gated clock's enable) qualifies
+the S-CPU's one-cycle port write strobe in `SMP.vhd`, so a stall in that
+cycle does not repeat the write after the SPC700 has cleared the port, and
+`DSP_PAL` (tied low) keeps the DSP's clock-enable generator at the NTSC
+modulus in both regions, since the APU clock is not PAL-paced. The other
+signals into the APU are levels or the save-state bus's multi-cycle writes,
+which repeat harmlessly; the S-CPU's reads from the APU (ports, save-state
+data, ARAM) are ready by its next delivered edge because the APU's edges are
+a superset of its own.
 
 The memory path is built to keep those stalls rare:
 
@@ -285,26 +327,24 @@ PAL is untested on the LCD; if the panel dislikes 50 Hz, frame-rate
 conversion is the fallback.
 
 Audio is the DSP's 16-bit stereo output, which updates every 671.16 cycles
-(~32 kHz) of the *core* clock. Because the core clock is gated while memory
-accesses are outstanding, and the stalls are bursty (they follow the CPU's
-activity within the frame), the samples arrive with jitter in real time;
-sampling them directly at the DAC rate frequency-modulates the audio at the
-frame rate, audible as a fast warble on sustained notes (diagnosed on Chrono
-Trigger's flute). The glue re-times them: a phase-locked replica of the DSP's
-clock-enable generator (dividing the PAL or NTSC master-clock rate as the DSP
-does, following the same `PAL` input) marks each new sample, which is pushed
-into a FIFO and read out on the ungated clock by a rate-servo'd, linearly
-interpolating reader (`lib.audio.AudioRateAdapter`, ~4 ms latency, ~50 ms
-loop time constant).
+(~32 kHz) of the APU clock and goes straight to the framework, which samples
+it at the DAC rate like the other cores' audio. Before the APU had its own
+clock, its samples shared the S-CPU's stalls, bursty within the frame, which
+frequency-modulated the audio at the frame rate (a fast warble on sustained
+notes, diagnosed on Chrono Trigger's flute); a rate-servo'd, interpolating
+FIFO re-timed them then, at the price of the pitch ramping up for ~200 ms
+after every pause while its servo recovered. The free-running APU leaves no
+jitter to remove, so it is gone.
 
 Debug facilities, synthesized when `HandheldSnes.DebugAudio` is set (config
 register bits 3-6, registers 0x0020 / 0x0024 and a capture buffer at host
 address `0x1xxxxx`; 4 block RAMs): a 1 kHz test tone, playback of the capture
 buffer through the audio path, and capture of either the raw DSP samples or
-the clocks between them. The firmware has no driver for them (write the
-registers from a debug build as needed). `fpga/scripts/snes_audio_capture.py`
-decodes a capture dumped as `CAP` hex lines over serial and reports spectra,
-glitches and jitter.
+the clocks between them (a phase-locked replica of the DSP's clock-enable
+generator marks the sample boundaries). The firmware has no driver for them
+(write the registers from a debug build as needed).
+`fpga/scripts/snes_audio_capture.py` decodes a capture dumped as `CAP` hex
+lines over serial and reports spectra, glitches and jitter.
 
 ### Coprocessors
 
@@ -410,7 +450,9 @@ commands (four command words; the ROM and states file sizes are recorded):
 
 Lost with the driver: user-facing messages for unsupported cartridges and
 save-state failures (an unsupported cartridge shows as a generic core
-error), the ROM read-back verification and the stall-statistics log.
+error) and the stall-statistics log. The ROM read-back is kept: a file
+entry with `"verify": true` (the ROM in `files.json`) is read back over SPI
+after the transfer and compared chunk by chunk (FNV-1a).
 
 ## Building
 
