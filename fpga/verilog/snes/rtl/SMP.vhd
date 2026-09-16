@@ -12,6 +12,11 @@ entity SMP is
 		EN_R 			   : in std_logic;
 		EN_F 		      : in std_logic;
 		SYSCLKF_CE		: in std_logic;
+		-- Game Bub: high in the CLK cycle that delivers an edge to the S-CPU's
+		-- (possibly gated) clock, so a port write is taken exactly once when
+		-- the S-CPU's clock stalls while SYSCLKF_CE is high. Tie high when
+		-- both sides share one clock.
+		MCLK_EN			: in std_logic;
 		
 		A     			: out std_logic_vector(15 downto 0);
 		DI       		: in std_logic_vector(7 downto 0);
@@ -159,7 +164,7 @@ begin
 		if RST_N = '0' then
 			CPUI <= (others => (others => '0'));
 		elsif rising_edge(CLK) then
-			if PAWR_N = '0' and CS = '1' and CS_N = '0' and SYSCLKF_CE = '1' then
+			if PAWR_N = '0' and CS = '1' and CS_N = '0' and SYSCLKF_CE = '1' and MCLK_EN = '1' then
 				CPUI(to_integer(unsigned(PA))) <= CPU_DI;
 			end if;
 			

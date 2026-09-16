@@ -392,6 +392,60 @@ impl CoreManager {
         }
     }
 
+    /// Read a file's region back through the host window and compare it,
+    /// chunk by chunk, with what was sent (`verify` in the descriptor).
+    fn verify_file(&self, info: &CoreFile, chunk_sums: &[(u32, u32)], scratch: &mut [u8]) {
+        let start = Instant::now();
+        let mut offset = 0u32;
+        let mut mismatches = 0u32;
+        let mut first: Option<u32> = None;
+        for &(len, sum) in chunk_sums {
+            let mut pos = 0u32;
+            let mut got = FNV_OFFSET;
+            while pos < len {
+                let n = ((len - pos) as usize).min(scratch.len());
+                let result = Device::lock().fpga.spi_read(
+                    Some(MAX_SPI_READ_CLOCK),
+                    SpiCommand::new(info.transfer_word_size),
+                    info.address + offset + pos,
+                    &mut scratch[..n],
+                );
+                if let Err(e) = result {
+                    log::error!(
+                        "File {} read-back failed at {:#x}: {:?}",
+                        info.label,
+                        offset + pos,
+                        e
+                    );
+                    return;
+                }
+                got = fnv1a_continue(got, &scratch[..n]);
+                pos += n as u32;
+            }
+            if got != sum {
+                mismatches += 1;
+                first.get_or_insert(offset);
+            }
+            offset += len;
+        }
+        match first {
+            None => log::info!(
+                "File {} read-back OK: {} chunks, {} bytes in {} ms",
+                info.label,
+                chunk_sums.len(),
+                offset,
+                start.elapsed().as_millis()
+            ),
+            Some(at) => log::error!(
+                "File {} READ-BACK MISMATCH: {} of {} chunks differ, first at offset {:#x} (SPI upload or memory)",
+                info.label,
+                mismatches,
+                chunk_sums.len(),
+                at
+            ),
+        }
+    }
+
     pub fn focus_changed(&mut self, has_focus: bool) {
         {
             let mut device = Device::lock();
@@ -639,9 +693,14 @@ impl CoreManager {
             let mut transfer_duration = Duration::ZERO;
             let mut handler_duration = Duration::ZERO;
             let mut transferred = 0;
+            // (length, FNV-1a) of every chunk sent, for the read-back below.
+            let mut chunk_sums: Vec<(u32, u32)> = Vec::new();
             // TODO: maybe only bother with background I/O for a large file (> 256KB?)
             let result = crate::util::background_io::iter_chunks(file, &mut scratch, |chunk| {
                 let transfer_start = Instant::now();
+                if info.verify {
+                    chunk_sums.push((chunk.len() as u32, fnv1a(chunk)));
+                }
                 let max_clock = Some(Hertz(info.max_transfer_speed * 1000 * 2));
                 let command = SpiCommand::new(info.transfer_word_size);
                 Device::lock()
@@ -696,6 +755,10 @@ impl CoreManager {
                 transfer_duration.as_millis(),
                 handler_duration.as_millis(),
             );
+
+            if info.verify {
+                self.verify_file(info, &chunk_sums, &mut scratch);
+            }
         }
 
         Ok(())
@@ -930,4 +993,15 @@ impl CoreManager {
 
         Ok(())
     }
+}
+
+const FNV_OFFSET: u32 = 0x811C_9DC5;
+
+fn fnv1a_continue(hash: u32, data: &[u8]) -> u32 {
+    data.iter()
+        .fold(hash, |h, &b| (h ^ b as u32).wrapping_mul(0x0100_0193))
+}
+
+fn fnv1a(data: &[u8]) -> u32 {
+    fnv1a_continue(FNV_OFFSET, data)
 }

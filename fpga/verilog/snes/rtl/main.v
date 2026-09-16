@@ -3,6 +3,13 @@ module main (
 
 	input             MCLK,
 	input             ACLK,
+	// Game Bub: MCLK may be a gated copy of ACLK (the APU runs free while
+	// the S-CPU waits for memory). MCLK_EN is high in the ACLK cycle that
+	// delivers an MCLK edge; DSP_PAL says whether ACLK runs at the PAL
+	// master-clock rate (the DSP derives its sample rate from it). Tie
+	// MCLK_EN high and DSP_PAL to PAL when both clocks are the same.
+	input             MCLK_EN,
+	input             DSP_PAL,
 
 	input       [7:0] ROM_TYPE,
 	input      [23:0] ROM_MASK,
@@ -217,6 +224,8 @@ SNES SNES
 (
 	.MCLK(MCLK),
 	.DSPCLK(ACLK),
+	.MCLK_EN(MCLK_EN),
+	.DSP_PAL(DSP_PAL),
 
 	.RST_N(RESET_N),
 	.ENABLE(1),

@@ -65,6 +65,11 @@ pub struct CoreFile {
     /// If true, if the file is not loaded, the region will still be initialized with 0xFFs.
     #[serde(default)]
     pub initialize: bool,
+    /// If true, the region is read back after the transfer and compared with
+    /// what was sent (a diagnostic for the SPI upload path and the memory
+    /// behind the window; costs about the transfer time again).
+    #[serde(default)]
+    pub verify: bool,
 
     /// The address to load the file to.
     #[serde(deserialize_with = "deserialize_hex_u32")]
