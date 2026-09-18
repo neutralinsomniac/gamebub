@@ -59,6 +59,12 @@ mod command {
     pub const STATUS_CORE_RUN: u32 = 4;
 }
 
+/// Core debug counters, at the same addresses in every core: stall cycles and
+/// run cycles since the last clear. A core may keep more (the SNES splits its
+/// stalls by port), which it declares in its core.json; see `log_statistics`.
+const REG_STAT_STALLS: u32 = 0x0000_1000;
+const REG_STAT_CYCLES: u32 = 0x0000_1004;
+
 pub const DIR_SDCARD: &str = "/sdcard/";
 pub const DIR_SETTINGS: &str = "/sdcard/settings/";
 pub const CORE_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -71,6 +77,8 @@ pub struct CoreManager {
     core_settings: Option<CoreSettings>,
     selected_files: Vec<Option<PathBuf>>,
     run_cartridge: bool,
+    /// When the core last got focus, to put a duration on the statistics.
+    focus_since: Option<Instant>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -173,6 +181,7 @@ impl CoreManager {
             core_settings: None,
             selected_files: Vec::new(),
             run_cartridge: false,
+            focus_since: None,
         }
     }
 
@@ -216,6 +225,7 @@ impl CoreManager {
 
         self.stage = Stage::LoadInit;
         self.run_cartridge = run_cartridge;
+        self.focus_since = None;
         self.core_settings = Some(Self::load_settings(core));
         if let Some(core_handler) = self.core_handler.get_mut() {
             self.core_settings.as_mut().unwrap().settings = core_handler.load_settings();
@@ -463,8 +473,78 @@ impl CoreManager {
             NOTIFY_TIMEOUT,
         );
 
+        let played = self.focus_since.take();
+        if has_focus {
+            self.focus_since = Some(Instant::now());
+        } else {
+            self.log_statistics(played.map(|at| at.elapsed()));
+        }
+
         if let Some(core_handler) = self.core_handler.get_mut() {
             core_handler.on_focus_changed(has_focus);
+        }
+    }
+
+    /// Read the core's debug counters, clear them and log them. Called after
+    /// the core has been told it lost focus, so it has stopped and the
+    /// numbers cover the stretch of play that just ended: the counters only
+    /// count while the core runs.
+    ///
+    /// Every core counts run and stall cycles; the run rate is what they are
+    /// for. Anything else is core-specific and comes from its core.json,
+    /// logged as a count and as a share of the same cycles (see
+    /// `CoreStatistic::percent_of`). A core without the counters reads zero
+    /// for both and logs nothing.
+    ///
+    /// The counters are 32 bits, so the cycle count wraps after a few minutes
+    /// of play (200 s at the SNES core's 21.5 MHz) and the rate is then
+    /// nonsense. `played` is the wall time the window covers, logged so that
+    /// a wrapped count is visible: the cycles per second it implies are the
+    /// core's clock rate when nothing wrapped.
+    fn log_statistics(&self, played: Option<Duration>) {
+        let mut device = Device::lock();
+        let fpga = &mut device.fpga;
+
+        let (Ok(cycles), Ok(stalls)) = (
+            fpga.read_u32(REG_STAT_CYCLES),
+            fpga.read_u32(REG_STAT_STALLS),
+        ) else {
+            log::warn!("Failed to read core statistics");
+            return;
+        };
+        let _ = fpga.write_u32(REG_STAT_CYCLES, 0);
+        let _ = fpga.write_u32(REG_STAT_STALLS, 0);
+
+        let total = cycles as u64 + stalls as u64;
+        if total == 0 {
+            return;
+        }
+        log::info!(
+            "Run rate: {:.2}% ({cycles} run, {stalls} stalled, over {:.1} s)",
+            100.0 * cycles as f32 / total as f32,
+            played.unwrap_or_default().as_secs_f32()
+        );
+
+        let statistics = match &self.core_info {
+            Some(core) => &core.statistics,
+            None => return,
+        };
+        for statistic in statistics {
+            let Ok(value) = fpga.read_u32(statistic.address) else {
+                log::warn!("Failed to read statistic {}", statistic.label);
+                continue;
+            };
+            let _ = fpga.write_u32(statistic.address, 0);
+            let of = if statistic.percent_of == 0 {
+                total
+            } else {
+                statistic.percent_of as u64
+            };
+            log::info!(
+                "  {}: {value} ({:.2}%)",
+                statistic.label,
+                100.0 * value as f32 / of as f32
+            );
         }
     }
 

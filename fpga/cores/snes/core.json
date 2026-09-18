@@ -9,5 +9,16 @@
   ],
   "hardware": {
     "cartridge_enable": "no"
-  }
+  },
+  "statistics": [
+    { "label": "ROM stalls", "address": "0x1008" },
+    { "label": "WRAM stalls", "address": "0x100C" },
+    { "label": "BSRAM stalls", "address": "0x1010" },
+    { "label": "queue-full stalls", "address": "0x1028" },
+    { "label": "save-state stalls", "address": "0x1078" },
+    { "label": "worst 49 ms", "address": "0x1040", "percent_of": "0x100000" },
+    { "label": "worst 49 ms ROM", "address": "0x1044", "percent_of": "0x100000" },
+    { "label": "worst 49 ms WRAM", "address": "0x1048", "percent_of": "0x100000" },
+    { "label": "worst 49 ms BSRAM", "address": "0x104C", "percent_of": "0x100000" }
+  ]
 }
