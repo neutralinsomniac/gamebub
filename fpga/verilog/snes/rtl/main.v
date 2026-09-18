@@ -141,6 +141,7 @@ module main (
 	input             SS_SAVE,
 	input             SS_TOSD,
 	input             SS_LOAD,
+	input             SS_CANCEL,
 	input       [1:0] SS_SLOT,
 	output            SS_AVAIL,
 	output            SS_BUSY,
@@ -983,6 +984,7 @@ savestates ss
 	.save(SS_SAVE),
 	.save_sd(SS_TOSD),
 	.load(SS_LOAD),
+	.cancel(SS_CANCEL),
 	.slot(SS_SLOT),
 
 	.ram_size(RAM_SIZE),

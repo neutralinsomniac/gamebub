@@ -201,6 +201,8 @@ class SnesCore(config: SnesCoreConfig) extends ExtModule(Map(
     val SS_SAVE = Input(Bool())
     val SS_TOSD = Input(Bool())
     val SS_LOAD = Input(Bool())
+    /** Drops a save / load request the game has not serviced yet. */
+    val SS_CANCEL = Input(Bool())
     val SS_SLOT = Input(UInt(2.W))
     val SS_AVAIL = Output(Bool())
     /** The save-state program is running (a Game Bub addition to main.v). */
@@ -249,6 +251,7 @@ class SnesCore(config: SnesCoreConfig) extends ExtModule(Map(
     io.SS_SAVE := false.B
     io.SS_TOSD := false.B
     io.SS_LOAD := false.B
+    io.SS_CANCEL := false.B
     io.SS_SLOT := 0.U
     io.SS_DDR_DI := 0.U
     io.SS_DDR_ACK := false.B

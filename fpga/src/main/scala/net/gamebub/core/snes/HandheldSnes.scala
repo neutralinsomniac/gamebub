@@ -1286,6 +1286,10 @@ class HandheldSnes extends Module with Core {
    *  write (bits 1:0 clear) or a host reset. The firmware requests states
    *  from the settings menu, i.e. while the game is paused. */
   val ssRunPending = RegInit(false.B)
+  /** A request the core has latched but not taken yet is to be dropped
+   *  (the timeout, any control write): held until the core has run a
+   *  cycle with it, so it is seen even while the core has no focus. */
+  val ssCancel = RegInit(false.B)
   val ssPort = Module(new SaveStateMemoryPort(SdramMap.SaveStateBase))
   ssPort.io.req := core.io.SS_DDR_REQ
   ssPort.io.address := core.io.SS_DDR_ADDR
@@ -1296,6 +1300,7 @@ class HandheldSnes extends Module with Core {
   core.io.SS_DDR_DI := ssPort.io.dataRead
   core.io.SS_SAVE := ssSaveRequest
   core.io.SS_LOAD := ssLoadRequest
+  core.io.SS_CANCEL := ssCancel
   core.io.SS_SLOT := ssSlot
   // Always write the save counter to the header (the MiSTer's "save to SD
   // card" mode), so the firmware can tell a save has finished.
@@ -1490,8 +1495,9 @@ class HandheldSnes extends Module with Core {
   // in reset), so that a reset takes effect (the reset register lives in
   // the gated domain) and the PPU counters reach the release point: the
   // firmware halts and runs the core from the pause menu, without focus.
-  // And it runs, without focus, for a save-state request (`ssRunPending`).
-  val coreWant = (regCoreFocus || hostReset || ssRunPending) && !stall
+  // And it runs, without focus, for a save-state request (`ssRunPending`)
+  // and for the cycle that cancels one (`ssCancel`).
+  val coreWant = (regCoreFocus || hostReset || ssRunPending || ssCancel) && !stall
   apuRun := Mux(configReg.apuLockstep, coreRun, regCoreFocus || hostReset || ssRunPending)
   // PAL master clock. A PAL SNES runs its master clock at 21.281 MHz, 0.9 %
   // below NTSC (the MiSTer retunes its PLL). Here the physical clock stays
@@ -1522,6 +1528,7 @@ class HandheldSnes extends Module with Core {
   when (coreRun) {
     ssSaveRequest := false.B
     ssLoadRequest := false.B
+    ssCancel := false.B
   }
   // The slot comes with the write (bits 3:2) or, with bit 4 set, from the
   // slot register, so that a settings descriptor can request a save or a
@@ -1563,15 +1570,21 @@ class HandheldSnes extends Module with Core {
     ssSaveRequest := false.B
     ssLoadRequest := false.B
     ssRunPending := false.B
+    ssCancel := true.B
   }
   when (ssControlWrite) {
     ssRunPending := ssSaveWrite || ssLoadWrite
+    // Every write drops the request the core may still hold from before:
+    // a cancelling write leaves nothing armed, a new request replaces it
+    // (the core takes the request that arrives with the cancel).
+    ssCancel := true.B
   }
   when (hostReset) {
     ssSaveRequest := false.B
     ssLoadRequest := false.B
     ssSaveDone := false.B
     ssRunPending := false.B
+    ssCancel := false.B
   }
   when (regCoreFocus) {
     when (coreRun) {
