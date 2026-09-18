@@ -6,6 +6,9 @@ module savestates
 	input             save,
 	input             save_sd,
 	input             load,
+	// Game Bub: drops a request the game has not serviced yet (the glue's
+	// timeout / a cancelling write). Ignored once the program is running.
+	input             cancel,
 	input       [1:0] slot,
 
 	input       [3:0] ram_size,
@@ -201,7 +204,13 @@ always @(posedge clk) begin
 		ss_ext_addr_inc <= 0;
 		ddr_state <= DDR_IDLE;
 	end else begin
-		if (~(load_en | save_en)) begin
+		// Game Bub: a cancel drops a request that is armed but not yet taken
+		// at a vector fetch, and lets a request arriving with it replace it.
+		if (cancel & ~ss_busy) begin
+			load_en <= 0;
+			save_en <= 0;
+		end
+		if (~(load_en | save_en) | (cancel & ~ss_busy)) begin
 			if (~save_old & save) begin
 				save_en <= 1;
 				ss_slot <= slot;
