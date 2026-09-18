@@ -38,6 +38,7 @@ pub struct CoreInfo {
     pub core_dir: PathBuf,
     pub files: Vec<CoreFile>,
     pub settings: Vec<CoreSetting>,
+    pub statistics: Vec<CoreStatistic>,
     pub bitstream: PathBuf,
     pub uses_cartridge: CoreCartridgeMode,
 }
@@ -166,6 +167,26 @@ impl CoreSetting {
     }
 }
 
+/// A debug counter in the core's register window, logged when the game is
+/// paused (see `CoreManager::log_statistics`). Every core has the run and
+/// stall cycle counts at a fixed address; this declares the extra counters a
+/// core keeps, which are core-specific.
+#[derive(Deserialize)]
+pub struct CoreStatistic {
+    /// Label for the log line.
+    pub label: ArrayString<24>,
+    /// Address of the counter in the core (32-bit, cleared by writing it).
+    #[serde(deserialize_with = "deserialize_hex_u32")]
+    pub address: u32,
+    /// Denominator for the percentage in the log line. Zero (the default)
+    /// means the total of the run and stall cycle counts, which is right for
+    /// a counter of cycles since the last clear; a counter over a fixed
+    /// window (the worst-window counters) names the window's length instead.
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_hex_u32")]
+    pub percent_of: u32,
+}
+
 impl CoreInfo {
     pub fn get_settings_path(&self) -> PathBuf {
         let mut p = PathBuf::from(super::DIR_SETTINGS);
@@ -289,6 +310,8 @@ pub fn get_core(id: &str) -> Result<CoreInfo, String> {
         bitstreams: Vec<JsonCoreBitstream>,
         #[serde(default)]
         hardware: JsonCoreHardware,
+        #[serde(default)]
+        statistics: Vec<CoreStatistic>,
     }
 
     #[derive(Deserialize)]
@@ -367,6 +390,7 @@ pub fn get_core(id: &str) -> Result<CoreInfo, String> {
         files,
         bitstream: bitstream_path,
         settings,
+        statistics: json_core.statistics,
         core_dir,
     })
 }

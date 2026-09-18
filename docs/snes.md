@@ -274,8 +274,28 @@ sample, and keeps the stall count of the worst 2^20-cycle (49 ms) window since
 the last clear, because the totals average brief slowdowns (an area
 transition, a menu) away while the ear picks them up as a pitch dip. They
 are host registers 0x1000-0x1078 (write to clear; see the `HandheldSnes`
-header comment), readable over SPI; the former firmware driver logged them
-when a game was paused.
+header comment), readable over SPI.
+
+The firmware logs them whenever the core loses focus (the pause menu), so the
+numbers cover the stretch of play that just ended:
+
+```
+Run rate: 99.80% (1051797216 run, 2118143 stalled, over 49.0 s)
+  ROM stalls: 1983204 (0.19%)
+  ...
+  worst 49 ms: 26214 (2.50%)
+```
+
+The run rate comes from the counters every core keeps (stalls at 0x1000, run
+cycles at 0x1004); the rest are listed in `statistics` in the core's
+`core.json`, each with a label, an address and, for a counter over a fixed
+window rather than over the cycles since the last clear, a `percent_of`
+denominator. `CoreManager::log_statistics` reads, clears and logs them.
+
+The counters are 32 bits, so the cycle count wraps after 200 s of play at
+21.477 MHz: pause within about three minutes, or the rate is nonsense. The
+duration in the line is there to catch that, since the cycle count divided by
+it is the core's clock rate when nothing wrapped.
 
 #### Pitfalls met along the way
 
@@ -410,7 +430,8 @@ on "Exit Core" or power-off, not when it is taken.
 
 The SNES is an external core: the stock firmware runs it from
 `/sdcard/cores/jeremy.SNES/`, which holds the descriptors in
-`fpga/cores/snes/` (`core.json`; `files.json`: the ROM as `.sfc` / `.smc`,
+`fpga/cores/snes/` (`core.json`, which also lists the stall counters the
+firmware logs on a pause; `files.json`: the ROM as `.sfc` / `.smc`,
 the `.srm` save file and the `.ss` states file next to it, with their SDRAM /
 SRAM windows and transfer speeds; `settings.json`: "Reset Core", "Save State"
 / "Load State" / "State Slot", "Region" (from the header, or forced), "Pseudo
