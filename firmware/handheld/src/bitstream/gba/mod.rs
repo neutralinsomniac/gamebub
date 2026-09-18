@@ -40,8 +40,6 @@ const REG_IMU_ACCEL_X: u32 = 0x0000_0104;
 const REG_IMU_ACCEL_Y: u32 = 0x0000_0108;
 const REG_RTC_LO: u32 = 0x0000_0200;
 const REG_RTC_HI: u32 = 0x0000_0204;
-const REG_STAT_STALLS: u32 = 0x0000_1000;
-const REG_STAT_CYCLES: u32 = 0x0000_1004;
 const COLOR_CORRECTION_BASE: u32 = 0x5000_0000;
 
 const FILE_ROM: u16 = 0;
@@ -350,6 +348,7 @@ impl Gba {
             ]
             .into_iter()
             .collect(),
+            statistics: Vec::new(),
             bitstream: crate::util::get_system_file_path("gba.bit.hs"),
         }
     }
@@ -597,16 +596,6 @@ impl CoreHandler for Gba {
             } else {
                 device.imu.enable_accel().unwrap();
             }
-        }
-
-        if paused {
-            // Debug output stall stats
-            let num_cycles = device.fpga.read_u32(REG_STAT_CYCLES).unwrap();
-            let num_stalls = device.fpga.read_u32(REG_STAT_STALLS).unwrap();
-            let _ = device.fpga.write_u32(REG_STAT_CYCLES, 0);
-            let _ = device.fpga.write_u32(REG_STAT_STALLS, 0);
-            let rate = (num_cycles as f32) / ((num_cycles as f32) + (num_stalls as f32));
-            log::info!("Run rate: {}%", rate * 100.0);
         }
     }
 

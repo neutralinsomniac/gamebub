@@ -34,8 +34,6 @@ const REG_RTC_LATCHED: u32 = 0x0000_001C;
 const REG_IMU_ACCEL_X: u32 = 0x0000_0020;
 const REG_IMU_ACCEL_Y: u32 = 0x0000_0024;
 const REG_DMG_PALETTE_OFF: u32 = 0x0000_0030;
-const REG_STAT_STALLS: u32 = 0x0000_1000;
-const REG_STAT_CYCLES: u32 = 0x0000_1004;
 const REG_RESET_ONCE: u32 = 0x0000_2000;
 const DMG_PALETTE_BASE: u32 = 0x2000_0000;
 const COLOR_CORRECTION_BASE: u32 = 0x5000_0000;
@@ -237,6 +235,7 @@ impl Gameboy {
             ]
             .into_iter()
             .collect(),
+            statistics: Vec::new(),
             bitstream: crate::util::get_system_file_path("gameboy.bit.hs"),
         }
     }
@@ -396,16 +395,6 @@ impl CoreHandler for Gameboy {
             } else {
                 device.imu.enable_accel().unwrap();
             }
-        }
-
-        if paused {
-            // Debug output stall stats
-            let num_cycles = device.fpga.read_u32(REG_STAT_CYCLES).unwrap();
-            let num_stalls = device.fpga.read_u32(REG_STAT_STALLS).unwrap();
-            let _ = device.fpga.write_u32(REG_STAT_CYCLES, 0);
-            let _ = device.fpga.write_u32(REG_STAT_STALLS, 0);
-            let rate = (num_cycles as f32) / ((num_cycles as f32) + (num_stalls as f32));
-            log::info!("Run rate: {}%", rate * 100.0);
         }
     }
 
