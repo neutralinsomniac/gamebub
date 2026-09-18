@@ -932,8 +932,19 @@ class HandheldSnes extends Module with Core {
   /** What the glue's ROM header analysis found (register 0x0030, read-only; see the command interface). */
   val romInfoWire = Wire(UInt(23.W))
   /** Save-state control register (0x0014): the write strobe and data, acted on below. */
-  val ssControlWrite = WireDefault(false.B)
+  val ssControlWriteLevel = WireDefault(false.B)
   val ssControlWriteData = WireDefault(0.U(32.W))
+  /**
+   * One cycle per host write. The register interface holds its write strobe
+   * for as long as the request sits at the head of the SPI receiver's FIFO
+   * (two cycles at least: one to take it, one to see `done` and pop it), so
+   * the level would present a request to the core over several of the core's
+   * clock edges. The first edge arms the request in `savestates.sv` and the
+   * cancel that comes with the write then drops it again at the second one
+   * (the edge detector there has already consumed the request's rising
+   * edge), and nothing ever happens.
+   */
+  val ssControlWrite = ssControlWriteLevel && !RegNext(ssControlWriteLevel, false.B)
   val ssSlot = RegInit(0.U(2.W))
   /** Slot register (0x0018): the slot a request with bit 4 set uses (a settings descriptor's "State Slot"). */
   val ssSlotReg = RegInit(0.U(2.W))
@@ -978,7 +989,7 @@ class HandheldSnes extends Module with Core {
       0x0014 -> RegisterMap.Entry(32,
         RegisterMap.ReadFn(_ => Cat(ssSlot, 0.U(2.W))),
         RegisterMap.WriteFn((write, data) => {
-          ssControlWrite := write
+          ssControlWriteLevel := write
           ssControlWriteData := data
         })),
       0x0018 -> RegisterMap.Entry.rw(ssSlotReg),
