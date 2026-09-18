@@ -85,7 +85,8 @@ Verified against `firmware/handheld/src/core/{mod,info}.rs` at v1.1-beta:
 | Save/Load/Slot actions, 5 s timeout          | Settings write regs 0x14/0x18; glue has the timeout counter         |
 | Slot validity, states file size              | Glue scans slot headers on `FILE_READ_START`                        |
 | `.srm` size                                  | Glue answers `FILE_READ_START` from the RAM size code               |
-| User notifications, ROM verify, stall stats  | Dropped (stats stay readable over SPI for debugging)                |
+| User notifications                           | Dropped                                                             |
+| ROM verify, stall stats                      | `verify` on the file descriptor; `statistics` in `core.json`        |
 | System clock rate for SPI ceiling            | Default 8 MiHz assumption; only slows register access               |
 
 ## Work items (FPGA glue, `fpga/src/main/scala/net/gamebub/core/snes/`)
@@ -349,7 +350,11 @@ deleted along with its registry entries.
 - Error messages for unsupported cartridges become a generic core error;
   truncated ROMs are not detected at all (the core runs on what arrived).
 - No "state saved / failed / slot empty" notifications.
-- ROM read-back verification and the stall-statistics log (registers remain).
+- ROM read-back verification (restored: the `verify` flag on a file
+  descriptor) and the stall-statistics log (restored: `statistics` in
+  `core.json`, logged by `CoreManager::log_statistics` on a pause). Firmware
+  that does not know either key ignores it, so the package still runs on
+  stock 1.1.
 - Settings are persisted (a behaviour change, arguably an improvement);
   "Debug" switches persist too, so consider dropping them from
   `settings.json` for the release package.
