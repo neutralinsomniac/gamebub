@@ -463,6 +463,18 @@ class BurstSdramController(config: BurstSdramController.Config) extends Module {
     State.write.asUInt -> regAccessAddress.column, // No auto-precharge
     State.precharge.asUInt -> "b10000000000".U, // Precharge all banks
   ))
+  // Every PRECHARGE is a precharge-all (A10 high). The command register
+  // lags the state by a cycle, so the precharge that ends a suspended burst
+  // is on the pins in the idle state, where the address mux above is 0: it
+  // was a single-bank precharge of `regAccessAddress.bank`, which the
+  // request that ended the burst had already pointed at the *next* bank.
+  // The bank just read stayed open, and its next ACTIVE (from idle, after
+  // a suspend timeout or a refresh) was ignored by the chip: the read then
+  // returned the stale row. The precharges during a read or write (last
+  // word of a page, write recovery) address the bursting bank either way.
+  when (regCommand === Command.precharge) {
+    io.signals.address := "b10000000000".U
+  }
   io.signals.dataOut := regData.last
   io.signals.dataDir := regState === State.write
 
