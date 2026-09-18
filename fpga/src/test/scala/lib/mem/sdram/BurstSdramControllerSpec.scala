@@ -12,7 +12,9 @@ object BurstSdramControllerSpec {
   /**
    * A cycle-level model of an SDR SDRAM chip: CAS latency from the mode
    * register, full-page sequential bursts, clock suspend, single-row
-   * activation per bank.
+   * activation per bank (an ACTIVE to an open bank is ignored, and
+   * asserted: that is what the chip does when a precharge went to the
+   * wrong bank).
    *
    * The chip runs on the inverted controller clock: it samples the
    * controller's registered outputs half a cycle after they change, as the
@@ -48,6 +50,8 @@ object BurstSdramControllerSpec {
 
       val regCasLatency = RegInit(2.U(3.W))
       val openRow = Reg(Vec(4, UInt(13.W)))
+      /** Whether each bank has a row open (ACTIVE without PRECHARGE). */
+      val open = RegInit(VecInit(Seq.fill(4)(false.B)))
       val burstBank = Reg(UInt(2.W))
       val burstColumn = Reg(UInt(9.W))
       val readActive = RegInit(false.B)
@@ -64,6 +68,7 @@ object BurstSdramControllerSpec {
       val isWrite = command === "b0100".U
       val isRead = command === "b0101".U
       val isBurstStop = command === "b0110".U
+      val isRefresh = command === "b0001".U
 
       when (enabled) {
         // Pipeline advance (also while nothing is being read: the stages then carry stale data).
@@ -84,13 +89,31 @@ object BurstSdramControllerSpec {
           assert(io.signals.address(2, 0) === "b111".U, "the model only knows full-page bursts")
         }
         when (isActive) {
-          openRow(io.signals.bank) := io.signals.address
+          // A second ACTIVE to an open bank is illegal; the chip ignores it
+          // and the row stays as it was.
+          assert(!open(io.signals.bank), "ACTIVE to a bank that is already open")
+          when (!open(io.signals.bank)) {
+            open(io.signals.bank) := true.B
+            openRow(io.signals.bank) := io.signals.address
+          }
+        }
+        when (isPrecharge) {
+          // A10 high precharges every bank, low only the addressed one.
+          when (io.signals.address(10)) {
+            open.foreach(_ := false.B)
+          } .otherwise {
+            open(io.signals.bank) := false.B
+          }
+        }
+        when (isRefresh) {
+          assert(!open.asUInt.orR, "REFRESH with a bank open")
         }
         when (isPrecharge || isBurstStop) {
           readActive := false.B
           writeActive := false.B
         }
         when (isRead) {
+          assert(open(io.signals.bank), "READ from a bank with no row open")
           assert(io.signals.address(10) === 0.U, "the model does not know auto-precharge")
           readActive := true.B
           writeActive := false.B
@@ -99,6 +122,7 @@ object BurstSdramControllerSpec {
           stage(0) := mem.read(index(io.signals.bank, openRow(io.signals.bank), io.signals.address(8, 0)))
         }
         when (isWrite) {
+          assert(open(io.signals.bank), "WRITE to a bank with no row open")
           assert(io.signals.address(10) === 0.U, "the model does not know auto-precharge")
           assert(io.signals.dataDir, "write data must be driven with the command")
           readActive := false.B
@@ -270,6 +294,26 @@ class BurstSdramControllerSpec extends AnyFunSuite {
 
   test("SNES timing: data captured on the falling edge") {
     go(readLatencyExtra = 0, readCaptureFalling = true, dataOnRising = true) { h => exercise(h) }
+  }
+
+  test("a bank switch during a suspended burst, then a return from idle") {
+    // A read leaves its row open (suspended burst); a request for another
+    // bank arrives before the suspend times out; that access then times
+    // out into idle. The first bank's row must have been closed by then,
+    // or the ACTIVE for its next row is ignored and the read returns the
+    // stale row (the save-state failure: the program's 0xFF6000 line, a
+    // slot transfer in another bank, then the fetch of 0xFF0660).
+    go(readLatencyExtra = 0, readCaptureFalling = true, dataOnRising = true) { h =>
+      for (a <- Seq(nextRow, otherBank, sameRow(0), sameRow(1))) {
+        h.write(a, pattern(a))
+      }
+      h.step(64)
+      assert(h.read(nextRow) == pattern(nextRow))
+      assert(h.read(otherBank) == pattern(otherBank))
+      h.step(64) // past the suspend timeout: precharge, idle
+      assert(h.read(sameRow(0)) == pattern(sameRow(0)), "read after a bank switch and a timeout")
+      assert(h.read(sameRow(1)) == pattern(sameRow(1)))
+    }
   }
 
   test("a cycle of extra read latency is a cycle late here") {

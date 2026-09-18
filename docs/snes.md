@@ -397,8 +397,10 @@ focus (no input, no sound) from the request until the program has finished.
 Because the core only acts at an NMI / IRQ, a game that is waiting with
 interrupts off never gets there; the glue gives up after 5 s and cancels the
 request (as a write with both request bits clear does), which stops the
-clock again - the request itself stays armed in the core until the next
-reset. A load of a slot holding no state is ignored. The four slots are one core
+clock again. The cancel also reaches the core (`SS_CANCEL`, a Game Bub
+addition to `savestates.sv`), so a request the game never serviced does not
+fire at the next NMI after the game resumes; a new request replaces one
+that is still armed. A load of a slot holding no state is ignored. The four slots are one core
 file, `<rom>.ss` next to the ROM (whole 1 MiB slots up to the last one in
 use), which the core manager loads into the SDRAM with the ROM and writes
 back when the core exits, like the `.srm` save: a state reaches the SD card
