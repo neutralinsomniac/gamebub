@@ -1,0 +1,64 @@
+{
+  "settings": [
+    {
+      "id": 0,
+      "label": "Reset Core",
+      "address": "0x2000",
+      "type": "action",
+      "value": 1
+    },
+    {
+      "id": 1,
+      "label": "Region",
+      "address": "0x0",
+      "mask": "0xFFFFFFFC",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "US", "value": 0 },
+        { "label": "Japan", "value": 1 },
+        { "label": "Europe", "value": 2 }
+      ]
+    },
+    {
+      "id": 2,
+      "label": "PAL Video",
+      "address": "0x0",
+      "mask": "0xFFFFFFFB",
+      "default": 0,
+      "type": "checkbox",
+      "value": 4
+    },
+    {
+      "id": 3,
+      "label": "Disable Dithering",
+      "address": "0x0",
+      "mask": "0xFFFFFFF7",
+      "default": 0,
+      "type": "checkbox",
+      "value": 8
+    },
+    {
+      "id": 4,
+      "label": "Fast Boot",
+      "address": "0x0",
+      "mask": "0xFFFFFFEF",
+      "default": 0,
+      "type": "checkbox",
+      "value": 16
+    },
+    {
+      "id": 5,
+      "label": "Controller",
+      "address": "0x0",
+      "mask": "0xFFFFFF9F",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "Digital", "value": 0 },
+        { "label": "Analog", "value": "0x20" },
+        { "label": "DualShock", "value": "0x40" }
+      ]
+    }
+  ]
+}

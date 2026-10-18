@@ -71,7 +71,8 @@ FILE_TYPES = {
 # searched recursively. Order matters for VHDL (packages before users), so
 # entries are listed explicitly where needed.
 SNES_ROOT = "verilog/snes"
-CORE_FILES: dict[str, list[str]] = {
+PSX_ROOT = "verilog/psx"
+CORE_FILES: dict[str, list[str | dict]] = {
     "net.gamebub.core.snes.HandheldSnes": [
         # Generic memory / arithmetic wrappers
         f"{SNES_ROOT}/rtl/bram.vhd",
@@ -105,6 +106,12 @@ CORE_FILES: dict[str, list[str]] = {
         f"{SNES_ROOT}/rtl/savestates_sa1.sv",
         f"{SNES_ROOT}/rtl/main.v",
     ],
+    # The PSX core is VHDL-2008, all in the library `mem` (see
+    # verilog/psx/README.md); Vivado orders the files itself.
+    "net.gamebub.core.psx.HandheldPsx": [
+        dict(path=f"{PSX_ROOT}/rtl", file_type="vhdlSource-2008", logical_name="mem"),
+        dict(path=f"{PSX_ROOT}/gamebub", file_type="vhdlSource-2008", logical_name="mem"),
+    ],
 }
 
 
@@ -117,7 +124,10 @@ def collect_core_files(core_class: str) -> list[dict]:
     seen: set[Path] = set()
     files = []
     for entry in CORE_FILES.get(core_class, []):
-        path = FRAMEWORK_ROOT / entry
+        # An entry is a path, or a dict with the path and edalize file
+        # attributes (file_type, logical_name) for every file under it.
+        attributes = dict(entry) if isinstance(entry, dict) else dict(path=entry)
+        path = FRAMEWORK_ROOT / attributes.pop("path")
         if path.is_dir():
             candidates = sorted(p for p in path.rglob("*") if p.suffix in FILE_TYPES)
         else:
@@ -130,7 +140,7 @@ def collect_core_files(core_class: str) -> list[dict]:
             seen.add(candidate)
             # Note: main.v must be compiled as plain Verilog: it connects VHDL
             # ports named `do`, which is a SystemVerilog keyword.
-            files.append(dict(name=candidate, file_type=FILE_TYPES[candidate.suffix]))
+            files.append(dict(name=candidate, file_type=FILE_TYPES[candidate.suffix]) | attributes)
     return files
 
 
