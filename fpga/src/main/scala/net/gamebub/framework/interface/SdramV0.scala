@@ -16,6 +16,13 @@ class SdramV0(
     val bankWidth: Int = 2,
     /** Number of (parallel) chips used */
     val chips: Int = 1,
+    /**
+     * One data direction bit per data bit instead of one for the whole bus,
+     * so that each can come from its own register in the pin's I/O block
+     * (a register driving all sixteen tristate controls cannot be packed
+     * into any of them).
+     */
+    val dataDirPerBit: Boolean = false,
 ) extends Bundle {
   /** Clock */
   val clock = Output(Clock())
@@ -41,6 +48,6 @@ class SdramV0(
   val dataIn = Input(UInt(dataWidth.W))
   /** Data Output */
   val dataOut = Output(UInt(dataWidth.W))
-  /** Data Direction: true for output. */
-  val dataDir = Output(Bool())
+  /** Data Direction: true for output (per data bit with `dataDirPerBit`). */
+  val dataDir = Output(if (dataDirPerBit) UInt(dataWidth.W) else Bool())
 }

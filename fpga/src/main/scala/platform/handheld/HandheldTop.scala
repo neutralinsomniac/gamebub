@@ -93,6 +93,26 @@ object HandheldTop extends App {
   }
 
   var overlayFullDepth: Boolean = false
+
+  /**
+   * The SDRAM pins: all chips on one bus, with a chip select and a clock
+   * enable each, and a direction bit per data bit (see
+   * [[net.gamebub.framework.interface.SdramV0]]).
+   */
+  class SdramPins(chips: Int) extends Bundle {
+    val clock = Output(Clock())
+    val cke = Output(UInt(chips.W))
+    val cs = Output(UInt(chips.W))
+    val ras = Output(Bool())
+    val cas = Output(Bool())
+    val we = Output(Bool())
+    val dqm = Output(UInt(2.W))
+    val bank = Output(UInt(2.W))
+    val address = Output(UInt(13.W))
+    val dataIn = Input(UInt(16.W))
+    val dataOut = Output(UInt(16.W))
+    val dataDir = Output(UInt(16.W))
+  }
 }
 
 class HandheldInterrupts extends Bundle {
@@ -162,7 +182,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     val sram = new SramV0(addressWidth = 18, dataWidth = 16)
 
     // SDRAM
-    val sdram = new SdramV0(addressWidth = 13, dataWidth = 16, bankWidth = 2, chips = 1)
+    val sdram = new HandheldTop.SdramPins(revision.numSdramChips)
   })
 
   //////////////////////////////////
@@ -375,17 +395,30 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     }
   }
 
-  // SDRAM
+  // SDRAM. The chips share the bus; a chip the core does not use is
+  // deselected with its clock disabled (power-down).
   core.getInterface("sdram") match {
     case Some(sdram: SdramV0) => {
       assert(sdram.chips <= revision.numSdramChips)
-      io.sdram <> sdram
+      val unused = revision.numSdramChips - sdram.chips
+      io.sdram.clock := sdram.clock
+      io.sdram.cke := (if (unused > 0) Cat(0.U(unused.W), Fill(sdram.chips, sdram.cke)) else Fill(sdram.chips, sdram.cke))
+      io.sdram.cs := (if (unused > 0) Cat(Fill(unused, 1.U(1.W)), sdram.cs) else sdram.cs)
+      io.sdram.ras := sdram.ras
+      io.sdram.cas := sdram.cas
+      io.sdram.we := sdram.we
+      io.sdram.dqm := sdram.dqm
+      io.sdram.bank := sdram.bank
+      io.sdram.address := sdram.address
+      io.sdram.dataOut := sdram.dataOut
+      io.sdram.dataDir := (if (sdram.dataDirPerBit) sdram.dataDir else Fill(16, sdram.dataDir.asBool))
+      sdram.dataIn := io.sdram.dataIn
     }
     case Some(x) => throw new CoreException("Unknown 'sdram': " + x.getClass())
     case None => {
       io.sdram.clock := false.B.asClock
-      io.sdram.cke := false.B
-      io.sdram.cs := true.B
+      io.sdram.cke := 0.U
+      io.sdram.cs := Fill(revision.numSdramChips, 1.U(1.W))
       io.sdram.ras := true.B
       io.sdram.cas := true.B
       io.sdram.we := true.B
@@ -393,7 +426,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       io.sdram.bank := DontCare
       io.sdram.address := DontCare
       io.sdram.dataOut := DontCare
-      io.sdram.dataDir := false.B
+      io.sdram.dataDir := 0.U
     }
   }
 

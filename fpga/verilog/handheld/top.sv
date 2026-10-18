@@ -209,7 +209,7 @@ module top_handheld (
     logic [1:0] inner_sdram_dqm;
     logic [15:0] inner_sdram_dq_in;
     logic [15:0] inner_sdram_dq_out;
-    logic inner_sdram_dq_dir;
+    logic [15:0] inner_sdram_dq_dir;
 
     logic hdmi_audio_clock;
     logic [15:0] hdmi_audio [1:0];
@@ -335,8 +335,8 @@ module top_handheld (
         .io_sram_writeMaskN(inner_sram_write_mask),
 
         .io_sdram_clock(sdram_clk),
-        .io_sdram_cke(sdram_cke[0]),
-        .io_sdram_cs(sdram_cs_n[0]),
+        .io_sdram_cke(sdram_cke),
+        .io_sdram_cs(sdram_cs_n),
         .io_sdram_ras(sdram_ras_n),
         .io_sdram_cas(sdram_cas_n),
         .io_sdram_we(sdram_we_n),
@@ -416,10 +416,11 @@ module top_handheld (
 
     assign {sdram_udqm, sdram_ldqm} = inner_sdram_dqm;
     assign inner_sdram_dq_in = sdram_dq;
-    assign sdram_dq = inner_sdram_dq_dir ? inner_sdram_dq_out : 16'hzzzz;
-    // TODO: support second SDRAM chip (rev 4)
-    assign sdram_cke[1] = 1'b0;
-    assign sdram_cs_n[1] = 1'b1;
+    // One direction bit per pin, so that the core can drive each from a
+    // register in the pin's I/O block.
+    for (genvar i = 0; i < 16; i++) begin : gen_sdram_dq
+        assign sdram_dq[i] = inner_sdram_dq_dir[i] ? inner_sdram_dq_out[i] : 1'bz;
+    end
 
     // HDMI TMDS output
     logic hdmi_reset;
