@@ -2,15 +2,44 @@
   "files": [
     {
       "id": 0,
-      "label": "BIOS",
-      "extensions": ["bin"],
+      "label": "Disc",
+      "extensions": ["cue", "bin"],
       "optional": false,
       "read_only": true,
       "user_selected": true,
+      "disc": true,
+      "address": "0x60000000",
+      "max_size": "0x800"
+    },
+    {
+      "id": 1,
+      "label": "BIOS (US)",
+      "filename": "bios_us.bin",
+      "optional": true,
+      "read_only": true,
       "address": "0x30800000",
       "max_size": "0x80000",
-      "max_transfer_speed": 10000,
-      "verify": true
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 2,
+      "label": "BIOS (Japan)",
+      "filename": "bios_jp.bin",
+      "optional": true,
+      "read_only": true,
+      "address": "0x30880000",
+      "max_size": "0x80000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 3,
+      "label": "BIOS (Europe)",
+      "filename": "bios_eu.bin",
+      "optional": true,
+      "read_only": true,
+      "address": "0x30900000",
+      "max_size": "0x80000",
+      "max_transfer_speed": 10000
     }
   ]
 }
