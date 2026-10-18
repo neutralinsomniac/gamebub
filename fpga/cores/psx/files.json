@@ -1,0 +1,16 @@
+{
+  "files": [
+    {
+      "id": 0,
+      "label": "BIOS",
+      "extensions": ["bin"],
+      "optional": false,
+      "read_only": true,
+      "user_selected": true,
+      "address": "0x30800000",
+      "max_size": "0x80000",
+      "max_transfer_speed": 10000,
+      "verify": true
+    }
+  ]
+}

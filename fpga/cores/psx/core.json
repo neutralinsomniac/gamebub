@@ -1,0 +1,17 @@
+{
+  "metadata": {
+    "id": "jeremy.PSX",
+    "name": "PlayStation",
+    "author": "jeremy"
+  },
+  "bitstreams": [
+    { "target": "gamebub_rev4", "filename": "psx_rev4.bit" }
+  ],
+  "hardware": {
+    "cartridge_enable": "no"
+  },
+  "statistics": [
+    { "label": "SDRAM row hits", "address": "0x1000" },
+    { "label": "SDRAM row conflicts", "address": "0x1004" }
+  ]
+}
