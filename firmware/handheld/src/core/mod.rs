@@ -22,6 +22,7 @@ use crate::{
 pub use info::*;
 use settings::CoreSettings;
 
+mod disc;
 mod info;
 mod settings;
 
@@ -51,6 +52,11 @@ mod command {
     pub const FILE_READ_START: u32 = 0x0302;
     pub const FILE_READ_END: u32 = 0x0303;
 
+    // Core -> host requests (`REG_CMD_CORE_BASE`: command, arguments)
+    /// Read a sector of the disc in the file with ID arg 1, at LBA arg 2,
+    /// into the core's memory at arg 3 (`disc::SECTOR_SIZE` bytes).
+    pub const DISC_READ: u32 = 0x0400;
+
     // Status
     pub const STATUS_UNKNOWN: u32 = 0;
     pub const STATUS_INITIALIZE: u32 = 1;
@@ -79,6 +85,10 @@ pub struct CoreManager {
     run_cartridge: bool,
     /// When the core last got focus, to put a duration on the statistics.
     focus_since: Option<Instant>,
+    /// The CD images of the running core's `disc` files, by file ID.
+    discs: Vec<(u16, disc::DiscImage)>,
+    /// Sector buffer for disc reads.
+    sector: Vec<u8>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -182,6 +192,8 @@ impl CoreManager {
             selected_files: Vec::new(),
             run_cartridge: false,
             focus_since: None,
+            discs: Vec::new(),
+            sector: Vec::new(),
         }
     }
 
@@ -328,6 +340,7 @@ impl CoreManager {
         self.core_settings = None;
         self.stage = Stage::Idle;
         self.selected_files.clear();
+        self.discs.clear();
 
         Device::lock().set_cart_power(false);
     }
@@ -607,6 +620,8 @@ impl CoreManager {
 
     fn finish_loading_inner(&mut self) -> Result<(), CoreError> {
         self.load_bitstream();
+        // Requests from the core (disc reads), from whenever it runs.
+        let _ = Device::lock().fpga.enable_interrupt(fpga::Irq::CoreRequest);
 
         // Wait for the core to be ready for setup.
         self.poll_core_status(command::STATUS_SETUP, SETUP_TIMEOUT)?;
@@ -668,6 +683,70 @@ impl CoreManager {
         let _ = self.run_core_command(&[command::CORE_RUN], &mut [], NOTIFY_TIMEOUT);
         self.focus_changed(true);
         Ok(())
+    }
+
+    /// Serve a request from the core (the core request interrupt): the
+    /// command and its arguments are in `REG_CMD_CORE_BASE`. The answer is
+    /// `done` or `error` in `REG_CTRL_CMD_CORE`, which the core acknowledges
+    /// by dropping its request; then the answer is cleared for the next one.
+    pub fn handle_core_request(&mut self) {
+        let words = {
+            let mut device = Device::lock();
+            let Ok(status) = device.fpga.read_u32(fpga::REG_CTRL_CMD_CORE) else {
+                return;
+            };
+            // A request without an answer yet?
+            if (status & 0b1000) == 0 || (status & 0b0011) != 0 {
+                return;
+            }
+            let mut words = [0u32; 4];
+            for (i, word) in words.iter_mut().enumerate() {
+                *word = device
+                    .fpga
+                    .read_u32(fpga::REG_CMD_CORE_BASE + 4 * i as u32)
+                    .unwrap_or(0);
+            }
+            words
+        };
+
+        let ok = match words[0] {
+            command::DISC_READ => self.disc_read(words[1] as u16, words[2], words[3]),
+            other => {
+                log::warn!("Unknown core request {other:04X}");
+                false
+            }
+        };
+
+        let mut device = Device::lock();
+        let _ = device
+            .fpga
+            .write_u32(fpga::REG_CTRL_CMD_CORE, if ok { 0b0010 } else { 0b0001 });
+        for _ in 0..16 {
+            match device.fpga.read_u32(fpga::REG_CTRL_CMD_CORE) {
+                Ok(status) if (status & 0b1000) != 0 => continue,
+                _ => break,
+            }
+        }
+        let _ = device.fpga.write_u32(fpga::REG_CTRL_CMD_CORE, 0);
+    }
+
+    /// `DISC_READ`: a sector of a disc into the core's memory.
+    fn disc_read(&mut self, id: u16, lba: u32, address: u32) -> bool {
+        let Some((_, image)) = self.discs.iter_mut().find(|(i, _)| *i == id) else {
+            log::warn!("Disc read: no disc in file {id}");
+            return false;
+        };
+        self.sector.resize(disc::SECTOR_SIZE, 0);
+        let sector: &mut [u8; disc::SECTOR_SIZE] = self.sector.as_mut_slice().try_into().unwrap();
+        if let Err(e) = image.read_sector(lba, sector) {
+            log::error!("Disc read at {lba}: {e}");
+            return false;
+        }
+        let command = SpiCommand::new(fpga::FpgaSpiWordSize::Bits32);
+        Device::lock()
+            .fpga
+            .spi_write(None, command, address, &self.sector)
+            .is_ok()
     }
 
     fn load_bitstream(&mut self) {
@@ -741,6 +820,35 @@ impl CoreManager {
                     return Err(CannotOpenFile(info.label.to_string()));
                 }
             };
+
+            if info.disc {
+                // A CD image: the core gets its table of contents, and sectors on request.
+                drop(file);
+                let path = self.selected_files[i].as_ref().unwrap();
+                let image = disc::DiscImage::open(path)
+                    .map_err(|e| FailedLoadFile(info.label.to_string(), e))?;
+                image.log();
+                let toc = image.toc();
+                if info.max_size != 0 && toc.len() > info.max_size as usize {
+                    return Err(FileTooBig(info.label.to_string(), info.max_size, toc.len() as u32));
+                }
+                self.run_core_command(
+                    &[command::FILE_WRITE_START, info.id as u32],
+                    &mut [],
+                    SETUP_TIMEOUT,
+                )?;
+                Device::lock()
+                    .fpga
+                    .spi_write(None, SpiCommand::new(info.transfer_word_size), info.address, &toc)
+                    .unwrap();
+                self.run_core_command(
+                    &[command::FILE_WRITE_END, info.id as u32, toc.len() as u32, 0],
+                    &mut [],
+                    NOTIFY_TIMEOUT,
+                )?;
+                self.discs.push((info.id, image));
+                continue;
+            }
 
             self.run_core_command(
                 &[command::FILE_WRITE_START, info.id as u32],

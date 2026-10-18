@@ -69,6 +69,8 @@ pub enum Irq {
     Button = 1,
     SpiRequestOverflow = 2,
     SpiResponseUnderflow = 3,
+    /// The core raised a request (`REG_CTRL_CMD_CORE`).
+    CoreRequest = 4,
 }
 
 impl Irq {

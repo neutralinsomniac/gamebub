@@ -71,6 +71,11 @@ pub struct CoreFile {
     /// behind the window; costs about the transfer time again).
     #[serde(default)]
     pub verify: bool,
+    /// If true, the file is a CD image (a `.cue` sheet with its `.bin` files,
+    /// or a raw `.bin`): its table of contents goes to `address` instead of
+    /// the file, and the core reads sectors by request (see `core::disc`).
+    #[serde(default)]
+    pub disc: bool,
 
     /// The address to load the file to.
     #[serde(deserialize_with = "deserialize_hex_u32")]
