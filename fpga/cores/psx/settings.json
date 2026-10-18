@@ -12,22 +12,48 @@
       "label": "Region",
       "address": "0x0",
       "mask": "0xFFFFFFFC",
-      "default": 0,
+      "default": 3,
       "type": "list",
       "items": [
-        { "label": "US", "value": 0 },
-        { "label": "Japan", "value": 1 },
-        { "label": "Europe", "value": 2 }
+        {
+          "label": "Auto",
+          "value": 3
+        },
+        {
+          "label": "US",
+          "value": 0
+        },
+        {
+          "label": "Japan",
+          "value": 1
+        },
+        {
+          "label": "Europe",
+          "value": 2
+        }
       ]
     },
     {
       "id": 2,
-      "label": "PAL Video",
+      "label": "Video",
       "address": "0x0",
-      "mask": "0xFFFFFFFB",
-      "default": 0,
-      "type": "checkbox",
-      "value": 4
+      "mask": "0xFFFFFEFB",
+      "default": "0x100",
+      "type": "list",
+      "items": [
+        {
+          "label": "Auto",
+          "value": "0x100"
+        },
+        {
+          "label": "NTSC",
+          "value": 0
+        },
+        {
+          "label": "PAL",
+          "value": 4
+        }
+      ]
     },
     {
       "id": 3,
@@ -55,9 +81,18 @@
       "default": 0,
       "type": "list",
       "items": [
-        { "label": "Digital", "value": 0 },
-        { "label": "Analog", "value": "0x20" },
-        { "label": "DualShock", "value": "0x40" }
+        {
+          "label": "Digital",
+          "value": 0
+        },
+        {
+          "label": "Analog",
+          "value": "0x20"
+        },
+        {
+          "label": "DualShock",
+          "value": "0x40"
+        }
       ]
     }
   ]

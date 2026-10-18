@@ -9,9 +9,8 @@ lists the local changes) and wrapped by Chisel glue in
 (`fpga/cores/psx/`) and needs a rev 4 board: it uses both SDRAM chips.
 
 **Status (2026-10-18):** builds and meets timing; not yet run on hardware.
-The first milestone is the BIOS shell (memory card manager / CD player) on the
-LCD, with sound and input. Not there yet: discs (CD images), memory cards,
-save states, HDMI.
+Discs are read from CD images on the SD card (with firmware support, see
+"Discs"). Not there yet: memory cards, save states, HDMI.
 
 Vivado 2025.1: 40.1 k LUTs (63 %), 62.5 of 135 block RAM tiles, 98 DSPs;
 timing met at 33.85 / 67.71 / 101.56 MHz.
@@ -21,9 +20,16 @@ timing met at 33.85 / 67.71 / 101.56 MHz.
     cd fpga && make psx package-psx
 
 builds `build/psx/psx.bit` and stages `build/package/cores/jeremy.PSX/`; copy
-that directory to the SD card's `cores/`. For now the core asks for the BIOS
-image when it starts (a 512 KiB `.bin`, e.g. SCPH-1001); it is loaded into
-SDRAM and read back to verify the transfer.
+that directory to the SD card's `cores/`, and put BIOS images (512 KiB) next to
+the bitstream, named by region: `bios_us.bin` (e.g. SCPH-1001), `bios_jp.bin`,
+`bios_eu.bin`. One is enough; a disc from another region needs that region's
+BIOS. The firmware must be this tree's (it serves the disc reads).
+
+Starting the core asks for a disc: a `.cue` sheet (with its `.bin` files, one
+for the whole disc or one per track) or a lone `.bin`, of raw 2352-byte
+sectors (the usual rips; `.iso` and CHD are not supported). The region (and
+with it the BIOS and NTSC / PAL) is taken from the disc unless set in the
+core's settings.
 
 Controls: the PlayStation's face buttons are where the Game Bub's are (Cross
 = B, Circle = A, Square = Y, Triangle = X), L / R are L1 / R1, and Select + L /
@@ -94,11 +100,44 @@ fetched, so a game's buffer flip at vertical blanking never shows mid-frame.
 Not yet: HDMI (row by row: black for now), the vertical display range (PAL
 games' extra lines), interlaced games that draw one field at a time.
 
+### Discs
+
+The core asks for one 2352-byte sector at a time, by absolute LBA, and takes
+the sector's 1176 halfwords through its `cd_hps_*` port (the MiSTer's HPS
+interface); its track table comes through `trackinfo_*`. `psx.PsxDisc`
+connects them to a firmware service through the framework's core -> host
+request channel (`HostV0.commandCore`):
+
+- The disc's file (ID 0) is marked `"disc": true` in `files.json`. The
+  firmware (`firmware/handheld/src/core/disc.rs`) parses the `.cue` sheet,
+  keeps the `.bin` files open, and writes the table of contents to the file's
+  address (0x6000_0000, a block RAM in the glue) instead of the file: the
+  track count, the lead-out, and per track its first and last LBA, its index
+  1 LBA and position (BCD) and whether it is audio. LBAs are absolute: track
+  1's index 1 is at 150 (00:02:00).
+- For a sector, the glue sets the request words (0xF000_1000: `DISC_READ`
+  0x0400, file ID, LBA, destination) and raises the request; the firmware
+  (core request interrupt) reads the sector into the glue's sector buffer
+  (0x7000_0000) and answers `done`; the glue acknowledges the core and
+  streams the sector in.
+- When the core is first started, the glue holds it in reset and reads the
+  license sector (154): its text ends in "...Entertainment Amer  ica",
+  "... Inc." or "...Euro pe", which gives the region. Each time the core leaves
+  reset it gets the track table (MiSTer's `disk_t` layout, with that region).
+
+The BIOS images are three optional files with fixed names (IDs 1-3, the
+core's BIOS slots at 8 MiB + 512 KiB x region); the glue uses the region's,
+or the first that was loaded, and fails `SETUP_COMPLETE` without any.
+
+Not supported: libcrypt (`.sbi` subchannel data; the protected games need
+it), multi-disc swapping, CHD.
+
 ### Tests
 
 `psx.SdramEngineSpec` (the engine against a model of the chips that checks
 every timing rule), `psx.PsxMemorySpec` (the memory with its three clocks,
-driven as the core and the host drive it) and `psx.PsxScanoutSpec` (frames
-scanned out of a random VRAM, compared pixel for pixel):
+driven as the core and the host drive it), `psx.PsxScanoutSpec` (frames
+scanned out of a random VRAM, compared pixel for pixel) and `psx.PsxDiscSpec`
+(the firmware and the core's drive played against the disc glue):
 
     cd fpga && ./mill root.test.testOnly 'psx.*'
