@@ -163,7 +163,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     val sram = new SramV0(addressWidth = 18, dataWidth = 16)
 
     // SDRAM
-    val sdram = new SdramV0(addressWidth = 13, dataWidth = 16, bankWidth = 2, chips = revision.numSdramChips)
+    val sdram = new SdramV0(addressWidth = 13, dataWidth = 16, bankWidth = 2, chips = revision.numSdramChips, dataDirPerBit = true)
   })
 
   //////////////////////////////////
@@ -369,7 +369,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     }
   }
 
-  // SDRAM
+  // SDRAM. The chips share the bus; a chip the core does not use is
+  // deselected with its clock disabled (power-down).
   core.getInterface("sdram") match {
     case Some(sdram: SdramV0) => {
       assert(sdram.chips <= revision.numSdramChips)
@@ -381,7 +382,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       io.sdram.bank := sdram.bank
       io.sdram.address := sdram.address
       io.sdram.dataOut := sdram.dataOut
-      io.sdram.dataDir := sdram.dataDir
+      io.sdram.dataDir := (if (sdram.dataDirPerBit) sdram.dataDir else Fill(16, sdram.dataDir.asUInt))
       sdram.dataIn := io.sdram.dataIn
 
       // Unused chips: nCS = 1, CKE = 0
@@ -401,7 +402,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       io.sdram.bank := DontCare
       io.sdram.address := DontCare
       io.sdram.dataOut := DontCare
-      io.sdram.dataDir := false.B
+      io.sdram.dataDir := 0.U
     }
   }
 
