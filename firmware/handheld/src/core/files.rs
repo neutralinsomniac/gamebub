@@ -104,6 +104,34 @@ impl CoreManager {
                 }
             };
 
+            if info.disc {
+                // A CD image: the core gets its table of contents, and sectors on request.
+                drop(file);
+                let image = super::disc::DiscImage::open(&path)
+                    .map_err(|e| FailedLoadFile(info.label.to_string(), e))?;
+                image.log();
+                let toc = image.toc();
+                if info.max_size != 0 && toc.len() > info.max_size as usize {
+                    return Err(FileTooBig(info.label.to_string(), info.max_size, toc.len() as u32));
+                }
+                self.run_core_command(
+                    &[command::FILE_WRITE_START, info.id as u32],
+                    &mut [],
+                    SETUP_TIMEOUT,
+                )?;
+                Device::lock()
+                    .fpga
+                    .spi_write(None, SpiCommand::new(info.transfer_word_size), info.address, &toc)
+                    .unwrap();
+                self.run_core_command(
+                    &[command::FILE_WRITE_END, info.id as u32, toc.len() as u32, 0],
+                    &mut [],
+                    NOTIFY_TIMEOUT,
+                )?;
+                self.discs.push((info.id, image));
+                continue;
+            }
+
             self.run_core_command(
                 &[command::FILE_WRITE_START, info.id as u32],
                 &mut [],

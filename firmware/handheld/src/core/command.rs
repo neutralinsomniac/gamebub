@@ -23,6 +23,9 @@ pub const FILE_SET_SIZE: u32 = 0x0401;
 pub const FILE_READ: u32 = 0x0402;
 pub const FILE_WRITE: u32 = 0x0403;
 pub const FILE_FLUSH: u32 = 0x0404;
+/// Read a sector of the disc in the file with ID arg 1, at LBA arg 2, into
+/// the core's memory at arg 3 (`disc::SECTOR_SIZE` bytes).
+pub const DISC_READ: u32 = 0x0480;
 
 // Status
 #[allow(unused)]
@@ -152,6 +155,7 @@ impl CoreManager {
             FILE_READ => Self::handle_file_read,
             FILE_WRITE => Self::handle_file_write,
             FILE_FLUSH => Self::handle_file_flush,
+            DISC_READ => Self::handle_disc_read,
             _ => {
                 log::warn!("Unknown core request 0x{:04X}", command_id);
                 // Mark command as "done" and "error".

@@ -21,6 +21,7 @@ pub use info::*;
 use settings::CoreSettings;
 
 mod command;
+mod disc;
 mod error;
 mod file_selection;
 mod files;
@@ -58,6 +59,10 @@ pub struct CoreManager {
     run_cartridge: bool,
     /// When the core last got focus, to put a duration on the statistics.
     focus_since: Option<Instant>,
+    /// The CD images of the running core's `disc` files, by file ID.
+    discs: Vec<(u16, disc::DiscImage)>,
+    /// Sector buffer for disc reads.
+    sector: Vec<u8>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -84,6 +89,8 @@ impl CoreManager {
             open_on_demand_file: None,
             run_cartridge: false,
             focus_since: None,
+            discs: Vec::new(),
+            sector: Vec::new(),
         }
     }
 
@@ -231,6 +238,7 @@ impl CoreManager {
         self.stage = Stage::Idle;
         self.selected_files.clear();
         self.open_on_demand_file = None;
+        self.discs.clear();
 
         InputManager::lock().clear_core_input_caps();
 
@@ -424,6 +432,27 @@ impl CoreManager {
         let _ = self.run_core_command(&[command::CORE_RUN], &mut [], NOTIFY_TIMEOUT);
         self.focus_changed(true);
         Ok(())
+    }
+
+    /// `DISC_READ`: a sector of a disc into the core's memory (file ID,
+    /// LBA, address).
+    fn handle_disc_read(&mut self, params: &[u32], _result: &mut [u32]) -> bool {
+        let (id, lba, address) = (params[0] as u16, params[1], params[2]);
+        let Some((_, image)) = self.discs.iter_mut().find(|(i, _)| *i == id) else {
+            log::warn!("Disc read: no disc in file {id}");
+            return false;
+        };
+        self.sector.resize(disc::SECTOR_SIZE, 0);
+        let sector: &mut [u8; disc::SECTOR_SIZE] = self.sector.as_mut_slice().try_into().unwrap();
+        if let Err(e) = image.read_sector(lba, sector) {
+            log::error!("Disc read at {lba}: {e}");
+            return false;
+        }
+        let command = fpga::SpiCommand::new(fpga::FpgaSpiWordSize::Bits32);
+        Device::lock()
+            .fpga
+            .spi_write(None, command, address, &self.sector)
+            .is_ok()
     }
 
     fn load_bitstream(&mut self) {
