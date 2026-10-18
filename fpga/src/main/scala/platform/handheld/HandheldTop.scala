@@ -247,9 +247,31 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         video.colorDepthB,
       )
     }
+    case Some(video: VideoPullV0) => {
+      // The core produces the screen's pixels itself (see the video
+      // section); only its vertical blanking is used here. The frame size
+      // is nominal (it fits both the LCD and HDMI, so the scaling below
+      // works out; the pixels it computes are not used).
+      coreVideo.dataR := 0.U
+      coreVideo.dataG := 0.U
+      coreVideo.dataB := 0.U
+      coreVideo.dataEnable := false.B
+      coreVideo.hblank := false.B
+      coreVideo.vblank := video.vblank
+      (
+        640,
+        480,
+        video.framePeriod,
+        8,
+        8,
+        8,
+      )
+    }
     case Some(x) => throw new CoreException("Unknown 'video': " + x.getClass())
     case None => throw new CoreException("'video' is required")
   }
+  /** The core produces the pixels on demand ([[VideoPullV0]]): no frame buffers. */
+  val videoPull: Option[VideoPullV0] = core.getInterface("video").collect { case video: VideoPullV0 => video }
 
   // Video filter
   val videoFilterIn = Wire(ColorRGB(videoColorDepthR, videoColorDepthG, videoColorDepthB))
@@ -570,8 +592,8 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
   //////////////////////////////////
   io.hdmiEnable := controlDock.docked
 
-  // Double buffering
-  val framebuffers = (0 until 2).map(_ =>
+  // Double buffering (none for a core producing its pixels on demand)
+  val framebuffers = (0 until (if (videoPull.isEmpty) 2 else 0)).map(_ =>
     SRAM(
       videoWidth * videoHeight, UInt((videoColorDepthR + videoColorDepthG + videoColorDepthB).W),
       readPortClocks = Seq(io.clock_av), writePortClocks = Seq(), readwritePortClocks = Seq(clock)
@@ -613,18 +635,31 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     // Read from the correct framebuffer.
     val framebufferIndex = Wire(UInt(1.W))
     val lastFrameComplete = XpmCdcSingle(clock, regLastFrameComplete.asBool).asUInt
-    for (i <- 0 until 2) {
+    for (i <- framebuffers.indices) {
       framebuffers(i).readPorts(0).enable := framebufferIndex === i.U
       framebuffers(i).readPorts(0).address := framebufferReadAddress
     }
     val framebufferRead = MuxLookup(framebufferIndex, 0.U)(
-      (0 until 2).map(i => i.U -> RegNext(RegNext(framebuffers(i).readPorts(0).data)))
+      framebuffers.indices.map(i => i.U -> RegNext(RegNext(framebuffers(i).readPorts(0).data)))
     ).asTypeOf(ColorRGB(videoColorDepthR, videoColorDepthG, videoColorDepthB))
 
     // Apply core video filter
     videoFilterIn := framebufferRead
-    val framebufferColor = videoFilterOut
+    // A core producing its pixels on demand supplies the color itself (and
+    // draws its own border: it is always "in bounds").
+    val framebufferColor = videoPull.map(_.data).getOrElse(videoFilterOut)
     videoFilterReset := reset_av
+    videoPull.foreach { pull =>
+      pull.clock := io.clock_av
+      pull.reset := reset_av.asBool
+      // Driven by the HDMI / LCD scan below.
+      pull.x := DontCare
+      pull.y := DontCare
+      pull.screenWidth := DontCare
+      pull.screenHeight := DontCare
+      pull.columnMajor := DontCare
+      pull.frameStart := false.B
+    }
 
     // Similar for overlay framebuffer.
     overlayFramebuffer.readPorts(0).enable := true.B
@@ -717,6 +752,16 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         videoX < (videoOffsetX + (videoWidth * videoScale)).U &&
         videoY >= videoOffsetY.U &&
         videoY < (videoOffsetY + (videoHeight * videoScale)).U
+      videoPull.foreach { pull =>
+        // Row by row; the request runs `latency` pixels ahead along the row.
+        pull.x := videoX + pull.latency.U
+        pull.y := videoY
+        pull.screenWidth := screenWidth.U
+        pull.screenHeight := screenHeight.U
+        pull.columnMajor := false.B
+        pull.frameStart := hdmiFramePulse && !RegNext(hdmiFramePulse)
+        framebufferInBounds := true.B
+      }
 
       // Scale overlay
       val overlayScale = (screenWidth / overlayWidth).min(screenHeight / overlayHeight)
@@ -764,6 +809,24 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         dpiX < (videoOffsetX + (videoWidth * videoScale)).U &&
         dpiY >= videoOffsetY.U &&
         dpiY < (videoOffsetY + (videoHeight * videoScale)).U
+      videoPull.foreach { pull =>
+        // The request runs `latency` pixels ahead along the driver's scan
+        // line, in the driver's own (wrapping) counter, so that the first
+        // pixels of a line are requested from its blanking. The display
+        // offset is applied to x, so that a picture centered on the screen
+        // lands where a centered framebuffer would.
+        val aheadX = dpiDriverIo.pixelX + pull.latency.U
+        val pullX = if (revision.displayRotate) dpiDriverIo.pixelY else aheadX
+        val pullY = if (revision.displayRotate) aheadX else dpiDriverIo.pixelY
+        pull.x := pullX.pad(10) + ((-revision.displayOffsetX) & 0x3FF).U
+        pull.y := pullY.pad(10)
+        pull.screenWidth := screenWidth.U
+        pull.screenHeight := screenHeight.U
+        pull.columnMajor := revision.displayRotate.B
+        val vsync = dpiDriverIo.signals.vsync
+        pull.frameStart := vsync && !RegNext(vsync)
+        framebufferInBounds := true.B
+      }
 
       // Scale overlay
       val overlayScale = (screenWidth / overlayWidth).min(screenHeight / overlayHeight)
@@ -853,7 +916,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
   overlayInterface.done := RegNext(overlayInterface.enable)
 
   // Framebuffer read via SPI.
-  for (i <- 0 until 2) {
+  for (i <- framebuffers.indices) {
     framebuffers(i).readwritePorts(0).enable := false.B
     framebuffers(i).readwritePorts(0).address := DontCare
     framebuffers(i).readwritePorts(0).isWrite := DontCare
@@ -861,7 +924,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
   }
   val framebufferInterfaceRead = framebufferInterface.enable && !framebufferInterface.write
   when (framebufferInterfaceRead) {
-    for (i <- 0 until 2) {
+    for (i <- framebuffers.indices) {
       when (regLastFrameComplete === i.U) {
         framebuffers(i).readwritePorts(0).enable := true.B
         framebuffers(i).readwritePorts(0).address := (framebufferInterface.address >> 1.U).asUInt
@@ -870,7 +933,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     }
   }
   framebufferInterface.dataRead := MuxLookup(regLastFrameComplete, 0.U)(
-    (0 until 2).map(i => i.U ->
+    framebuffers.indices.map(i => i.U ->
       RegNext(RegNext(framebuffers(i).readwritePorts(0).readData))
     ))
   framebufferInterface.done := RegNext(RegNext(framebufferInterface.enable))
@@ -893,7 +956,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       data.r := coreVideo.dataR
       data.g := coreVideo.dataG
       data.b := coreVideo.dataB
-      for (i <- 0 until 2) {
+      for (i <- framebuffers.indices) {
         framebuffers(i).readwritePorts(0).enable := (i.U === framebufferWriteIndex)
         framebuffers(i).readwritePorts(0).address := address
         framebuffers(i).readwritePorts(0).isWrite := true.B
