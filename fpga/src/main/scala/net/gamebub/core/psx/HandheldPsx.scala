@@ -6,7 +6,7 @@ import lib.mem.{MemoryInterface, MemoryMap, RegisterMap}
 import lib.mem.sram.AsyncSramController
 import net.gamebub.framework.Core
 import net.gamebub.framework.interface._
-import psx.{PsxCore, PsxMemory, PsxScanout, SdramEngine}
+import psx.{PsxCore, PsxDisc, PsxMemory, PsxScanout, SdramEngine}
 import xilinx.{MMCM, ODDRWrapper}
 
 object HandheldPsx {
@@ -60,9 +60,24 @@ object HandheldPsx {
 
   /** Host memory map (32-bit words). */
   object HostMap {
-    /** SDRAM: chip 0 (main RAM at 0, BIOS at 8 MiB) at 0x3000_0000, chip 1 at 0x3200_0000. */
+    /**
+     * SDRAM: chip 0 at 0x3000_0000 (main RAM at 0; the BIOS slots, 512 KiB
+     * each, US / Japan / Europe, from 8 MiB), chip 1 at 0x3200_0000.
+     */
     val Sdram = 0x3000_0000L
     val Bios = Sdram + 0x80_0000
+    /** The disc's table of contents (see [[psx.PsxDisc]]). */
+    val DiscToc = 0x6000_0000L
+    /** The disc sector buffer. */
+    val DiscSector = 0x7000_0000L
+  }
+
+  /** File IDs (files.json): the disc, and the BIOS for each region (slots 0-2, the core's region codes). */
+  object FileId {
+    val Disc = 0
+    val BiosUs = 1
+    val BiosJapan = 2
+    val BiosEurope = 3
   }
 }
 
@@ -136,11 +151,19 @@ class HandheldPsx extends Module with Core {
   val regCoreResetOnce = RegInit(false.B)
   regCoreResetOnce := false.B
 
+  /** Files loaded: the disc's table of contents, the BIOS slots. */
+  val discLoaded = RegInit(false.B)
+  val biosLoaded = RegInit(VecInit(Seq.fill(3)(false.B)))
+  val coreRunPulse = WireDefault(false.B)
+  val disc = Module(new PsxDisc(sectorHostAddress = HostMap.DiscSector))
+
   //////////////////////////////////
   // Host registers
   //////////////////////////////////
   // N.B. the last field is bit 0 of the register.
-  val configReg = RegInit(0.U(8.W).asTypeOf(new Bundle {
+  val configReg = RegInit(0x103.U(9.W).asTypeOf(new Bundle {
+    /** Bit 8: PAL video timing if the region is Europe (bit 2 is ignored). */
+    val videoAuto = Bool()
     /** Bit 7: fixed vertical blanking (upstream option). */
     val fixedVBlank = Bool()
     /** Bit 6: the controller is a DualShock (analog sticks and rumble). */
@@ -153,13 +176,25 @@ class HandheldPsx extends Module with Core {
     val ditherOff = Bool()
     /** Bit 2: PAL video timing. */
     val pal = Bool()
-    /** Bits 1-0: console region (0 US, 1 Japan, 2 Europe). */
+    /** Bits 1-0: console region (0 US, 1 Japan, 2 Europe, 3 the disc's). */
     val region = UInt(2.W)
   }))
   val statusWire = Wire(UInt(8.W))
-  val statRowHits = RegInit(0.U(32.W))
-  val statRowConflicts = RegInit(0.U(32.W))
-  val statClearWire = WireDefault(false.B)
+  val discTocInterface = Wire(new MemoryInterface(addressWidth = 11, dataWidth = 32))
+  val discSectorInterface = Wire(new MemoryInterface(addressWidth = 12, dataWidth = 32))
+  // Statistics (the firmware logs them when the game is paused, clearing
+  // each by writing it; 0x1000 / 0x1004 are the stall / run cycles every
+  // core has, here the clk1x cycles with a main RAM access outstanding and
+  // those with the core running).
+  val statMemoryWait = RegInit(0.U(32.W))
+  val statRun = RegInit(0.U(32.W))
+  val statRowHits = Wire(UInt(32.W))
+  val statRowConflicts = Wire(UInt(32.W))
+  /** Clear pulses, by counter (0x1000 + 4 * index). */
+  val statClear = WireDefault(VecInit(Seq.fill(7)(false.B)))
+  def statEntry(index: Int, value: UInt) = (0x1000 + 4 * index) -> RegisterMap.Entry(32,
+    RegisterMap.ReadFn(_ => value),
+    RegisterMap.WriteFn((write, _) => { statClear(index) := write }))
 
   val registerInterface = Wire(new MemoryInterface(addressWidth = 16, dataWidth = 32))
   val sdramHost = Wire(new MemoryInterface(addressWidth = 26, dataWidth = 32))
@@ -170,6 +205,8 @@ class HandheldPsx extends Module with Core {
     entries = Seq(
       0x0.U(4.W) -> registerInterface,
       0x3.U(4.W) -> sdramHost,
+      0x6.U(4.W) -> discTocInterface,
+      0x7.U(4.W) -> discSectorInterface,
       0xF0.U(8.W) -> commandInterface,
     ))
   io.host.mem.unsafe :<>= memoryMap.unsafe
@@ -181,11 +218,15 @@ class HandheldPsx extends Module with Core {
     entries = Seq(
       0x0000 -> RegisterMap.Entry.rw(configReg),
       0x0100 -> RegisterMap.Entry.r(statusWire),
-      0x1000 -> RegisterMap.Entry.r(statRowHits),
-      0x1004 -> RegisterMap.Entry.r(statRowConflicts),
-      0x10FC -> RegisterMap.Entry(32,
-        RegisterMap.ReadFn(_ => 0.U),
-        RegisterMap.WriteFn((write, _) => { statClearWire := write })),
+      statEntry(0, statMemoryWait),
+      statEntry(1, statRun),
+      statEntry(2, statRowHits),
+      statEntry(3, statRowConflicts),
+      statEntry(4, disc.io.sectorReads),
+      statEntry(5, disc.io.readErrors),
+      statEntry(6, disc.io.worstWait),
+      // The disc's region (bit 2: recognized; bits 1-0: 0 US, 1 Japan, 2 Europe)
+      0x1100 -> RegisterMap.Entry.r(Cat(disc.io.region.valid, disc.io.region.bits)),
       0x2000 -> RegisterMap.Entry(32,
         RegisterMap.ReadFn(_ => 0.U),
         RegisterMap.WriteFn((write, data) => { when (write && data(0)) { regCoreResetOnce := true.B } })),
@@ -223,31 +264,31 @@ class HandheldPsx extends Module with Core {
   io.sdram.dataDir := memory.io.pins.dqOe
   memory.io.pins.dqIn := io.sdram.dataIn
 
-  // Statistics (clk3x pulses, counted there and read here).
+  // Row statistics: clk3x pulses, counted there and read here.
   withClockAndReset(clk3x, reset3x) {
-    val hits = RegInit(0.U(32.W))
-    val conflicts = RegInit(0.U(32.W))
-    val clear = RegNext(statClearWire, false.B)
-    when (clear) {
-      hits := 0.U
-      conflicts := 0.U
-    } .otherwise {
-      when (memory.io.rowHit) { hits := hits + 1.U }
-      when (memory.io.rowConflict) { conflicts := conflicts + 1.U }
+    def counter(event: Bool, clear: Bool): UInt = {
+      val count = RegInit(0.U(32.W))
+      when (RegNext(clear, false.B)) {
+        count := 0.U
+      } .elsewhen (event) {
+        count := count + 1.U
+      }
+      count
     }
-    statRowHits := hits
-    statRowConflicts := conflicts
+    statRowHits := RegNext(counter(memory.io.rowHit, statClear(2)), 0.U)
+    statRowConflicts := RegNext(counter(memory.io.rowConflict, statClear(3)), 0.U)
   }
 
   //////////////////////////////////
   // Core
   //////////////////////////////////
   val core = Module(new PsxCore)
-  val hostReset = reset.asBool || regCoreReset || regCoreResetOnce || !memoryReady
+  val hostReset = reset.asBool || regCoreReset || regCoreResetOnce || !memoryReady || disc.io.holdCore
   core.io.clk1x := clk1x
   core.io.clk2x := clk2x
   core.io.clk3x := clk3x
-  core.io.reset := RegNext(hostReset, true.B)
+  val coreReset = RegNext(hostReset, true.B)
+  core.io.reset := coreReset
   core.io.pause := !regCoreFocus
 
   core.io.fastboot := configReg.fastboot
@@ -257,8 +298,15 @@ class HandheldPsx extends Module with Core {
   core.io.fixedVBlank := configReg.fixedVBlank
   core.io.SPUIRQTrigger := false.B
   core.io.REPRODUCIBLESPUDMA := false.B
-  // The BIOS is loaded into the first of the core's four BIOS slots, whatever its region.
-  core.io.biosregion := 0.U
+  // Region: the setting, or the disc's (US if unknown); PAL with Europe
+  // unless set. The BIOS is the region's if it was loaded, else the first
+  // one that was (a BIOS from another region shows its own menu, but does
+  // not boot the disc).
+  val region = Mux(configReg.region === 3.U,
+    Mux(disc.io.region.valid, disc.io.region.bits, PsxDisc.Region.Us.U), configReg.region)
+  val regionReg = RegNext(region, 0.U)
+  val biosSlot = Mux(biosLoaded(regionReg), regionReg, PriorityEncoder(biosLoaded.asUInt))
+  core.io.biosregion := RegNext(biosSlot, 0.U)
 
   // Main RAM / BIOS
   memory.io.ram.ena := core.io.ram_ena
@@ -294,15 +342,46 @@ class HandheldPsx extends Module with Core {
   core.io.DDRAM_DOUT_READY := memory.io.ddram.doutReady
 
   // CD: no disc yet.
-  core.io.region := configReg.region
-  core.io.hasCD := false.B
+  core.io.region := regionReg
+  core.io.hasCD := discLoaded
   core.io.LIDopen := false.B
-  core.io.trackinfo_data := 0.U
-  core.io.trackinfo_addr := 0.U
-  core.io.trackinfo_write := false.B
-  core.io.cd_hps_ack := false.B
-  core.io.cd_hps_write := false.B
-  core.io.cd_hps_data := 0.U
+  disc.io.toc <> discTocInterface
+  disc.io.sector <> discSectorInterface
+  io.host.commandCore <> disc.io.commandCore
+  disc.io.discLoaded := discLoaded
+  disc.io.start := coreRunPulse
+  disc.io.coreReset := coreReset
+  disc.io.hpsReq := core.io.cd_hps_req
+  disc.io.hpsLba := core.io.cd_hps_lba
+  core.io.cd_hps_ack := disc.io.hpsAck
+  core.io.cd_hps_write := disc.io.hpsWrite
+  core.io.cd_hps_data := disc.io.hpsData
+  core.io.trackinfo_data := disc.io.trackinfoData
+  core.io.trackinfo_addr := disc.io.trackinfoAddr
+  core.io.trackinfo_write := disc.io.trackinfoWrite
+  disc.io.clearSectorReads := statClear(4)
+  disc.io.clearReadErrors := statClear(5)
+  disc.io.clearWorstWait := statClear(6)
+
+  // Main RAM waits (from the request to its completion) and run cycles.
+  locally {
+    val waiting = RegInit(false.B)
+    when (core.io.ram_ena) {
+      waiting := true.B
+    } .elsewhen (core.io.ram_done || core.io.dma_wr) {
+      waiting := false.B
+    }
+    when (statClear(0)) {
+      statMemoryWait := 0.U
+    } .elsewhen (waiting) {
+      statMemoryWait := statMemoryWait + 1.U
+    }
+    when (statClear(1)) {
+      statRun := 0.U
+    } .elsewhen (!coreReset && !core.io.isPaused) {
+      statRun := statRun + 1.U
+    }
+  }
 
   // Memory cards: none yet.
   core.io.memcard1_load := false.B
@@ -416,7 +495,7 @@ class HandheldPsx extends Module with Core {
   // Video
   //////////////////////////////////
   io.video.vblank := core.io.vblank
-  core.io.isPal := configReg.pal
+  core.io.isPal := RegNext(Mux(configReg.videoAuto, regionReg === PsxDisc.Region.Europe.U, configReg.pal), false.B)
   core.io.pal60 := false.B
   val scanout = withClockAndReset(io.video.clock, io.video.reset) { Module(new PsxScanout) }
   scanout.io.x := io.video.x
@@ -448,7 +527,9 @@ class HandheldPsx extends Module with Core {
     addressWidth = 16,
     dataWidth = 32,
     entries =
-      regCommandHost.zipWithIndex.map { case (reg, i) => (0x0000 + (4 * i) -> RegisterMap.Entry.rw(reg)) }
+      regCommandHost.zipWithIndex.map { case (reg, i) => (0x0000 + (4 * i) -> RegisterMap.Entry.rw(reg)) } ++
+      // Core -> host request words (the disc's sector reads)
+      disc.io.commandWords.zipWithIndex.map { case (word, i) => (0x1000 + (4 * i) -> RegisterMap.Entry.r(word)) }
   )
   val setupReady = regCoreSetup && memoryReady
   statusWire := Cat(0.U(5.W), regCoreReset, regCoreSetup, memoryReady)
@@ -470,9 +551,15 @@ class HandheldPsx extends Module with Core {
           regCommandHost(0) := HostV0.StatusSetup.U
         }
       } .elsewhen (command === HostV0.CommandSetupComplete.U) {
-        regCoreSetup := true.B
+        // No BIOS: nothing to run.
+        when (biosLoaded.asUInt.orR) {
+          regCoreSetup := true.B
+        } .otherwise {
+          commandHostState := CommandState.error
+        }
       } .elsewhen (command === HostV0.CommandCoreRun.U) {
         regCoreReset := false.B
+        coreRunPulse := true.B
       } .elsewhen (command === HostV0.CommandCoreHalt.U) {
         regCoreReset := true.B
       } .elsewhen (command === HostV0.CommandNotifyFocus.U) {
@@ -483,6 +570,16 @@ class HandheldPsx extends Module with Core {
           commandHostState := CommandState.busy
         }
       } .elsewhen (command === HostV0.CommandFileWriteEnd.U) {
+        val fileId = regCommandHost(1)(15, 0)
+        val loaded = regCommandHost(2) =/= 0.U
+        when (fileId === FileId.Disc.U) {
+          discLoaded := loaded
+        }
+        for (slot <- 0 until 3) {
+          when (fileId === (FileId.BiosUs + slot).U) {
+            biosLoaded(slot) := loaded
+          }
+        }
       } .elsewhen (command === HostV0.CommandFileReadStart.U) {
       } .elsewhen (command === HostV0.CommandFileReadEnd.U) {
       } .otherwise {
@@ -496,5 +593,4 @@ class HandheldPsx extends Module with Core {
   } .otherwise {
     commandHostState := CommandState.idle
   }
-  io.host.commandCore.request := false.B
 }
