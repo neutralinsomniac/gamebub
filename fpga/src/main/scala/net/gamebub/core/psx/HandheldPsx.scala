@@ -419,13 +419,16 @@ class HandheldPsx extends Module with Core {
   io.sram.dataDir := sramController.io.signals.dataDir
   locally {
     // The SPU's requests pulse for one cycle and wait for `done`; it only
-    // ever uses the low halfword.
+    // ever uses the low halfword. The controller takes a request in the
+    // cycle it pulses (the SPU's budget per sample is tight) and sees it
+    // held from the registers until `done`.
     val pending = RegInit(false.B)
     val address = Reg(UInt(18.W))
     val write = Reg(Bool())
     val data = Reg(UInt(16.W))
     val mask = Reg(UInt(2.W))
-    when (core.io.spuram_ena) {
+    val ena = core.io.spuram_ena
+    when (ena) {
       pending := true.B
       address := core.io.spuram_Adr(18, 1)
       write := !core.io.spuram_rnw
@@ -433,11 +436,11 @@ class HandheldPsx extends Module with Core {
       mask := core.io.spuram_be(1, 0)
     }
     val mem = sramController.io.mem
-    mem.enable := pending
-    mem.address := address
-    mem.write := write
-    mem.dataWrite := data
-    mem.writeStrobe := mask
+    mem.enable := ena || pending
+    mem.address := Mux(ena, core.io.spuram_Adr(18, 1), address)
+    mem.write := Mux(ena, !core.io.spuram_rnw, write)
+    mem.dataWrite := Mux(ena, core.io.spuram_dataWrite(15, 0), data)
+    mem.writeStrobe := Mux(ena, core.io.spuram_be(1, 0), mask)
     when (mem.done) {
       pending := false.B
     }
