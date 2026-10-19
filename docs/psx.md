@@ -93,17 +93,26 @@ on-demand video interface (`VideoPullV0`): the framework asks for each
 screen pixel a few cycles ahead. The picture is 640 x 480 (4:3) in the
 middle of the 800 x 480 LCD, scaled from the display area's size by nearest
 neighbor. The LCD is mounted rotated and scans the picture column by column,
-so VRAM is read in strips a few pixels wide and the display area's height
-into a buffer of two strips: while the scan is in one, the next is fetched.
-The LCD starts each frame as the core's vertical blanking starts (the
-framework's frame pacing); the display's format (size, color depth,
-vertical range) is taken in the left border, a few columns before the
-picture, where the first two strips are fetched, and its position in VRAM
-for each strip as it is fetched, as a TV takes it line by line: a game that
-flips its buffers while the LCD scans switches between two finished
-pictures. (Taken once at the start of the frame, before the game flipped
-its buffers in the blanking, the position showed the buffer being drawn:
-movies flickered, text was missing.)
+so the picture is read in strips a few pixels wide and the display area's
+height into a buffer of two strips: while the scan is in one, the next is
+fetched.
+
+What it reads is not VRAM but a copy of the display, made line by line as
+a TV shows it (`psx.PsxFrameGrab`): at the start of each line of the
+picture, the display area's line goes from VRAM to one of two frames in
+SDRAM chip 1 (at 8 and 9 MiB, laid out as VRAM; the memory system copies
+it in chunks of 16 words, after the scanout's fetches in priority). When
+the core's vertical blanking starts, that copy is complete and the LCD
+starts its frame on it (the framework's frame pacing) while the next one
+is made in the other: one frame of latency, as a framebuffer has. Reading
+VRAM itself, column by column, the left strips (all their rows) are read
+at the start of the frame, which showed whatever the game was still
+drawing there, ahead of a TV's beam: Final Fantasy IX flips its buffers
+some time into the blanking (its movies flickered) and draws its battle
+menus after the flip, into the buffer being shown (they flickered). In
+480-line modes nothing is copied (two 640-pixel rows per line is more than
+the memory has to spare) and the scanout reads VRAM, taking the display's
+position once per frame.
 
 Not yet: HDMI (row by row: black for now), interlaced games that draw one
 field at a time.
