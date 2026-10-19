@@ -165,6 +165,15 @@ class PsxCore extends ExtModule {
     val savestate_number = Input(UInt(2.W))
     val state_loaded = Output(Bool())
     val validSStates = Output(UInt(4.W))
+
+    // Debug (a Game Bub addition to psx_top): every error code seen since
+    // reset (bit n: code n, as MiSTer shows them), the CPU's fetch address
+    val debug_errors = Output(UInt(16.W))
+    val debug_pc = Output(UInt(32.W))
+    /** MDECSTAT; the DMA controller's state; CPU / DMA flags (bit layouts in psx_top.vhd / dma.vhd). */
+    val debug_mdec = Output(UInt(32.W))
+    val debug_dma = Output(UInt(32.W))
+    val debug_flags = Output(UInt(16.W))
   })
 }
 

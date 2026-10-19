@@ -190,6 +190,18 @@ class HandheldPsx extends Module with Core {
   val statRun = RegInit(0.U(32.W))
   val statRowHits = Wire(UInt(32.W))
   val statRowConflicts = Wire(UInt(32.W))
+  /** Debug snapshots: the core's errors (see [[PsxCore]]), its CPU's fetch
+   * address, and its display (bit 27 disabled, 26 24-bit, 25 interlaced, 24
+   * PAL, 23-21 horizontal mode, 20-11 height, 10-0 width). */
+  val debugErrors = Wire(UInt(16.W))
+  val debugPc = Wire(UInt(32.W))
+  val debugVideo = Wire(UInt(28.W))
+  /** GP1(07h): the vertical display range (first line 9-0, end 19-10). */
+  val debugRange = Wire(UInt(20.W))
+  /** MDECSTAT, the DMA controller's state, CPU / DMA flags (see psx_top.vhd, dma.vhd). */
+  val debugMdec = Wire(UInt(32.W))
+  val debugDma = Wire(UInt(32.W))
+  val debugFlags = Wire(UInt(16.W))
   /** Clear pulses, by counter (0x1000 + 4 * index). */
   val statClear = WireDefault(VecInit(Seq.fill(7)(false.B)))
   def statEntry(index: Int, value: UInt) = (0x1000 + 4 * index) -> RegisterMap.Entry(32,
@@ -225,6 +237,16 @@ class HandheldPsx extends Module with Core {
       statEntry(4, disc.io.sectorReads),
       statEntry(5, disc.io.readErrors),
       statEntry(6, disc.io.worstWait),
+      // Debug snapshots (writes ignored)
+      0x101C -> RegisterMap.Entry.r(debugErrors),
+      0x1020 -> RegisterMap.Entry.r(debugPc),
+      0x1024 -> RegisterMap.Entry.r(debugVideo),
+      0x1030 -> RegisterMap.Entry.r(debugRange),
+      0x1034 -> RegisterMap.Entry.r(debugMdec),
+      0x1038 -> RegisterMap.Entry.r(debugDma),
+      0x103C -> RegisterMap.Entry.r(debugFlags),
+      0x1028 -> RegisterMap.Entry.r(disc.io.debugState),
+      0x102C -> RegisterMap.Entry.r(disc.io.lastLba),
       // The disc's region (bit 2: recognized; bits 1-0: 0 US, 1 Japan, 2 Europe)
       0x1100 -> RegisterMap.Entry.r(Cat(disc.io.region.valid, disc.io.region.bits)),
       0x2000 -> RegisterMap.Entry(32,
@@ -283,6 +305,15 @@ class HandheldPsx extends Module with Core {
   // Core
   //////////////////////////////////
   val core = Module(new PsxCore)
+  debugErrors := core.io.debug_errors
+  debugPc := core.io.debug_pc
+  debugVideo := Cat(
+    core.io.displayDisable, core.io.colorDepth24, core.io.video_interlace, core.io.video_isPal,
+    core.io.video_hResMode, core.io.DisplayHeight, core.io.DisplayWidth)
+  debugRange := core.io.vDisplayRange
+  debugMdec := core.io.debug_mdec
+  debugDma := core.io.debug_dma
+  debugFlags := core.io.debug_flags
   val hostReset = reset.asBool || regCoreReset || regCoreResetOnce || !memoryReady || disc.io.holdCore
   core.io.clk1x := clk1x
   core.io.clk2x := clk2x

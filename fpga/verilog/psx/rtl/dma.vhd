@@ -87,7 +87,11 @@ entity dma is
       SS_wren              : in  std_logic;
       SS_rden              : in  std_logic;
       SS_DataRead          : out std_logic_vector(31 downto 0);
-      SS_idle              : out std_logic
+      SS_idle              : out std_logic;
+      -- Game Bub: 31-29 state, 28-26 active channel, 25 on, 24 autoread,
+      -- 23 / 22 FIFO in / out empty, 21 paused, 20 to device, 19-12 blocks
+      -- left, 11-0 words
+      debug_state          : out std_logic_vector(31 downto 0)
    );
 end entity;
 
@@ -190,6 +194,10 @@ architecture arch of dma is
 begin 
 
    toDevice <= dmaSettings.D_CHCR(0);
+
+   debug_state <= std_logic_vector(to_unsigned(tdmaState'pos(dmaState), 3)) & std_logic_vector(to_unsigned(activeChannel, 3)) &
+                  isOn & autoread & fifoIn_Empty & fifoOut_Empty & paused & toDevice &
+                  std_logic_vector(blocksleft(7 downto 0)) & std_logic_vector(wordcount(11 downto 0));
 
    ram_cnt <= "00" when (directionNeg = '1' and ram_adr(9 downto 2) = x"01") else
               "01" when (directionNeg = '1' and ram_adr(9 downto 2) = x"02") else
