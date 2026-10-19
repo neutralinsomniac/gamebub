@@ -359,6 +359,24 @@ class PsxMemorySpec extends AnyFreeSpec {
     }
   }
 
+  "DMA reads back to back, a whole block (the MDEC's are 32 words)" in {
+    withBench { b =>
+      val rng = new Random(6)
+      val base = 0x2000L
+      for (i <- 0 until 128) {
+        val d = rng.nextLong() & 0xFFFFFFFFL
+        b.hostQueue.enqueue(b.HostRequest(base + 4 * i, write = true, d))
+        b.write0(base + 4 * i, d, 15)
+      }
+      b.runUntilIdle()
+      // Four words each, the next asked for as soon as one is accepted.
+      val reads = (0 until 32).map(i => b.RamRequest(base + 16 * i, rnw = true, 15, 0, dma = true, 3, cache = false))
+      reads.foreach(b.ramQueue.enqueue)
+      b.runUntilIdle()
+      assert(b.dmaWords == (0 until 128).map(i => b.shadow0(base + 4 * i)))
+    }
+  }
+
   "DMA write FIFO drains before CPU reads" in {
     withBench { b =>
       val rng = new Random(4)

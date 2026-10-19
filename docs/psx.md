@@ -71,7 +71,8 @@ burst and a burst every other cycle, and leaves a row open in each of the
 eight banks. `psx.PsxMemory` arbitrates the core's main RAM interface (with
 the timing of the MiSTer's `sdram.sv`, which the core's CPU and DMA rely on:
 instruction cache lines are written as they arrive, DMA words are handed over
-one per clk1x cycle), its DMA write FIFO, its DDR3 port (VRAM etc., at clk2x,
+one per clk1x cycle, through a ring that a DMA read must find room in before
+it is taken: the reads come back faster than that), its DMA write FIFO, its DDR3 port (VRAM etc., at clk2x,
 through FIFOs; long VRAM reads are cut into runs of 16 words so the CPU does
 not wait behind a whole line), the display scanout and the host.
 
