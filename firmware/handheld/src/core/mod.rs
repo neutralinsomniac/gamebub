@@ -85,8 +85,6 @@ pub struct CoreManager {
     focus_since: Option<Instant>,
     /// The CD images of the running core's `disc` files, by file ID.
     discs: Vec<(u16, disc::DiscImage)>,
-    /// Sector buffer for disc reads.
-    sector: Vec<u8>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -191,7 +189,6 @@ impl CoreManager {
             run_cartridge: false,
             focus_since: None,
             discs: Vec::new(),
-            sector: Vec::new(),
         }
     }
 
@@ -739,23 +736,83 @@ impl CoreManager {
         let _ = device.fpga.write_u32(fpga::REG_CTRL_CMD_CORE, 0);
     }
 
-    /// `DISC_READ`: a sector of a disc into the core's memory.
+    /// `DISC_READ`: a sector of a disc into the core's memory, at the
+    /// file's transfer speed, read back and compared if it has `verify` set
+    /// (written again, up to three times, when it does not match).
     fn disc_read(&mut self, id: u16, lba: u32, address: u32) -> bool {
+        let Some(info) = self
+            .core_info
+            .as_ref()
+            .and_then(|core| core.files.iter().find(|f| f.id == id))
+        else {
+            log::warn!("Disc read: no file {id}");
+            return false;
+        };
+        let write_clock = Hertz(info.max_transfer_speed * 1000 * 2);
+        let read_clock = write_clock.min(MAX_SPI_READ_CLOCK);
+        let verify = info.verify;
         let Some((_, image)) = self.discs.iter_mut().find(|(i, _)| *i == id) else {
             log::warn!("Disc read: no disc in file {id}");
             return false;
         };
-        self.sector.resize(disc::SECTOR_SIZE, 0);
-        let sector: &mut [u8; disc::SECTOR_SIZE] = self.sector.as_mut_slice().try_into().unwrap();
+        // The scratch buffer (internal RAM, free while the core runs): the
+        // sector, then its read-back.
+        let Some(mut scratch) = crate::bitstream::SCRATCH.take() else {
+            log::warn!("Disc read: scratch buffer busy");
+            return false;
+        };
+        let (sector, readback) = scratch.deref_mut().split_at_mut(disc::SECTOR_SIZE);
+        let sector: &mut [u8; disc::SECTOR_SIZE] = sector.try_into().unwrap();
+        let readback = &mut readback[..disc::SECTOR_SIZE];
         if let Err(e) = image.read_sector(lba, sector) {
             log::error!("Disc read at {lba}: {e}");
             return false;
         }
         let command = SpiCommand::new(fpga::FpgaSpiWordSize::Bits32);
-        Device::lock()
-            .fpga
-            .spi_write(None, command, address, &self.sector)
-            .is_ok()
+        for attempt in 0..3 {
+            let mut device = Device::lock();
+            if device
+                .fpga
+                .spi_write(Some(write_clock), command, address, sector)
+                .is_err()
+            {
+                return false;
+            }
+            if !verify {
+                return true;
+            }
+            if device
+                .fpga
+                .spi_read(Some(read_clock), command, address, readback)
+                .is_err()
+            {
+                return false;
+            }
+            drop(device);
+            if readback == &sector[..] {
+                if attempt > 0 {
+                    log::warn!("Disc read at {lba}: written correctly on attempt {}", attempt + 1);
+                }
+                return true;
+            }
+            let word = |b: &[u8], i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap());
+            let wrong: Vec<usize> = (0..disc::SECTOR_SIZE / 4)
+                .filter(|&i| word(sector, i) != word(readback, i))
+                .collect();
+            log::warn!(
+                "Disc read at {lba}: {} of {} words differ after writing (attempt {}): {}",
+                wrong.len(),
+                disc::SECTOR_SIZE / 4,
+                attempt + 1,
+                wrong
+                    .iter()
+                    .take(6)
+                    .map(|&i| format!("word {i} {:08X} -> {:08X}", word(sector, i), word(readback, i)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        false
     }
 
     fn load_bitstream(&mut self) {
