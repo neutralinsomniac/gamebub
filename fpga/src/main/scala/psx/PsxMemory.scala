@@ -187,8 +187,11 @@ class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends M
     t
   }
   val offers = Wire(Vec(5, new Offer))
-  // Priority order of the sources (first wins).
-  val priority = Seq(Source.DmaFifo, Source.Cpu, Source.Display, Source.Ddram, Source.Host)
+  // Priority order of the sources (first wins). The host (one word at a
+  // time) goes before the display and the GPU: the firmware's SPI read of a
+  // word has to find it read within its dummy cycles (about a microsecond),
+  // and one strip of the scanout takes tens.
+  val priority = Seq(Source.DmaFifo, Source.Cpu, Source.Host, Source.Display, Source.Ddram)
   val chosen = PriorityMux(priority.map(s => (offers(s).valid, s.U(SourceBits.W))) :+ (true.B, 0.U(SourceBits.W)))
   engine.io.request.valid := offers.map(_.valid).reduce(_ || _)
   engine.io.request.bits := offers(chosen).txn
