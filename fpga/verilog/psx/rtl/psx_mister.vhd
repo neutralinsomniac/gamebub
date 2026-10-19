@@ -270,6 +270,13 @@ entity psx_mister is
       validSStates          : out std_logic_vector(3 downto 0);
       rewind_on             : in  std_logic;
       rewind_active         : in  std_logic;
+      -- Game Bub: debug (every error code seen since reset, bit n = code n;
+      -- the CPU's fetch address)
+      debug_errors          : out std_logic_vector(15 downto 0) := (others => '0');
+      debug_pc              : out std_logic_vector(31 downto 0) := (others => '0');
+      debug_mdec            : out std_logic_vector(31 downto 0);
+      debug_dma             : out std_logic_vector(31 downto 0);
+      debug_flags           : out std_logic_vector(15 downto 0);
       -- cheats
       cheat_clear           : in  std_logic;
       cheats_enabled        : in  std_logic;
@@ -647,8 +654,13 @@ begin
       state_loaded          => state_loaded,
       validSStates          => validSStates,
       rewind_on             => rewind_on,    
-      -- cheats
       rewind_active         => rewind_active,
+      debug_errors          => debug_errors,
+      debug_pc              => debug_pc,
+      debug_mdec            => debug_mdec,
+      debug_dma             => debug_dma,
+      debug_flags           => debug_flags,
+      -- cheats
       cheat_clear           => cheat_clear,
       cheats_enabled        => cheats_enabled,
       cheat_on              => cheat_on,

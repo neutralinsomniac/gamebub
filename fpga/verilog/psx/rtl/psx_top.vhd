@@ -224,6 +224,16 @@ entity psx_top is
       validSStates          : out std_logic_vector(3 downto 0);
       rewind_on             : in  std_logic;
       rewind_active         : in  std_logic;
+      -- Game Bub: debug (every error code seen since reset, bit n = code n;
+      -- the CPU's fetch address)
+      debug_errors          : out std_logic_vector(15 downto 0) := (others => '0');
+      debug_pc              : out std_logic_vector(31 downto 0) := (others => '0');
+      debug_mdec            : out std_logic_vector(31 downto 0);
+      debug_dma             : out std_logic_vector(31 downto 0);
+      -- 15 CPU paused, 14 DMA on, 13 DMA request, 12 can DMA, 11 DMA stalls
+      -- CPU, 10 / 9 MDEC in / out request, 8 GPU, 7 SPU request, 6 memory
+      -- mux idle, 5 CPU stall next
+      debug_flags           : out std_logic_vector(15 downto 0) := (others => '0');
       -- cheats
       cheat_clear           : in  std_logic;
       cheats_enabled        : in  std_logic;
@@ -808,6 +818,35 @@ begin
       end if;
    end process;
    
+   -- Game Bub: debug outputs
+   process (clk1x)
+   begin
+      if rising_edge(clk1x) then
+         if (reset_intern = '1') then
+            debug_errors <= (others => '0');
+         else
+            if (errorCD       = '1') then debug_errors(1)  <= '1'; end if;
+            if (errorCPU      = '1') then debug_errors(2)  <= '1'; end if;
+            if (errorGPU      = '1') then debug_errors(3)  <= '1'; end if;
+            if (errorLINE     = '1') then debug_errors(4)  <= '1'; end if;
+            if (errorRECT     = '1') then debug_errors(5)  <= '1'; end if;
+            if (errorPOLY     = '1') then debug_errors(6)  <= '1'; end if;
+            if (errorMASK     = '1') then debug_errors(7)  <= '1'; end if;
+            if (errorCHOP     = '1') then debug_errors(8)  <= '1'; end if;
+            if (errorGPUFIFO  = '1') then debug_errors(9)  <= '1'; end if;
+            if (errorSPUTIME  = '1') then debug_errors(10) <= '1'; end if;
+            if (errorDMACPU   = '1') then debug_errors(11) <= '1'; end if;
+            if (errorDMAFIFO  = '1') then debug_errors(12) <= '1'; end if;
+            if (errorCPU2     = '1') then debug_errors(13) <= '1'; end if;
+            if (errorTimer    = '1') then debug_errors(14) <= '1'; end if;
+            if (errorBuswidth = '1') then debug_errors(15) <= '1'; end if;
+         end if;
+         debug_pc <= std_logic_vector(mem_addressInstr);
+         debug_flags <= cpuPaused & dmaOn & dmaRequest & canDMA & dmaStallCPU & mdec_dmaWriteRequest & mdec_dmaReadRequest &
+                        gpu_dmaRequest & spu_dmaRequest & memMuxIdle & stallNext & "00000";
+      end if;
+   end process;
+
    -- error codes
    process (clk1x)
    begin
@@ -1317,7 +1356,8 @@ begin
       SS_wren              => SS_wren(3),     
       SS_rden              => SS_rden(3),     
       SS_DataRead          => SS_DataRead_DMA,
-      SS_idle              => SS_idle_dma
+      SS_idle              => SS_idle_dma,
+      debug_state          => debug_dma
    );
    
    ram_refresh   <= reset_intern;
@@ -1620,7 +1660,8 @@ begin
       SS_wren              => SS_wren(6),     
       SS_rden              => SS_rden(6),     
       SS_DataRead          => SS_DataRead_MDEC,
-      SS_Idle              => SS_Idle_mdec
+      SS_Idle              => SS_Idle_mdec,
+      debug_status         => debug_mdec
    );
 
    ispu : entity work.spu

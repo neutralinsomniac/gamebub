@@ -170,7 +170,14 @@ entity psx_gamebub is
       load_state            : in  std_logic;
       savestate_number      : in  std_logic_vector(1 downto 0);
       state_loaded          : out std_logic;
-      validSStates          : out std_logic_vector(3 downto 0)
+      validSStates          : out std_logic_vector(3 downto 0);
+
+      -- debug (see psx_top)
+      debug_errors          : out std_logic_vector(15 downto 0);
+      debug_pc              : out std_logic_vector(31 downto 0);
+      debug_mdec            : out std_logic_vector(31 downto 0);
+      debug_dma             : out std_logic_vector(31 downto 0);
+      debug_flags           : out std_logic_vector(15 downto 0)
    );
 end entity;
 
@@ -456,6 +463,11 @@ begin
       validSStates          => validSStates,
       rewind_on             => '0',
       rewind_active         => '0',
+      debug_errors          => debug_errors,
+      debug_pc              => debug_pc,
+      debug_mdec            => debug_mdec,
+      debug_dma             => debug_dma,
+      debug_flags           => debug_flags,
       -- cheats
       cheat_clear           => '0',
       cheats_enabled        => '0',
