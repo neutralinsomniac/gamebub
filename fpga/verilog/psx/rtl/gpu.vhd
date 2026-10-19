@@ -123,6 +123,7 @@ entity gpu is
       video_fbmode         : out std_logic;
       video_fb24           : out std_logic;
       video_vDisplayRange  : out std_logic_vector(19 downto 0); -- Game Bub: GP1(07h)
+      video_hDisplayRange  : out std_logic_vector(23 downto 0); -- Game Bub: GP1(06h)
       video_hResMode       : out std_logic_vector(2 downto 0);
       video_frameindex     : out std_logic_vector(3 downto 0);
       
@@ -797,6 +798,7 @@ begin
    video_fbmode <= GPUSTAT_DisplayDisable;
    video_fb24   <= GPUSTAT_ColorDepth24;
    video_vDisplayRange <= std_logic_vector(vDisplayRange);
+   video_hDisplayRange <= std_logic_vector(hDisplayRange);
    
    iSyncFifo_IN: entity mem.SyncFifo
    generic map
