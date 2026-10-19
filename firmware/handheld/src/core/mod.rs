@@ -197,7 +197,7 @@ impl CoreManager {
 
     pub fn prepare_for_power_off(&mut self) {
         if self.stage == Stage::Running {
-            if let Err(e) = self.persist_files() {
+            if let Err(e) = self.persist_files(|_| true) {
                 log::error!("Error saving: {}", e);
             }
             if let Err(e) = self.persist_settings() {
@@ -211,7 +211,7 @@ impl CoreManager {
         if self.stage == Stage::Running {
             let _ = self.run_core_command(&[command::CORE_HALT], &mut [], NOTIFY_TIMEOUT);
 
-            if let Err(e) = self.persist_files() {
+            if let Err(e) = self.persist_files(|_| true) {
                 log::error!("Error saving: {}", e);
             }
             if let Err(e) = self.persist_settings() {
@@ -283,6 +283,11 @@ impl CoreManager {
         } else {
             self.log_statistics(played.map(|at| at.elapsed()));
             self.write_dumps();
+            if self.stage == Stage::Running {
+                if let Err(e) = self.persist_files(|info| info.save_on_pause) {
+                    log::error!("Error saving: {}", e);
+                }
+            }
         }
 
         if let Some(core_handler) = self.core_handler.get_mut() {

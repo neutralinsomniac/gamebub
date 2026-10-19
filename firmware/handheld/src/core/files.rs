@@ -87,7 +87,13 @@ impl CoreManager {
 
             log::info!("Load file {} from {}", info.label, path.display());
 
-            let file = File::open(&path);
+            let file = File::open(&path).or_else(|e| match info.blank.as_ref() {
+                Some(blank) => {
+                    log::info!("Failed to open file, loading {blank}");
+                    File::open(core.core_dir.join(blank.as_str()))
+                }
+                None => Err(e),
+            });
             let mut file = match file {
                 Ok(file) => file,
                 Err(_) if info.optional && info.initialize => {
@@ -254,7 +260,11 @@ impl CoreManager {
         Ok(())
     }
 
-    pub(super) fn persist_files(&mut self) -> Result<(), CoreError> {
+    /// Save the files that are not read-only and match `filter`. An
+    /// external core answers `FILE_READ_START` with the number of bytes to
+    /// save, 0 for nothing (no save memory, or no change since the file was
+    /// loaded or last saved): the file is then left as it is.
+    pub(super) fn persist_files(&mut self, filter: impl Fn(&CoreFile) -> bool) -> Result<(), CoreError> {
         assert!(self.stage == Stage::Running);
         let core = self.core_info.as_ref().unwrap();
 
@@ -272,7 +282,7 @@ impl CoreManager {
         }
 
         for (i, info) in core.files.iter().enumerate() {
-            if info.read_only || info.on_demand {
+            if info.read_only || info.on_demand || !filter(info) {
                 continue;
             }
             if self.run_cartridge && (info.id == 0 || info.dependent_on_0) {
@@ -282,7 +292,6 @@ impl CoreManager {
             let Some(path) = self.selected_files[i].clone() else {
                 continue;
             };
-            log::info!("Saving file {} to {}", info.label, path.display());
 
             let mut file_size = 0u32;
             self.run_core_command(
@@ -290,13 +299,23 @@ impl CoreManager {
                 std::slice::from_mut(&mut file_size),
                 SETUP_TIMEOUT,
             )?;
-            if let Some(override_size) = self
+            let override_size = self
                 .core_handler
                 .get_mut()
-                .and_then(|x| x.get_file_size(info.id))
-            {
-                file_size = override_size;
+                .and_then(|x| x.get_file_size(info.id));
+            match override_size {
+                Some(size) => file_size = size,
+                None if file_size == 0 => {
+                    self.run_core_command(
+                        &[command::FILE_READ_END, info.id as u32],
+                        &mut [],
+                        NOTIFY_TIMEOUT,
+                    )?;
+                    continue;
+                }
+                None => {}
             }
+            log::info!("Saving file {} to {}", info.label, path.display());
 
             let mut file = File::create(path)
                 .map_err(|_| FailedSaveFile(info.label.to_string(), "Open failed".to_string()))?;
