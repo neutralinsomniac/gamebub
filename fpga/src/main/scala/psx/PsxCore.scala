@@ -140,6 +140,8 @@ class PsxCore extends ExtModule {
     /** GPUSTAT: display disabled / 24-bit color (a Game Bub change to gpu.vhd). */
     val displayDisable = Output(Bool())
     val colorDepth24 = Output(Bool())
+    /** GP1(07h): the vertical display range (first line 9-0, end 19-10; a Game Bub change to gpu.vhd). */
+    val vDisplayRange = Output(UInt(20.W))
     val video_hResMode = Output(UInt(3.W))
 
     // Controller on port 1 (see [[PsxCore.Button]])

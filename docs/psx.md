@@ -94,12 +94,18 @@ middle of the 800 x 480 LCD, scaled from the display area's size by nearest
 neighbor. The LCD is mounted rotated and scans the picture column by column,
 so VRAM is read in strips a few pixels wide and the display area's height
 into a buffer of two strips: while the scan is in one, the next is fetched.
-The LCD starts each frame just after the core's vertical blanking (the
-framework's frame pacing), in the left border, where the first two strips are
-fetched, so a game's buffer flip at vertical blanking never shows mid-frame.
+The LCD starts each frame as the core's vertical blanking starts (the
+framework's frame pacing); the display's format (size, color depth,
+vertical range) is taken in the left border, a few columns before the
+picture, where the first two strips are fetched, and its position in VRAM
+for each strip as it is fetched, as a TV takes it line by line: a game that
+flips its buffers while the LCD scans switches between two finished
+pictures. (Taken once at the start of the frame, before the game flipped
+its buffers in the blanking, the position showed the buffer being drawn:
+movies flickered, text was missing.)
 
-Not yet: HDMI (row by row: black for now), the vertical display range (PAL
-games' extra lines), interlaced games that draw one field at a time.
+Not yet: HDMI (row by row: black for now), interlaced games that draw one
+field at a time.
 
 ### Discs
 

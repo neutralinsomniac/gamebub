@@ -144,6 +144,8 @@ entity psx_gamebub is
       -- GPUSTAT: display disabled, 24-bit color (see gpu.vhd)
       displayDisable        : out std_logic;
       colorDepth24          : out std_logic;
+      -- GP1(07h): the vertical display range (first line 9-0, end 19-10)
+      vDisplayRange         : out std_logic_vector(19 downto 0);
       video_hResMode        : out std_logic_vector(2 downto 0);
 
       -- controller on port 1, active high: 0 cross, 1 circle, 2 square,
@@ -354,6 +356,7 @@ begin
       video_isPal           => video_isPal,
       video_fbmode          => displayDisable,
       video_fb24            => colorDepth24,
+      video_vDisplayRange   => vDisplayRange,
       video_hResMode        => video_hResMode,
       video_frameindex      => open,
       -- Keys - all active high

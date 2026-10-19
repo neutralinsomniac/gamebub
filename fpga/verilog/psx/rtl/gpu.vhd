@@ -122,6 +122,7 @@ entity gpu is
       video_isPal          : out std_logic;
       video_fbmode         : out std_logic;
       video_fb24           : out std_logic;
+      video_vDisplayRange  : out std_logic_vector(19 downto 0); -- Game Bub: GP1(07h)
       video_hResMode       : out std_logic_vector(2 downto 0);
       video_frameindex     : out std_logic_vector(3 downto 0);
       
@@ -795,6 +796,7 @@ begin
    -- outputs served is off): display disabled, 24-bit color.
    video_fbmode <= GPUSTAT_DisplayDisable;
    video_fb24   <= GPUSTAT_ColorDepth24;
+   video_vDisplayRange <= std_logic_vector(vDisplayRange);
    
    iSyncFifo_IN: entity mem.SyncFifo
    generic map
