@@ -3,10 +3,11 @@ package net.gamebub.core.psx
 import chisel3._
 import chisel3.util._
 import lib.mem.{MemoryInterface, MemoryMap, RegisterMap}
+import lib.fifo.RelatedClockFifo
 import lib.mem.sram.AsyncSramController
 import net.gamebub.framework.Core
 import net.gamebub.framework.interface._
-import psx.{PsxCore, PsxDisc, PsxMemory, PsxScanout, SdramEngine}
+import psx.{PsxCore, PsxDisc, PsxFrameGrab, PsxMemory, PsxScanout, SdramEngine}
 import xilinx.{MMCM, ODDRWrapper, XpmCdcHandshake}
 
 object HandheldPsx {
@@ -549,9 +550,16 @@ class HandheldPsx extends Module with Core {
   io.video.data := scanout.io.data
   debugUnderruns := XpmCdcHandshake.continuous(io.video.clock, scanout.io.underruns)
   scanout.io.clk1x := clk1x
-  scanout.io.params.offsetX := core.io.DisplayOffsetX
-  scanout.io.params.offsetY := core.io.DisplayOffsetY
-  scanout.io.params.areaWidth := core.io.DisplayWidth
+  // The scanout shows copies of the display made line by line (see PsxFrameGrab).
+  val grab = Module(new PsxFrameGrab)
+  grab.io.vblank := core.io.vblank
+  grab.io.hblank := core.io.hblank
+  grab.io.display.base := 0.U
+  grab.io.display.offsetX := core.io.DisplayOffsetX
+  grab.io.display.offsetY := core.io.DisplayOffsetY
+  grab.io.display.areaWidth := core.io.DisplayWidth
+  grab.io.display.depth24 := core.io.colorDepth24
+  scanout.io.params := grab.io.frame
   locally {
     // The TV picture: 240 (NTSC) / 288 (PAL) lines from line 16 / 19 of the
     // field (as the core counts for its DisplayOffsetY, which already skips
@@ -568,12 +576,20 @@ class HandheldPsx extends Module with Core {
     val last = Mux(end < base + window, end, base + window)
     val lines = Mux(last > first, last - first, 0.U)
     val rows = Mux(doubled, (lines << 1).min(512.U), lines)
-    scanout.io.params.areaHeight := RegNext(Mux(doubled, window << 1, window))
-    scanout.io.params.topRows := RegNext(Mux(doubled, (first - base) << 1, first - base))
-    scanout.io.params.rows := RegNext(rows)
-    scanout.io.params.disabled := RegNext(core.io.displayDisable || rows === 0.U)
+    grab.io.display.areaHeight := RegNext(Mux(doubled, window << 1, window))
+    grab.io.display.topRows := RegNext(Mux(doubled, (first - base) << 1, first - base))
+    grab.io.display.rows := RegNext(rows)
+    grab.io.display.disabled := RegNext(core.io.displayDisable || rows === 0.U)
+    grab.io.skipLines := RegNext(Mux(start < base, base - start, 0.U))
+    grab.io.doubled := RegNext(doubled)
   }
-  scanout.io.params.depth24 := core.io.colorDepth24
+  val copies = Module(new RelatedClockFifo(new PsxMemory.LineCopy, 4))
+  copies.io.writeClock := clock
+  copies.io.writeReset := reset.asBool
+  copies.io.enq <> grab.io.copy
+  copies.io.readClock := clk3x
+  copies.io.readReset := reset3x
+  memory.io.copy <> copies.io.deq
   scanout.io.clk3x := clk3x
   scanout.io.reset3x := reset3x
   memory.io.display.request <> scanout.io.fetch
