@@ -10,8 +10,7 @@
       "disc": true,
       "address": "0x60000000",
       "max_size": "0x800",
-      "max_transfer_speed": 10000,
-      "verify": true
+      "max_transfer_speed": 10000
     },
     {
       "id": 1,
