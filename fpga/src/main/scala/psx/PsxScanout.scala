@@ -22,7 +22,9 @@ object PsxScanout {
 
   /** The core's display state (clk1x). */
   class Params extends Bundle {
-    /** VRAM position of the display area (halfwords, lines). */
+    /** Chip 1 byte address of the frame the display area is in: VRAM (0) or a copy of it (see [[PsxFrameGrab]]), laid out alike. */
+    val base = UInt(25.W)
+    /** Position of the display area in that frame (halfwords, lines). */
     val offsetX = UInt(10.W)
     val offsetY = UInt(9.W)
     /** Display area width: 256 / 320 / 368 / 512 / 640. */
@@ -46,6 +48,8 @@ object PsxScanout {
     val frame = UInt(2.W)
     /** Fetch strips up to this one (they go to slot `strip(0)`). */
     val wanted = UInt(8.W)
+    val base = UInt(25.W)
+    val offsetY = UInt(9.W)
     /** VRAM lines per strip. */
     val rows = UInt(10.W)
     /** Byte offset of the display area in its VRAM line. */
@@ -73,11 +77,14 @@ object PsxScanout {
  * the display area's height, into a buffer of two strips: while the scan
  * is in one, the next is fetched (in clk3x, through
  * [[PsxMemory]]'s display port). The first two are fetched in the screen's
- * left border, `LatchColumns` before the picture, where the display's
- * format is taken for the whole frame (the display starts its frame as the
- * core's vertical blanking starts, see `VideoPullV0`; this is about where
- * the blanking ends). Its position in VRAM is taken for each strip as it
- * is fetched, see the fetcher. (`frameStart` is not used.)
+ * left border, `LatchColumns` before the picture, where the display state
+ * is taken for the whole frame. It scans a frame that does not change
+ * while it does: a copy of the display, made line by line as a TV shows it
+ * ([[PsxFrameGrab]]), the last one completed when the display's frame
+ * started (with the core's vertical blanking, see `VideoPullV0`). Reading
+ * VRAM itself column by column, the left strips (all their rows read at the
+ * start of the frame) showed what the game was still drawing there.
+ * (`frameStart` is not used.)
  *
  * Vertically, the picture is what a TV shows (see `Params.areaHeight`):
  * the lines of the game's vertical display range, black around them.
@@ -272,6 +279,8 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   val request = Wire(new FetchRequest)
   request.frame := frameCount
   request.wanted := wanted
+  request.base := frame.base
+  request.offsetY := frame.offsetY
   request.rows := frame.rows
   request.startByte := startByte
   request.stripBytes := stripBytes
@@ -280,17 +289,12 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   val displayClock = clock
   withClockAndReset(io.clk3x, io.reset3x) {
     val req = cdc(displayClock, request)
-    /** The core's display state now (for its position, see below). */
-    val live = cdc(io.clk1x, io.params)
     val frameSeen = RegInit(0.U(2.W))
     val nextStrip = RegInit(0.U(8.W))
     fetchProgress := Cat(frameSeen, nextStrip)
     val active = RegInit(false.B)
-    /** Bytes from the display area's first pixel to the strip's. */
-    val stripOffset = Reg(UInt(16.W))
-    /** Byte offset in the VRAM line of the strip's first pixel (unwrapped), and the VRAM line of its first row. */
+    /** Byte offset in the VRAM line of the strip's first pixel (unwrapped). */
     val stripStart = Reg(UInt(16.W))
-    val stripLine = Reg(UInt(9.W))
     val row = Reg(UInt(10.W))
     val rowBuffer = Reg(UInt(14.W))
     /** Byte offset in the VRAM line of the next word to fetch, and words left in the row. */
@@ -302,11 +306,11 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     inFlight.io.deq.ready := io.word.valid && io.word.bits.last
 
     val rowStartByte = Cat(stripStart(10, 2), 0.U(2.W))
-    val line = (stripLine + row)(8, 0)
+    val line = (req.offsetY + row)(8, 0)
     val toRowEnd = (1024.U(11.W) - byte(9, 0)) >> 2
     val run = left.min(toRowEnd)
     io.fetch.valid := active && inFlight.io.enq.ready
-    io.fetch.bits.address := Cat(line, byte)
+    io.fetch.bits.address := req.base + Cat(line, byte)
     io.fetch.bits.words := run - 1.U
     inFlight.io.enq.valid := io.fetch.fire
     inFlight.io.enq.bits := rowBuffer + ((req.words - left) << 1)
@@ -315,24 +319,14 @@ class PsxScanout(simulation: Boolean = false) extends Module {
       // A new frame: start over (fetches in flight still land, before the new ones).
       frameSeen := req.frame
       nextStrip := 0.U
-      stripOffset := 0.U
+      stripStart := req.startByte
       active := false.B
     } .elsewhen (!active) {
       when (nextStrip <= req.wanted && req.rows =/= 0.U) {
-        // The display area's position as the strip is fetched, as a TV
-        // takes it line by line: a game that flips its buffers while the
-        // frame is scanned switches between two finished pictures, never
-        // shows the one being drawn. (Unless that would move the pixels
-        // within their words: the display side counts on the frame's.)
-        val liveStart = Cat(live.offsetX, 0.U(1.W))
-        val base = Mux(liveStart(1, 0) === req.startByte(1, 0), liveStart, req.startByte)
-        val start = (base + stripOffset)(15, 0)
-        stripStart := start
-        stripLine := live.offsetY
         active := true.B
         row := 0.U
         rowBuffer := Mux(nextStrip(0), StripHalfwords.U(14.W), 0.U(14.W))
-        byte := Cat(start(10, 2), 0.U(2.W))
+        byte := Cat(stripStart(10, 2), 0.U(2.W))
         left := req.words
       }
     } .elsewhen (io.fetch.fire) {
@@ -348,7 +342,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
         when (row === req.rows - 1.U) {
           active := false.B
           nextStrip := nextStrip + 1.U
-          stripOffset := stripOffset + req.stripBytes
+          stripStart := stripStart + req.stripBytes
         }
       }
     }
