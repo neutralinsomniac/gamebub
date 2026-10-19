@@ -10,10 +10,11 @@ lists the local changes) and wrapped by Chisel glue in
 
 **Status (2026-10-18):** first hardware tests: Final Fantasy IX (US) boots
 and plays its intro movie. Discs are read from CD images on the SD card
-(with firmware support, see "Discs"). Not there yet: memory cards, save
-states, HDMI.
+(with firmware support, see "Discs"), memory cards are files on the SD card
+(see "Memory cards"; not yet tested on hardware). Not there yet: save states,
+HDMI.
 
-Vivado 2025.1: 41.6 k LUTs (66 %), 89.5 of 135 block RAM tiles, 99 DSPs;
+Vivado 2025.1: 43.5 k LUTs (69 %), 92.5 of 135 block RAM tiles, 101 DSPs;
 timing met at 33.85 / 67.71 / 101.56 MHz.
 
 ## Building and installing
@@ -31,6 +32,17 @@ for the whole disc or one per track) or a lone `.bin`, of raw 2352-byte
 sectors (the usual rips; `.iso` and CHD are not supported). The region (and
 with it the BIOS and NTSC / PAL) is taken from the disc unless set in the
 core's settings.
+
+Memory cards: slot 1 holds the game's own card, `<game>.mcd` next to the
+disc's `.cue`, named after the game rather than the disc: a " (Disc N)" in the
+name is left out, so all of a game's discs share it ("Final Fantasy IX (USA)
+(Disc 2).cue" uses "Final Fantasy IX (USA).mcd"). Slot 2 holds one card for
+every game, `card2.mcd` in the core's directory (the BIOS's memory card
+screen copies saves between the two). Both are raw 128 KiB images, as most
+emulators keep them (`.mcd`, `.mcr`, MiSTer's `.sav`: rename to `.mcd`). A
+missing card starts out formatted and empty, and is only written once the
+game saves to it. Cards are written to the SD card when the pause menu
+opens and when the core exits, if the game has changed them.
 
 Controls: the PlayStation's face buttons are where the Game Bub's are (Cross
 = B, Circle = A, Square = Y, Triangle = X), L / R are L1 / R1, and Select + L /
@@ -148,6 +160,35 @@ or the first that was loaded, and fails `SETUP_COMPLETE` without any.
 
 Not supported: libcrypt (`.sbi` subchannel data; the protected games need
 it), multi-disc swapping, CHD.
+
+### Memory cards
+
+The core keeps the cards in its DDR3 space, as raw images (slot 1 at 1 MiB,
+slot 2 at 2 MiB: chip 1, host 0x3210_0000 / 0x3220_0000), and its joypad
+reads and writes 128-byte frames there. Upstream, `memcard.vhd` copies a card
+between there and the MiSTer's HPS; that path is unused here: the cards are
+files 4 and 5 in `files.json`, which the firmware loads straight into place
+while the core is held and reads back from there. Firmware options this
+uses (generic, for any core):
+
+- `blank`: if the file cannot be opened, this file from the core's directory
+  is loaded instead (`blank.mcd`: a formatted, empty card, the same as the
+  MiSTer's `mcdheader.h` followed by zeros); the file is still saved to its
+  own path.
+- `save_on_pause`: the file is also saved when the core is paused.
+- A file `dependent_on_0` on a disc image (`disc`) is named by
+  `disc::save_path`, which drops " (Disc N)".
+- A core that answers `FILE_READ_START` with 0 bytes has nothing to save:
+  the firmware leaves the file as it is (the SNES core does so for a game
+  without save RAM).
+
+The glue inserts a card (`memcardN_available`) if its file was loaded, and
+remembers, per card, whether the core has written to it (a DDR3 write in the
+card's 128 KiB) since the firmware last saved it; `FILE_READ_START` answers
+0 bytes otherwise. Writes to frame 63 do not count: the BIOS's card routines
+write that frame (the write-test frame, a copy of the header) whenever a game
+looks for a card, to clear the card's "new card" flag. So an unchanged card is not rewritten, and a game that
+never saves leaves no file behind.
 
 ### Statistics
 

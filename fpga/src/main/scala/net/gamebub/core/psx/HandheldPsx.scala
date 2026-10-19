@@ -63,7 +63,8 @@ object HandheldPsx {
   object HostMap {
     /**
      * SDRAM: chip 0 at 0x3000_0000 (main RAM at 0; the BIOS slots, 512 KiB
-     * each, US / Japan / Europe, from 8 MiB), chip 1 at 0x3200_0000.
+     * each, US / Japan / Europe, from 8 MiB), chip 1 at 0x3200_0000 (the
+     * core's DDR3 space: the memory cards at 1 and 2 MiB, see [[Card]]).
      */
     val Sdram = 0x3000_0000L
     val Bios = Sdram + 0x80_0000
@@ -73,12 +74,28 @@ object HandheldPsx {
     val DiscSector = 0x7000_0000L
   }
 
-  /** File IDs (files.json): the disc, and the BIOS for each region (slots 0-2, the core's region codes). */
+  /**
+   * File IDs (files.json): the disc, the BIOS for each region (slots 0-2,
+   * the core's region codes) and the memory cards in slots 1 and 2.
+   */
   object FileId {
     val Disc = 0
     val BiosUs = 1
     val BiosJapan = 2
     val BiosEurope = 3
+    val Card1 = 4
+    val Card2 = 5
+  }
+
+  /** The memory cards: raw 128 KiB images in the core's DDR3 space, slot 1's at 1 MiB, slot 2's at 2 MiB. */
+  object Card {
+    val Size = 0x2_0000
+    val DdrBase = Seq(0x10_0000, 0x20_0000)
+    /**
+     * The 128-byte frame that the BIOS's card routines write whenever they
+     * find a card (to clear its "new card" flag); it holds no save data.
+     */
+    val WriteTestFrame = 63
   }
 }
 
@@ -424,18 +441,44 @@ class HandheldPsx extends Module with Core {
     }
   }
 
-  // Memory cards: none yet.
+  // Memory cards: the host loads a card's image straight into the core's
+  // DDR3 space while the core is held, and saves it from there; the core's
+  // own load / save path (memcard.vhd, through the MiSTer's HPS) is not
+  // used. A card is inserted if its file was loaded. Each card remembers
+  // whether the core has written to it since the host last saved it (but
+  // for the write-test frame, which every game that looks at a card writes).
+  val cardLoaded = RegInit(VecInit(Seq.fill(2)(false.B)))
+  /** clk1x pulses: the host is saving the card, with what the core has written so far. */
+  val cardSaving = WireDefault(VecInit(Seq.fill(2)(false.B)))
+  val cardWritten = withClockAndReset(clk2x, reset2x) {
+    val saving = RegNext(cardSaving, VecInit(Seq.fill(2)(false.B)))
+    VecInit(Card.DdrBase.zipWithIndex.map { case (base, i) =>
+      val written = RegInit(false.B)
+      // DDRAM_ADDR counts 64-bit words: 16 to a frame.
+      val sizeBits = log2Ceil(Card.Size)
+      val address = core.io.DDRAM_ADDR
+      val inCard = address(24, sizeBits - 3) === (base >> sizeBits).U
+      val frame = address(sizeBits - 4, 4)
+      when (core.io.DDRAM_WE && inCard && frame =/= Card.WriteTestFrame.U) {
+        written := true.B
+      } .elsewhen (saving(i)) {
+        // (Writes up to here are in what the host reads after this.)
+        written := false.B
+      }
+      written
+    })
+  }
   core.io.memcard1_load := false.B
   core.io.memcard2_load := false.B
   core.io.memcard_save := false.B
   core.io.memcard1_mounted := false.B
-  core.io.memcard1_available := false.B
+  core.io.memcard1_available := cardLoaded(0)
   core.io.memcard1_ack := false.B
   core.io.memcard1_write := false.B
   core.io.memcard1_addr := 0.U
   core.io.memcard1_dataIn := 0.U
   core.io.memcard2_mounted := false.B
-  core.io.memcard2_available := false.B
+  core.io.memcard2_available := cardLoaded(1)
   core.io.memcard2_ack := false.B
   core.io.memcard2_write := false.B
   core.io.memcard2_addr := 0.U
@@ -618,6 +661,7 @@ class HandheldPsx extends Module with Core {
   when (io.host.commandHost.request) {
     when (commandHostState === CommandState.idle) {
       val command = regCommandHost(0)(15, 0)
+      val fileId = regCommandHost(1)(15, 0)
       for (reg <- regCommandHost) {
         reg := 0.U
       }
@@ -649,7 +693,6 @@ class HandheldPsx extends Module with Core {
           commandHostState := CommandState.busy
         }
       } .elsewhen (command === HostV0.CommandFileWriteEnd.U) {
-        val fileId = regCommandHost(1)(15, 0)
         val loaded = regCommandHost(2) =/= 0.U
         when (fileId === FileId.Disc.U) {
           discLoaded := loaded
@@ -659,7 +702,20 @@ class HandheldPsx extends Module with Core {
             biosLoaded(slot) := loaded
           }
         }
+        for (slot <- 0 until 2) {
+          when (fileId === (FileId.Card1 + slot).U) {
+            cardLoaded(slot) := loaded
+          }
+        }
       } .elsewhen (command === HostV0.CommandFileReadStart.U) {
+        // Word 0: the bytes to save; none for a card the core has not
+        // written to since it was last saved.
+        for (slot <- 0 until 2) {
+          when (fileId === (FileId.Card1 + slot).U && cardWritten(slot)) {
+            regCommandHost(0) := Card.Size.U
+            cardSaving(slot) := true.B
+          }
+        }
       } .elsewhen (command === HostV0.CommandFileReadEnd.U) {
       } .otherwise {
         commandHostState := CommandState.error

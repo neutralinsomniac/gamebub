@@ -41,6 +41,27 @@
       "address": "0x30900000",
       "max_size": "0x80000",
       "max_transfer_speed": 10000
+    },
+    {
+      "id": 4,
+      "label": "Memory Card 1",
+      "extensions": ["mcd"],
+      "dependent_on_0": true,
+      "blank": "blank.mcd",
+      "save_on_pause": true,
+      "address": "0x32100000",
+      "exact_size": "0x20000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 5,
+      "label": "Memory Card 2",
+      "filename": "card2.mcd",
+      "blank": "blank.mcd",
+      "save_on_pause": true,
+      "address": "0x32200000",
+      "exact_size": "0x20000",
+      "max_transfer_speed": 10000
     }
   ]
 }
