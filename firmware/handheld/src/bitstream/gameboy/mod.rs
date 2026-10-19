@@ -113,6 +113,8 @@ impl Gameboy {
                     user_selected: true,
                     dependent_on_0: false,
                     initialize: false,
+                    blank: None,
+                    save_on_pause: false,
                     verify: false,
                     disc: false,
 
@@ -133,6 +135,8 @@ impl Gameboy {
                     user_selected: false,
                     dependent_on_0: true,
                     initialize: true,
+                    blank: None,
+                    save_on_pause: false,
                     verify: false,
                     disc: false,
 
@@ -153,6 +157,8 @@ impl Gameboy {
                     user_selected: false,
                     dependent_on_0: false,
                     initialize: false,
+                    blank: None,
+                    save_on_pause: false,
                     verify: false,
                     disc: false,
 
@@ -173,6 +179,8 @@ impl Gameboy {
                     user_selected: false,
                     dependent_on_0: false,
                     initialize: false,
+                    blank: None,
+                    save_on_pause: false,
                     verify: false,
                     disc: false,
 
