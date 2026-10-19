@@ -1039,7 +1039,10 @@ begin
                      skip := '1';
                   end if;
                   
-                  if (to_integer(xStart(43 downto 32)) > drawingAreaRight) then
+                  -- Game Bub: compared as signed (upstream: the integer against the unsigned
+                  -- drawingAreaRight, which Vivado does by converting a negative start to
+                  -- unsigned, skipping every span that starts left of x = 0)
+                  if (xStart(43 downto 32) > to_integer(drawingAreaRight)) then
                      skip := '1';
                   end if;                  
                   
