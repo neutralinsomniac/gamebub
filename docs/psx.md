@@ -63,7 +63,7 @@ VCO, and a sixth output, clk3x delayed by 1.6 ns, feeds the SDRAM clock pin.
 | --- | --- |
 | Main RAM (2 MiB), BIOS (512 KiB at 8 MiB) | SDRAM chip 0 |
 | VRAM (1 MiB at 0), memory cards (1 and 2 MiB), save states (16 MiB) | SDRAM chip 1 |
-| SPU RAM (512 KiB) | SRAM |
+| SPU RAM (512 KiB) | SRAM, except its capture area (4 KiB) and reverb area (the top 64 KiB): block RAM, as upstream |
 
 Both SDRAM chips sit on one bus with their own chip selects. `psx.SdramEngine`
 runs it at clk3x with two-beat bursts (CAS latency 2), one 32-bit word per
