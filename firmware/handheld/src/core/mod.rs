@@ -530,22 +530,33 @@ impl CoreManager {
         if total == 0 {
             return;
         }
+        let statistics = match &self.core_info {
+            Some(core) => core.statistics.as_slice(),
+            None => &[],
+        };
+        let values: Vec<Option<u32>> = statistics
+            .iter()
+            .map(|statistic| {
+                let value = fpga.read_u32(statistic.address).ok();
+                let _ = fpga.write_u32(statistic.address, 0);
+                value
+            })
+            .collect();
+        drop(device);
+
+        // Paced: the USB console drops what does not fit in its buffer.
+        let pace = || std::thread::sleep(Duration::from_millis(2));
         log::info!(
             "Run rate: {:.2}% ({cycles} run, {stalls} stalled, over {:.1} s)",
             100.0 * cycles as f32 / total as f32,
             played.unwrap_or_default().as_secs_f32()
         );
-
-        let statistics = match &self.core_info {
-            Some(core) => &core.statistics,
-            None => return,
-        };
-        for statistic in statistics {
-            let Ok(value) = fpga.read_u32(statistic.address) else {
+        for (statistic, value) in statistics.iter().zip(values) {
+            pace();
+            let Some(value) = value else {
                 log::warn!("Failed to read statistic {}", statistic.label);
                 continue;
             };
-            let _ = fpga.write_u32(statistic.address, 0);
             let of = if statistic.percent_of == 0 {
                 total
             } else {
