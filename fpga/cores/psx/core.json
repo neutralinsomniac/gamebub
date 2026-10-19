@@ -34,6 +34,42 @@
       "label": "worst disc wait",
       "address": "0x1018",
       "percent_of": "0x3719D"
+    },
+    {
+      "label": "core errors",
+      "address": "0x101C"
+    },
+    {
+      "label": "CPU fetch address",
+      "address": "0x1020"
+    },
+    {
+      "label": "display",
+      "address": "0x1024"
+    },
+    {
+      "label": "disc state",
+      "address": "0x1028"
+    },
+    {
+      "label": "last disc LBA",
+      "address": "0x102C"
+    },
+    {
+      "label": "vertical display range",
+      "address": "0x1030"
+    },
+    {
+      "label": "MDEC status",
+      "address": "0x1034"
+    },
+    {
+      "label": "DMA state",
+      "address": "0x1038"
+    },
+    {
+      "label": "CPU/DMA flags",
+      "address": "0x103C"
     }
   ]
 }

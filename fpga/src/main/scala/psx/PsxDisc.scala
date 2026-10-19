@@ -102,6 +102,9 @@ class PsxDisc(sectorHostAddress: Long) extends Module {
     val clearSectorReads = Input(Bool())
     val clearReadErrors = Input(Bool())
     val clearWorstWait = Input(Bool())
+    /** Debug: the state machines and the core's request; the last LBA asked for. */
+    val debugState = Output(UInt(32.W))
+    val lastLba = Output(UInt(32.W))
   })
 
   val tocRam = hostRam(512, io.toc)
@@ -352,5 +355,8 @@ class PsxDisc(sectorHostAddress: Long) extends Module {
     }
   }
   io.hpsWrite := streamValid
+
+  io.debugState := Cat(io.hpsReq, 0.U(3.W), sectorState.asUInt.pad(4), requestState.asUInt.pad(4), initState.asUInt.pad(4))
+  io.lastLba := RegEnable(requestLba, 0.U(32.W), requestStart)
   io.hpsData := Mux(streamHigh, sectorRead.data(31, 16), sectorRead.data(15, 0))
 }

@@ -33,7 +33,8 @@ entity mdec is
       SS_wren              : in  std_logic;
       SS_rden              : in  std_logic;
       SS_DataRead          : out std_logic_vector(31 downto 0);
-      SS_Idle              : out std_logic
+      SS_Idle              : out std_logic;
+      debug_status         : out std_logic_vector(31 downto 0) -- Game Bub: MDECSTAT
    );
 end entity;
 
@@ -1304,6 +1305,7 @@ begin
    MDECSTAT(18 downto 16) <= "100" when (currentBlock = 0) else "101" when (currentBlock = 1) else std_logic_vector(currentBlock - 2);
    MDECSTAT(22 downto 19) <= "0000";
    MDECSTAT(23)           <= rec_bit15;
+   debug_status           <= MDECSTAT;
    MDECSTAT(24)           <= rec_signed;
    MDECSTAT(26 downto 25) <= rec_depth;
    MDECSTAT(27)           <= '1' when (MDECCONTROL(0) = '1' and (FifoOut_NearFull = '1' or (FifoOut_Empty = '0' and dma_read = '0'))) else '0'; -- Data-Out Request (set when DMA1 enabled and ready to send data)
