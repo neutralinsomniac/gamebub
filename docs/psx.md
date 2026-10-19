@@ -139,6 +139,27 @@ or the first that was loaded, and fails `SETUP_COMPLETE` without any.
 Not supported: libcrypt (`.sbi` subchannel data; the protected games need
 it), multi-disc swapping, CHD.
 
+### Statistics
+
+When the game is paused, the firmware logs the core's counters (see
+`HandheldPsx`), each in decimal:
+
+| Label | Meaning |
+| --- | --- |
+| run rate | clk1x cycles running vs. waiting for main RAM |
+| SDRAM row hits / conflicts | accesses to an open row vs. ones that had to close another |
+| disc sectors, disc read errors | sectors the core read (and that the firmware failed to read) |
+| worst disc wait | the longest wait for a sector, in clk1x cycles (the percentage is of a sector's time at 2x speed) |
+| core errors | every error the core has flagged since reset, bit n for code n as MiSTer shows them: 1 CD, 2 CPU, 3 GPU, 4-6 GPU line / rectangle / polygon, 7 mask, 8 DMA chop, 9 GPU FIFO, 10 SPU timeout, 11 DMA during CPU, 12 DMA FIFO, 13 CPU, 14 timer, 15 bus width |
+| CPU fetch address | where the CPU is (two pauses at the same address and no RAM traffic: it is stuck) |
+| display | bit 27 disabled, 26 24-bit, 25 interlaced, 24 PAL, 23-21 horizontal mode, 20-11 height, 10-0 width |
+| disc state | the disc glue's state machines (bits 3-0 region scan, 7-4 request, 11-8 sector) and the core's request (bit 15) |
+| last disc LBA | the last sector asked for |
+| vertical display range | GP1(07h): first line (bits 9-0), end (bits 19-10) |
+| MDEC status | MDECSTAT |
+| DMA state | bits 31-29 state, 28-26 active channel, 25 on, 24 autoread, 23 / 22 FIFO in / out empty, 21 paused, 20 to device, 19-12 blocks left, 11-0 words |
+| CPU/DMA flags | bit 15 CPU paused, 14 DMA on, 13 DMA request, 12 DMA possible, 11 DMA stalls the CPU, 10 / 9 MDEC in / out request, 8 GPU, 7 SPU request, 6 memory mux idle, 5 CPU stall next |
+
 ### Tests
 
 `psx.SdramEngineSpec` (the engine against a model of the chips that checks
