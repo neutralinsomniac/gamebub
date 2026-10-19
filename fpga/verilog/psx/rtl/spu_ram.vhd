@@ -161,9 +161,7 @@ begin
    );   
    
 -- reverb ram  64kbyte -> should cover most use cases, fallback is direct memory access
-   -- Game Bub: with the SPU RAM on the external port (the SRAM there), the
-   -- reverb area is there too; the block RAM copy is only needed for DDR3.
-   ram_ReverbSpace <= '1' when (useSDRAM = '0' and ram_Adr(18 downto 16) = "111") else '0';
+   ram_ReverbSpace <= '1' when (ram_Adr(18 downto 16) = "111") else '0';
 
    reverbram_we <= '1' when (ram_request = '1' and ram_rnw = '0' and ram_ReverbSpace = '1') else '0';
 
