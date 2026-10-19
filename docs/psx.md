@@ -8,11 +8,12 @@ lists the local changes) and wrapped by Chisel glue in
 `fpga/src/main/scala/psx/`. It ships as the external core `jeremy.PSX`
 (`fpga/cores/psx/`) and needs a rev 4 board: it uses both SDRAM chips.
 
-**Status (2026-10-18):** builds and meets timing; not yet run on hardware.
-Discs are read from CD images on the SD card (with firmware support, see
-"Discs"). Not there yet: memory cards, save states, HDMI.
+**Status (2026-10-18):** first hardware tests: Final Fantasy IX (US) boots
+and plays its intro movie. Discs are read from CD images on the SD card
+(with firmware support, see "Discs"). Not there yet: memory cards, save
+states, HDMI.
 
-Vivado 2025.1: 40.1 k LUTs (63 %), 62.5 of 135 block RAM tiles, 98 DSPs;
+Vivado 2025.1: 41.6 k LUTs (66 %), 89.5 of 135 block RAM tiles, 99 DSPs;
 timing met at 33.85 / 67.71 / 101.56 MHz.
 
 ## Building and installing
