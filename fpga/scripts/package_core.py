@@ -2,8 +2,9 @@
 """Assemble an external core package for the SD card.
 
 An external core is a directory under /sdcard/cores/ named after the core's
-id, holding core.json, files.json and settings.json (see fpga/cores/<name>/)
-and the uncompressed bitstream(s) the core.json names. This copies them to
+id, holding core.json, files.json and settings.json (see fpga/cores/<name>/),
+any other files there (e.g. a blank save named by files.json), and the
+uncompressed bitstream(s) the core.json names. This copies them to
 <out>/cores/<id>/, taking the bitstream from a build_core.py build root.
 
     python3 scripts/package_core.py --name snes --build-root build/snes --out build/package
@@ -40,10 +41,9 @@ def main() -> None:
     out_dir = args.out / "cores" / core_id
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "core.json").write_text(json.dumps(core, indent=2) + "\n")
-    for name in ("files.json", "settings.json"):
-        source = core_dir / name
-        if source.exists():
-            shutil.copyfile(source, out_dir / name)
+    for source in sorted(core_dir.iterdir()):
+        if source.is_file() and source.name != "core.json":
+            shutil.copyfile(source, out_dir / source.name)
 
     for bitstream in core["bitstreams"]:
         filename = bitstream["filename"]
