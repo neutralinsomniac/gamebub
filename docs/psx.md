@@ -176,9 +176,10 @@ When the game is paused, the firmware logs the core's counters (see
 A core.json can also list memory for the firmware to save to the core's
 directory at each pause (`"dumps": [{"file": "vram.bin", "address":
 "0x32000000", "size": "0x100000"}]`: VRAM, 1024 x 512 halfwords of 15-bit
-color), to look at on a computer; the statistics' addresses can likewise be
-any host address (main RAM at 0x3000_0000), but each is cleared, written
-with zero, after it is read.
+color), to look at on a computer (`scripts/psx_vram_png.py` renders it);
+the statistics' addresses can likewise be any host address (main RAM at
+0x3000_0000), but each is cleared, written with zero, after it is read.
+`scripts/console_log.py` records the console (the statistics) over USB.
 
 ### Tests
 
