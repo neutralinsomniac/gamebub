@@ -486,6 +486,7 @@ impl CoreManager {
             self.focus_since = Some(Instant::now());
         } else {
             self.log_statistics(played.map(|at| at.elapsed()));
+            self.write_dumps();
         }
 
         if let Some(core_handler) = self.core_handler.get_mut() {
@@ -564,6 +565,42 @@ impl CoreManager {
                 statistic.label,
                 100.0 * value as f32 / of as f32
             );
+        }
+    }
+
+    /// Save the core's debug dumps (see `CoreDump`), the game being paused.
+    fn write_dumps(&self) {
+        let Some(core) = &self.core_info else { return };
+        for dump in &core.dumps {
+            let path = core.core_dir.join(dump.file.as_str());
+            let start = Instant::now();
+            let result = (|| -> Result<(), String> {
+                let mut file = File::create(&path).map_err(|e| e.to_string())?;
+                let mut scratch = crate::bitstream::SCRATCH.take().ok_or("scratch buffer busy")?;
+                let buf = scratch.deref_mut();
+                let mut done = 0;
+                while done < dump.size {
+                    let n = ((dump.size - done) as usize).min(buf.len());
+                    let command = SpiCommand::new(fpga::FpgaSpiWordSize::Bits32);
+                    Device::lock()
+                        .fpga
+                        .spi_read(Some(MAX_SPI_READ_CLOCK), command, dump.address + done, &mut buf[..n])
+                        .map_err(|e| format!("{e:?}"))?;
+                    file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+                    done += n as u32;
+                }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => log::info!(
+                    "Dumped {} bytes from {:08X} to {} in {} ms",
+                    dump.size,
+                    dump.address,
+                    path.display(),
+                    start.elapsed().as_millis()
+                ),
+                Err(e) => log::warn!("Dump to {} failed: {e}", path.display()),
+            }
         }
     }
 

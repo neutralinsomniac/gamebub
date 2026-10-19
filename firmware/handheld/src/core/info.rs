@@ -25,6 +25,7 @@ pub struct CoreInfo {
     pub files: Vec<CoreFile>,
     pub settings: Vec<CoreSetting>,
     pub statistics: Vec<CoreStatistic>,
+    pub dumps: Vec<CoreDump>,
     pub bitstream: PathBuf,
     pub uses_cartridge: CoreCartridgeMode,
 }
@@ -164,6 +165,20 @@ pub struct CoreStatistic {
     pub percent_of: u32,
 }
 
+/// A debug aid: a stretch of the core's memory that the firmware saves to a
+/// file in the core's directory each time the game is paused (see
+/// `CoreManager::write_dumps`), for looking at it on a computer.
+#[derive(Deserialize)]
+pub struct CoreDump {
+    /// File name, in the core's directory (overwritten each time).
+    pub file: ArrayString<24>,
+    /// Host address of the first byte, and the length (both multiples of 4).
+    #[serde(deserialize_with = "deserialize_hex_u32")]
+    pub address: u32,
+    #[serde(deserialize_with = "deserialize_hex_u32")]
+    pub size: u32,
+}
+
 impl CoreInfo {
     pub fn get_settings_path(&self) -> PathBuf {
         let mut p = PathBuf::from(super::DIR_SETTINGS);
@@ -282,6 +297,8 @@ pub fn get_core(id: &str) -> Result<CoreInfo, String> {
         hardware: JsonCoreHardware,
         #[serde(default)]
         statistics: Vec<CoreStatistic>,
+        #[serde(default)]
+        dumps: Vec<CoreDump>,
     }
 
     #[derive(Deserialize)]
@@ -353,6 +370,7 @@ pub fn get_core(id: &str) -> Result<CoreInfo, String> {
         bitstream: core_dir.join(bitstream),
         settings,
         statistics: json_core.statistics,
+        dumps: json_core.dumps,
         core_dir,
     })
 }
