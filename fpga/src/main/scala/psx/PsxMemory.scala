@@ -253,8 +253,25 @@ class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends M
     // Reads of the instruction cache and the DMA take four words from the
     // requested one (as the MiSTer does, not wrapping at the cache line).
     val readWords = Mux(head.cache || head.dma, 3.U, 0.U)
+    // DMA read words wait in a ring for the clk1x side, which takes one per
+    // cycle; they come faster (the DMA asks for the next four as soon as a
+    // read is accepted), so a read is only accepted when the ring has room
+    // for its words: a 32-word MDEC block overflowed an unchecked ring of
+    // eight and the DMA then waited forever for the lost words.
+    val RingWords = 16
+    val ringRead = Wire(UInt(log2Ceil(RingWords).W)) // clk1x, below
+    val ringReadSeen = RegInit(0.U(log2Ceil(RingWords).W))
+    /** Ring slots taken by accepted DMA reads' words, until the clk1x side takes them. */
+    val ringAllocated = RegInit(0.U(log2Ceil(RingWords + 1).W))
+    val ringFreed = ringRead =/= ringReadSeen // at most one per clk1x cycle (three of these)
+    when (ringFreed) {
+      ringReadSeen := ringReadSeen + 1.U
+    }
+    val dmaWords = head.cntDma +& 1.U
+    val dmaRoom = ringAllocated +& dmaWords <= RingWords.U
+    ringAllocated := ringAllocated + Mux(accepted(Source.Cpu) && head.dma, dmaWords, 0.U) - ringFreed.asUInt
     val o = offers(Source.Cpu)
-    o.valid := requests.io.deq.valid
+    o.valid := requests.io.deq.valid && (!head.dma || dmaRoom)
     o.txn := txnFor(0.U, head.adr, Mux(head.rnw, readWords, 0.U), !head.rnw, Source.Cpu)
     requests.io.deq.ready := accepted(Source.Cpu)
 
@@ -339,24 +356,25 @@ class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends M
       reqProcessedFlag := true.B
     }
     io.ram.dmaReqProcessed := reqProcessed1x
-    val ring = Reg(Vec(8, UInt(32.W)))
-    val ringWrite = RegInit(0.U(3.W))
+    val ring = Reg(Vec(RingWords, UInt(32.W)))
+    val ringWrite = RegInit(0.U(log2Ceil(RingWords).W))
     when (word && f.dma && read.bits.index <= f.cntDma) {
       ring(ringWrite) := read.bits.data
       ringWrite := ringWrite + 1.U
     }
     withClockAndReset(io.clk1x, io.reset1x) {
-      val ringRead = RegInit(0.U(3.W))
+      val ringRead1x = RegInit(0.U(log2Ceil(RingWords).W))
       val dmaWr = RegInit(false.B)
       val dmaData = Reg(UInt(32.W))
       dmaWr := false.B
-      when (ringRead =/= ringWrite) {
+      when (ringRead1x =/= ringWrite) {
         dmaWr := true.B
-        dmaData := ring(ringRead)
-        ringRead := ringRead + 1.U
+        dmaData := ring(ringRead1x)
+        ringRead1x := ringRead1x + 1.U
       }
       io.ram.dmaWr := dmaWr
       io.ram.dmaData := dmaData
+      ringRead := ringRead1x
     }
   }
 
