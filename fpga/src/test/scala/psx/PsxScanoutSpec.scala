@@ -52,18 +52,28 @@ object PsxScanoutSpec {
 class PsxScanoutSpec extends AnyFreeSpec {
   import PsxScanoutSpec._
 
-  case class Mode(offsetX: Int, offsetY: Int, width: Int, height: Int, depth24: Boolean)
+  /** `height`: the TV window's lines; `top` black, then `picture` from VRAM (all by default). */
+  case class Mode(offsetX: Int, offsetY: Int, width: Int, height: Int, depth24: Boolean, top: Int = 0, picture: Int = -1) {
+    val pictureRows = if (picture < 0) height - top else picture
+  }
 
-  def run(mode: Mode, lineCycles: Int, rows: Int, lines: Int, seed: Int): Unit = {
+  /**
+   * `flip`: (screen column, new offsetY) — the game moves the display area
+   * there, mid-frame. Every column must then come whole from the old or the
+   * new place, the new one from some column on.
+   */
+  def run(mode: Mode, lineCycles: Int, rows: Int, lines: Int, seed: Int, flip: Option[(Int, Int)] = None): Unit = {
     val rng = new Random(seed)
     val vram = Array.fill(512 * 2048)(rng.nextInt(256)) // bytes
     def byte(line: Int, b: Int): Int = vram((line & 511) * 2048 + (b & 2047))
     def expand(v: Int): Int = (v << 3) | (v >> 2)
-    def expected(x: Int, y: Int): Int = {
+    def expected(x: Int, y: Int, offsetY: Int = mode.offsetY): Int = {
       val c = ((x - 80) * mode.width) / 640
-      val r = (y * mode.height) / 480
-      val line = mode.offsetY + r
-      if (mode.depth24) {
+      val r = (y * mode.height) / 480 - mode.top
+      val line = offsetY + r
+      if (r < 0 || r >= mode.pictureRows) {
+        0
+      } else if (mode.depth24) {
         val b = 2 * mode.offsetX + 3 * c
         (byte(line, b) << 16) | (byte(line, b + 1) << 8) | byte(line, b + 2)
       } else {
@@ -81,6 +91,8 @@ class PsxScanoutSpec extends AnyFreeSpec {
       dut.io.params.offsetY.poke(mode.offsetY.U)
       dut.io.params.areaWidth.poke(mode.width.U)
       dut.io.params.areaHeight.poke(mode.height.U)
+      dut.io.params.topRows.poke(mode.top.U)
+      dut.io.params.rows.poke(mode.pictureRows.U)
       dut.io.params.depth24.poke(mode.depth24.B)
       dut.io.params.disabled.poke(false.B)
       dut.io.word.valid.poke(false.B)
@@ -95,7 +107,8 @@ class PsxScanoutSpec extends AnyFreeSpec {
       // The scan: (x, y, frameStart) per display cycle; requests checked `Latency` cycles later.
       val scan = mutable.ArrayBuffer[(Int, Int, Boolean)]()
       scan += ((0, 600, true))
-      for (_ <- 0 until 2500) scan += ((0, 600, false))
+      // The column where the frame's state is taken, then the first strips' fetches.
+      for (_ <- 0 until 2500) scan += ((80 - PsxScanout.LatchColumns, 600, false))
       scan += ((79, 600, false))
       for (x <- 80 until 80 + lines) {
         for (i <- 0 until lineCycles) {
@@ -108,6 +121,8 @@ class PsxScanoutSpec extends AnyFreeSpec {
 
       var checked = 0
       var errors = 0
+      // With a flip: which place each column came from (true: the new one).
+      val columnFlipped = mutable.Map[Int, Boolean]()
       val firstErrors = mutable.ArrayBuffer[String]()
       var displayCycle = 0
       val history = mutable.Queue[(Int, Int)]()
@@ -119,7 +134,15 @@ class PsxScanoutSpec extends AnyFreeSpec {
             val (x, y) = history.dequeue()
             if (x >= 80 && x < 80 + lines && y < rows) {
               val got = dut.io.data.peek().litValue.toInt
-              val e = expected(x, y)
+              val e = flip match {
+                case Some((_, newY)) if got == expected(x, y, newY) && got != expected(x, y) =>
+                  assert(columnFlipped.getOrElseUpdate(x, true), s"column $x mixes the two places")
+                  got
+                case Some(_) if got == expected(x, y) && got != expected(x, y, flip.get._2) =>
+                  assert(!columnFlipped.getOrElseUpdate(x, false), s"column $x mixes the two places")
+                  got
+                case _ => expected(x, y)
+              }
               checked += 1
               if (got != e) {
                 errors += 1
@@ -133,6 +156,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
             }
           }
           val (x, y, start) = scan(displayCycle)
+          flip.foreach { case (fx, newY) => if (x == fx) dut.io.params.offsetY.poke(newY.U) }
           dut.io.x.poke(x.U)
           dut.io.y.poke(y.U)
           dut.io.frameStart.poke(start.B)
@@ -168,6 +192,11 @@ class PsxScanoutSpec extends AnyFreeSpec {
       }
       assert(checked > 0)
       assert(errors == 0, s"$errors of $checked pixels wrong:\n" + firstErrors.mkString("\n"))
+      flip.foreach { case (fx, _) =>
+        val order = columnFlipped.toSeq.sortBy(_._1).map(_._2)
+        assert(order.dropWhile(!_).forall(identity), s"back to the old place after the new: $order")
+        assert(order.contains(true) && order.contains(false), s"no switch seen: $order")
+      }
     }
   }
 
@@ -185,5 +214,18 @@ class PsxScanoutSpec extends AnyFreeSpec {
 
   "640 x 480, 24-bit" in {
     run(Mode(offsetX = 5, offsetY = 7, width = 640, height = 480, depth24 = true), lineCycles = 250, rows = 200, lines = 40, seed = 4)
+  }
+
+  "320 x 240 window, a 224-line display range in the middle" in {
+    run(Mode(offsetX = 0, offsetY = 16, width = 320, height = 240, depth24 = false, top = 8, picture = 224), lineCycles = 500, rows = 480, lines = 40, seed = 5)
+  }
+
+  "a buffer flip while the frame is scanned" in {
+    run(Mode(offsetX = 0, offsetY = 0, width = 320, height = 240, depth24 = false), lineCycles = 80, rows = 60, lines = 120, seed = 7,
+      flip = Some((80 + 50, 256)))
+  }
+
+  "PAL 576-line window, 512 rows from VRAM" in {
+    run(Mode(offsetX = 10, offsetY = 0, width = 512, height = 576, depth24 = false, top = 32, picture = 512), lineCycles = 500, rows = 480, lines = 40, seed = 6)
   }
 }
