@@ -511,9 +511,28 @@ class HandheldPsx extends Module with Core {
   scanout.io.params.offsetX := core.io.DisplayOffsetX
   scanout.io.params.offsetY := core.io.DisplayOffsetY
   scanout.io.params.areaWidth := core.io.DisplayWidth
-  scanout.io.params.areaHeight := core.io.DisplayHeight
+  locally {
+    // The TV picture: 240 (NTSC) / 288 (PAL) lines from line 16 / 19 of the
+    // field (as the core counts for its DisplayOffsetY, which already skips
+    // any display range above that), of which the vertical display range
+    // shows VRAM. Twice the lines in 480-line modes, where the scanout
+    // buffer takes 512 at most.
+    val pal = core.io.video_isPal
+    val doubled = core.io.DisplayHeight > 256.U
+    val base = Mux(pal, 19.U(10.W), 16.U(10.W))
+    val window = Mux(pal, 288.U(10.W), 240.U(10.W))
+    val start = core.io.vDisplayRange(9, 0)
+    val end = core.io.vDisplayRange(19, 10)
+    val first = Mux(start > base, start, base)
+    val last = Mux(end < base + window, end, base + window)
+    val lines = Mux(last > first, last - first, 0.U)
+    val rows = Mux(doubled, (lines << 1).min(512.U), lines)
+    scanout.io.params.areaHeight := RegNext(Mux(doubled, window << 1, window))
+    scanout.io.params.topRows := RegNext(Mux(doubled, (first - base) << 1, first - base))
+    scanout.io.params.rows := RegNext(rows)
+    scanout.io.params.disabled := RegNext(core.io.displayDisable || rows === 0.U)
+  }
   scanout.io.params.depth24 := core.io.colorDepth24
-  scanout.io.params.disabled := core.io.displayDisable
   scanout.io.clk3x := clk3x
   scanout.io.reset3x := reset3x
   memory.io.display.request <> scanout.io.fetch

@@ -169,6 +169,7 @@ entity psx_mister is
       video_isPal           : out std_logic;
       video_fbmode          : out std_logic;
       video_fb24            : out std_logic;
+      video_vDisplayRange   : out std_logic_vector(19 downto 0);
       video_hResMode        : out std_logic_vector(2 downto 0);
       video_frameindex      : out std_logic_vector(3 downto 0);
       -- Keys - all active high   
@@ -462,6 +463,7 @@ begin
       video_isPal           => video_isPal, 
       video_fbmode          => video_fbmode, 
       video_fb24            => video_fb24, 
+      video_vDisplayRange   => video_vDisplayRange,
       video_hResMode        => video_hResMode, 
       video_frameindex      => video_frameindex, 
       -- inputs
