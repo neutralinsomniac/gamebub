@@ -7,7 +7,7 @@ import lib.mem.sram.AsyncSramController
 import net.gamebub.framework.Core
 import net.gamebub.framework.interface._
 import psx.{PsxCore, PsxDisc, PsxMemory, PsxScanout, SdramEngine}
-import xilinx.{MMCM, ODDRWrapper}
+import xilinx.{MMCM, ODDRWrapper, XpmCdcHandshake}
 
 object HandheldPsx {
   /**
@@ -202,6 +202,10 @@ class HandheldPsx extends Module with Core {
   val debugMdec = Wire(UInt(32.W))
   val debugDma = Wire(UInt(32.W))
   val debugFlags = Wire(UInt(16.W))
+  /** GP1(06h); the display area's VRAM position (x 9-0, y 24-16); scanout underruns. */
+  val debugHRange = Wire(UInt(24.W))
+  val debugOffset = Wire(UInt(25.W))
+  val debugUnderruns = Wire(UInt(32.W))
   /** Clear pulses, by counter (0x1000 + 4 * index). */
   val statClear = WireDefault(VecInit(Seq.fill(7)(false.B)))
   def statEntry(index: Int, value: UInt) = (0x1000 + 4 * index) -> RegisterMap.Entry(32,
@@ -245,6 +249,9 @@ class HandheldPsx extends Module with Core {
       0x1034 -> RegisterMap.Entry.r(debugMdec),
       0x1038 -> RegisterMap.Entry.r(debugDma),
       0x103C -> RegisterMap.Entry.r(debugFlags),
+      0x1040 -> RegisterMap.Entry.r(debugHRange),
+      0x1044 -> RegisterMap.Entry.r(debugOffset),
+      0x1048 -> RegisterMap.Entry.r(debugUnderruns),
       0x1028 -> RegisterMap.Entry.r(disc.io.debugState),
       0x102C -> RegisterMap.Entry.r(disc.io.lastLba),
       // The disc's region (bit 2: recognized; bits 1-0: 0 US, 1 Japan, 2 Europe)
@@ -314,6 +321,8 @@ class HandheldPsx extends Module with Core {
   debugMdec := core.io.debug_mdec
   debugDma := core.io.debug_dma
   debugFlags := core.io.debug_flags
+  debugHRange := core.io.hDisplayRange
+  debugOffset := Cat(core.io.DisplayOffsetY, 0.U(6.W), core.io.DisplayOffsetX)
   val hostReset = reset.asBool || regCoreReset || regCoreResetOnce || !memoryReady || disc.io.holdCore
   core.io.clk1x := clk1x
   core.io.clk2x := clk2x
@@ -538,6 +547,7 @@ class HandheldPsx extends Module with Core {
   scanout.io.columnMajor := io.video.columnMajor
   scanout.io.frameStart := io.video.frameStart
   io.video.data := scanout.io.data
+  debugUnderruns := XpmCdcHandshake.continuous(io.video.clock, scanout.io.underruns)
   scanout.io.clk1x := clk1x
   scanout.io.params.offsetX := core.io.DisplayOffsetX
   scanout.io.params.offsetY := core.io.DisplayOffsetY

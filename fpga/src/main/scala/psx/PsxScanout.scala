@@ -98,6 +98,8 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     val columnMajor = Input(Bool())
     val frameStart = Input(Bool())
     val data = Output(ColorRGB(8, 8, 8))
+    /** Debug: strips the scan reached before their fetch was done (since reset). */
+    val underruns = Output(UInt(32.W))
 
     /** The core's display state, in clk1x. */
     val clk1x = Input(Clock())
@@ -251,6 +253,19 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   // Stage 4: out.
   io.data := RegNext(Mux(visible3, color, 0.U.asTypeOf(color)))
 
+  // Underruns: the fetcher's progress (its frame, strips fetched) against
+  // the strip on screen, once per strip.
+  val fetchProgress = Wire(UInt(10.W))
+  val progress = cdc(io.clk3x, fetchProgress)
+  val stripReady = progress(9, 8) === frameCount && progress(7, 0) > strip
+  val underruns = RegInit(0.U(32.W))
+  val underrunCounted = RegInit(0.U(10.W))
+  when (newLine && inPicture && !stripReady && underrunCounted =/= Cat(frameCount, strip)) {
+    underruns := underruns + 1.U
+    underrunCounted := Cat(frameCount, strip)
+  }
+  io.underruns := underruns
+
   //////////////////////////////////
   // Fetcher (clk3x)
   //////////////////////////////////
@@ -269,6 +284,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     val live = cdc(io.clk1x, io.params)
     val frameSeen = RegInit(0.U(2.W))
     val nextStrip = RegInit(0.U(8.W))
+    fetchProgress := Cat(frameSeen, nextStrip)
     val active = RegInit(false.B)
     /** Bytes from the display area's first pixel to the strip's. */
     val stripOffset = Reg(UInt(16.W))
