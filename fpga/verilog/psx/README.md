@@ -29,9 +29,10 @@ synthesizes with Vivado, and changes that make it fit the XC7A100T.
 | `rtl/dpram.vhd` | Rewritten: `dpram` and `dpram_dif` as inferrable block RAM (mixed-width ports in Altera's word order, clock enables gating the inputs, same-port write-first) instead of `altsyncram`. The RAM is read-first with a per-port bypass for the written word: in write-first mode a Xilinx block RAM returns garbage on the other port when it reads the address being written, whereas the Cyclone V returns the old data. |
 | `rtl/RamMLAB.vhd` | Rewritten: asynchronous-read distributed RAM instead of `altdpram`. |
 | `rtl/spu_ram.vhd` | `altera_mf` library clause removed (nothing in the file uses it). The reverb area (the top 64 KiB of SPU RAM) stays in block RAM as upstream has it: moved to the SRAM, its accesses took the SPU over its 768 cycles per sample (the core flagged its SPU timeout, and Final Fantasy IX hung before its intro movie). |
+| `rtl/psx_top.vhd`, `rtl/psx_mister.vhd` | `video_vDisplayRange` passed out from the GPU. |
 | `rtl/cpu.vhd` | The data cache (`datacache`) is not instantiated (no hits, no data): it only serves the turbo modes, which the port does not offer, and its read data shares a multiplexer with the scratchpad's, so synthesis keeps all 19 of its block RAMs even with the modes off. |
 | `rtl/datacache.vhd` | Removed (see `cpu.vhd`). |
-| `rtl/gpu.vhd` | `video_fbmode` and `video_fb24` carry GPUSTAT's display-disable and 24-bit color bits (upstream: the 480p hack's framebuffer mode, unused here), for the Game Bub scanout. |
+| `rtl/gpu.vhd` | `video_fbmode` and `video_fb24` carry GPUSTAT's display-disable and 24-bit color bits (upstream: the 480p hack's framebuffer mode, unused here), and the new `video_vDisplayRange` output carries GP1(07h)'s vertical display range, for the Game Bub scanout. |
 | `rtl/gpu_poly.vhd` | The triangle's share of `targetTiming` (the drawing time the GPU waits out at the end of a polygon) is added two cycles after `CALCBOUNDARY1` through registers, instead of in that cycle: the multiply and the 32-bit add after the vertex comparisons are about 21 ns at clk2x, 6.4 ns over. `targetTiming` is only read when the triangle has been drawn. |
 | `rtl/SyncRamDualByteEnable.vhd` | Removed (unused, Altera-specific). |
 

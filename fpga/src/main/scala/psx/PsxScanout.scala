@@ -11,6 +11,12 @@ object PsxScanout {
   val PictureHeight = 480
   /** Display clock cycles from a request to its color. */
   val Latency = 4
+  /**
+   * Screen columns before the picture at which a frame's display state is
+   * taken and its first two strips are fetched (a column is about 21 us on
+   * the LCD; two strips of 480 rows take about 150 us).
+   */
+  val LatchColumns = 16
   /** Halfwords of strip buffer per strip (two strips): 256 rows of 18, or 512 of 10. */
   val StripHalfwords = 5120
 
@@ -19,9 +25,17 @@ object PsxScanout {
     /** VRAM position of the display area (halfwords, lines). */
     val offsetX = UInt(10.W)
     val offsetY = UInt(9.W)
-    /** Display area size: 256 / 320 / 368 / 512 / 640 x 240 / 480. */
+    /** Display area width: 256 / 320 / 368 / 512 / 640. */
     val areaWidth = UInt(11.W)
+    /**
+     * Lines of the TV picture (the screen's height): 240 / 288 (NTSC / PAL),
+     * twice that in 480-line modes. Of these, `topRows` are black, then
+     * `rows` come from VRAM (from `offsetY`), then black again: the
+     * vertical display range.
+     */
     val areaHeight = UInt(10.W)
+    val topRows = UInt(10.W)
+    val rows = UInt(10.W)
     val depth24 = Bool()
     val disabled = Bool()
   }
@@ -32,8 +46,8 @@ object PsxScanout {
     val frame = UInt(2.W)
     /** Fetch strips up to this one (they go to slot `strip(0)`). */
     val wanted = UInt(8.W)
-    val offsetY = UInt(9.W)
-    val areaHeight = UInt(10.W)
+    /** VRAM lines per strip. */
+    val rows = UInt(10.W)
     /** Byte offset of the display area in its VRAM line. */
     val startByte = UInt(11.W)
     /** Bytes of the display area per strip (consecutive strips follow each other). */
@@ -58,13 +72,17 @@ object PsxScanout {
  * wide (16 in 15-bit color, 10 in 24-bit; half that for 480-line modes) and
  * the display area's height, into a buffer of two strips: while the scan
  * is in one, the next is fetched (in clk3x, through
- * [[PsxMemory]]'s display port). The first two are fetched at the start of
- * a frame, in the screen's left border; the display state is taken at that
- * point for the whole frame (the display starts its frame just after the
- * core's vertical blanking, see `VideoPullV0`).
+ * [[PsxMemory]]'s display port). The first two are fetched in the screen's
+ * left border, `LatchColumns` before the picture, where the display's
+ * format is taken for the whole frame (the display starts its frame as the
+ * core's vertical blanking starts, see `VideoPullV0`; this is about where
+ * the blanking ends). Its position in VRAM is taken for each strip as it
+ * is fetched, see the fetcher. (`frameStart` is not used.)
  *
- * Not yet: HDMI (row-major scanning; black for now), the vertical display
- * range (PAL games' extra lines), interlaced fields.
+ * Vertically, the picture is what a TV shows (see `Params.areaHeight`):
+ * the lines of the game's vertical display range, black around them.
+ *
+ * Not yet: HDMI (row-major scanning; black for now), interlaced fields.
  */
 class PsxScanout(simulation: Boolean = false) extends Module {
   import PsxScanout._
@@ -104,14 +122,22 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   // Display side
   //////////////////////////////////
   val params = cdc(io.clk1x, io.params)
+  // The display state is taken for the frame a few columns before the
+  // picture (where its first strips are fetched), not at the start of the
+  // frame: the display's frame starts as the core's vertical blanking does,
+  // and games flip their buffers in the blanking, after its start (taken
+  // there, the picture was the buffer being drawn).
+  val x0 = (io.screenWidth - PictureWidth.U) >> 1
+  val newLine = io.x =/= RegNext(io.x)
+  val latch = newLine && io.x === x0 - LatchColumns.U
   val frame = RegInit(0.U.asTypeOf(new Params))
   val frameCount = RegInit(0.U(2.W))
-  when (io.frameStart) {
+  when (latch) {
     frame := params
     frameCount := frameCount + 1.U
   }
 
-  val tall = frame.areaHeight > 256.U
+  val tall = frame.rows > 256.U
   val bytesPerPixel = Mux(frame.depth24, 3.U(2.W), 2.U(2.W))
   val pixelsPerStrip = Mux(tall, Mux(frame.depth24, 5.U(5.W), 8.U(5.W)), Mux(frame.depth24, 10.U(5.W), 16.U(5.W)))
   val stripBytes = Mux(tall, Mux(frame.depth24, 15.U(6.W), 16.U(6.W)), Mux(frame.depth24, 30.U(6.W), 32.U(6.W)))
@@ -119,8 +145,6 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   val startByte = Cat(frame.offsetX, 0.U(1.W))
 
   // Columns: the source column advances by width / 640 per screen column.
-  val x0 = (io.screenWidth - PictureWidth.U) >> 1
-  val newLine = io.x =/= RegNext(io.x)
   val inPicture = RegInit(false.B)
   val columnAcc = Reg(UInt(10.W))
   val strip = RegInit(0.U(8.W))
@@ -130,7 +154,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   /** Byte offset of the current pixel from the start of its strip's fetch (a word boundary). */
   val pixelByte = Reg(UInt(6.W))
   val wanted = RegInit(1.U(8.W))
-  when (io.frameStart) {
+  when (latch) {
     wanted := 1.U
   }
   when (newLine) {
@@ -165,24 +189,31 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     }
   }
 
-  // Rows: the source row advances by height / 480 per screen row (the
-  // request's y counts up by one per cycle within a scan line).
+  // Rows: the source row advances by height / 480 per screen row (up to
+  // two: 576 PAL lines; the request's y counts up by one per cycle within a
+  // scan line).
   val rowAcc = Reg(UInt(10.W))
-  val rowBase = Reg(UInt(13.W))
+  val sourceRow = Reg(UInt(10.W))
   val firstRow = io.y === 0.U
   val rowAccNow = Mux(firstRow, 0.U, rowAcc)
-  val rowBaseNow = Mux(firstRow, 0.U, rowBase)
+  val sourceRowNow = Mux(firstRow, 0.U, sourceRow)
   val rowAccNext = rowAccNow +& frame.areaHeight
-  when (rowAccNext >= PictureHeight.U) {
+  when (rowAccNext >= (2 * PictureHeight).U) {
+    rowAcc := rowAccNext - (2 * PictureHeight).U
+    sourceRow := sourceRowNow + 2.U
+  } .elsewhen (rowAccNext >= PictureHeight.U) {
     rowAcc := rowAccNext - PictureHeight.U
-    rowBase := rowBaseNow + pitch
+    sourceRow := sourceRowNow + 1.U
   } .otherwise {
     rowAcc := rowAccNext
-    rowBase := rowBaseNow
+    sourceRow := sourceRowNow
   }
+  val pictureRow = sourceRowNow - frame.topRows
+  val inRows = sourceRowNow >= frame.topRows && pictureRow < frame.rows
+  val rowBaseNow = Mux(tall, pictureRow * 10.U, pictureRow * 18.U)(12, 0)
 
   // Stage 1: the buffer address (halfwords) of the pixel's first halfword.
-  val visible = io.columnMajor && inPicture && io.y < PictureHeight.U && !frame.disabled
+  val visible = io.columnMajor && inPicture && inRows && io.y < PictureHeight.U && !frame.disabled
   val address = Mux(strip(0), StripHalfwords.U(14.W), 0.U(14.W)) + rowBaseNow + (pixelByte >> 1)
   val address1 = RegNext(address)
   val visible1 = RegNext(visible, false.B)
@@ -226,8 +257,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   val request = Wire(new FetchRequest)
   request.frame := frameCount
   request.wanted := wanted
-  request.offsetY := frame.offsetY
-  request.areaHeight := frame.areaHeight
+  request.rows := frame.rows
   request.startByte := startByte
   request.stripBytes := stripBytes
   request.words := Mux(tall, 5.U, 9.U)
@@ -235,11 +265,16 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   val displayClock = clock
   withClockAndReset(io.clk3x, io.reset3x) {
     val req = cdc(displayClock, request)
+    /** The core's display state now (for its position, see below). */
+    val live = cdc(io.clk1x, io.params)
     val frameSeen = RegInit(0.U(2.W))
     val nextStrip = RegInit(0.U(8.W))
     val active = RegInit(false.B)
-    /** Byte offset in the VRAM line of the strip's first pixel (unwrapped). */
+    /** Bytes from the display area's first pixel to the strip's. */
+    val stripOffset = Reg(UInt(16.W))
+    /** Byte offset in the VRAM line of the strip's first pixel (unwrapped), and the VRAM line of its first row. */
     val stripStart = Reg(UInt(16.W))
+    val stripLine = Reg(UInt(9.W))
     val row = Reg(UInt(10.W))
     val rowBuffer = Reg(UInt(14.W))
     /** Byte offset in the VRAM line of the next word to fetch, and words left in the row. */
@@ -251,7 +286,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     inFlight.io.deq.ready := io.word.valid && io.word.bits.last
 
     val rowStartByte = Cat(stripStart(10, 2), 0.U(2.W))
-    val line = (req.offsetY + row)(8, 0)
+    val line = (stripLine + row)(8, 0)
     val toRowEnd = (1024.U(11.W) - byte(9, 0)) >> 2
     val run = left.min(toRowEnd)
     io.fetch.valid := active && inFlight.io.enq.ready
@@ -264,14 +299,24 @@ class PsxScanout(simulation: Boolean = false) extends Module {
       // A new frame: start over (fetches in flight still land, before the new ones).
       frameSeen := req.frame
       nextStrip := 0.U
-      stripStart := req.startByte
+      stripOffset := 0.U
       active := false.B
     } .elsewhen (!active) {
-      when (nextStrip <= req.wanted) {
+      when (nextStrip <= req.wanted && req.rows =/= 0.U) {
+        // The display area's position as the strip is fetched, as a TV
+        // takes it line by line: a game that flips its buffers while the
+        // frame is scanned switches between two finished pictures, never
+        // shows the one being drawn. (Unless that would move the pixels
+        // within their words: the display side counts on the frame's.)
+        val liveStart = Cat(live.offsetX, 0.U(1.W))
+        val base = Mux(liveStart(1, 0) === req.startByte(1, 0), liveStart, req.startByte)
+        val start = (base + stripOffset)(15, 0)
+        stripStart := start
+        stripLine := live.offsetY
         active := true.B
         row := 0.U
         rowBuffer := Mux(nextStrip(0), StripHalfwords.U(14.W), 0.U(14.W))
-        byte := Cat(stripStart(10, 2), 0.U(2.W))
+        byte := Cat(start(10, 2), 0.U(2.W))
         left := req.words
       }
     } .elsewhen (io.fetch.fire) {
@@ -284,10 +329,10 @@ class PsxScanout(simulation: Boolean = false) extends Module {
         rowBuffer := rowBuffer + req.pitch
         byte := rowStartByte
         left := req.words
-        when (row === req.areaHeight - 1.U) {
+        when (row === req.rows - 1.U) {
           active := false.B
           nextStrip := nextStrip + 1.U
-          stripStart := stripStart + req.stripBytes
+          stripOffset := stripOffset + req.stripBytes
         }
       }
     }
