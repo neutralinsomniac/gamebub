@@ -13,6 +13,7 @@ object PsxMemory {
     val Ddram = 2
     val Display = 3
     val Host = 4
+    val Copy = 5
   }
   val SourceBits = 3
 
@@ -77,6 +78,19 @@ object PsxMemory {
     val words = UInt(4.W)
   }
 
+  /**
+   * A line copy within chip 1: `words` 32-bit words from word `fromWord`
+   * of the 2 KiB line `fromLine` (VRAM: chip 1 from 0), wrapping at the
+   * line's end as VRAM lines do, to consecutive words from the byte address
+   * `to` (2 KiB aligned).
+   */
+  class LineCopy extends Bundle {
+    val fromLine = UInt(9.W)
+    val fromWord = UInt(9.W)
+    val words = UInt(10.W)
+    val to = UInt(25.W)
+  }
+
   /** Words of display fetches, in order. */
   class DisplayWord extends Bundle {
     val data = UInt(32.W)
@@ -114,7 +128,8 @@ object PsxMemory {
  *
  * The engine runs one transaction at a time; the arbiter picks the next in
  * the order DMA write FIFO (it must drain before the CPU reads), CPU / DMA,
- * display, DDR3 port, host. Long DDR3 reads are cut into runs of
+ * host, display (scanout fetches, then line copies), DDR3 port. Long DDR3
+ * reads are cut into runs of
  * `ddramChunkWords` so that the CPU does not wait behind a whole VRAM line.
  */
 class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends Module {
@@ -135,6 +150,8 @@ class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends M
       val request = Flipped(Decoupled(new DisplayFetch))
       val word = Valid(new DisplayWord)
     }
+    /** Line copies for the display (clk3x), see [[PsxFrameGrab]]; taken when the previous one is done. */
+    val copy = Flipped(Decoupled(new LineCopy))
 
     val pins = new SdramEngine.Pins(2)
     val ready = Output(Bool())
@@ -186,12 +203,12 @@ class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends M
     t.source := source.U
     t
   }
-  val offers = Wire(Vec(5, new Offer))
+  val offers = Wire(Vec(6, new Offer))
   // Priority order of the sources (first wins). The host (one word at a
   // time) goes before the display and the GPU: the firmware's SPI read of a
   // word has to find it read within its dummy cycles (about a microsecond),
   // and one strip of the scanout takes tens.
-  val priority = Seq(Source.DmaFifo, Source.Cpu, Source.Host, Source.Display, Source.Ddram)
+  val priority = Seq(Source.DmaFifo, Source.Cpu, Source.Host, Source.Display, Source.Copy, Source.Ddram)
   val chosen = PriorityMux(priority.map(s => (offers(s).valid, s.U(SourceBits.W))) :+ (true.B, 0.U(SourceBits.W)))
   engine.io.request.valid := offers.map(_.valid).reduce(_ || _)
   engine.io.request.bits := offers(chosen).txn
@@ -199,8 +216,8 @@ class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends M
   def accepted(source: Int): Bool = engine.io.request.ready && engine.io.request.valid && chosen === source.U
 
   // Write data of the transaction being executed, per source.
-  val writeData = Wire(Vec(5, UInt(32.W)))
-  val writeMask = Wire(Vec(5, UInt(4.W)))
+  val writeData = Wire(Vec(6, UInt(32.W)))
+  val writeMask = Wire(Vec(6, UInt(4.W)))
   writeData := DontCare
   writeMask := DontCare
   engine.io.writeData := writeData(engine.io.writeSource)
@@ -486,6 +503,61 @@ class PsxMemory(config: SdramEngine.Config, ddramChunkWords: Int = 16) extends M
     io.display.word.bits.data := read.bits.data
     io.display.word.bits.index := read.bits.index
     io.display.word.bits.last := read.bits.last
+  }
+
+  //////////////////////////////////
+  // Line copies (clk3x)
+  //////////////////////////////////
+  // In chunks of up to 16 words, neither end crossing a 1 KiB row: each
+  // read into a buffer, then written out.
+  locally {
+    val Idle = 0.U(2.W)
+    val Read = 1.U(2.W)
+    val Wait = 2.U(2.W)
+    val Write = 3.U(2.W)
+    val state = RegInit(Idle)
+    val line = Reg(UInt(9.W))
+    val word = Reg(UInt(9.W))
+    val left = Reg(UInt(10.W))
+    val to = Reg(UInt(25.W))
+    val chunk = Reg(UInt(5.W))
+    val buffer = Reg(Vec(16, UInt(32.W)))
+    io.copy.ready := state === Idle
+    when (io.copy.fire) {
+      line := io.copy.bits.fromLine
+      word := io.copy.bits.fromWord
+      left := io.copy.bits.words
+      to := io.copy.bits.to
+      state := Mux(io.copy.bits.words === 0.U, Idle, Read)
+    }
+    val toFromRowEnd = 256.U(9.W) - word(7, 0)
+    val toToRowEnd = 256.U(9.W) - to(9, 2)
+    val n = left.min(16.U).min(toFromRowEnd).min(toToRowEnd)(4, 0)
+    val o = offers(Source.Copy)
+    o.valid := state === Read || state === Write
+    o.txn := Mux(state === Write,
+      txnFor(1.U, to, chunk - 1.U, true.B, Source.Copy),
+      txnFor(1.U, Cat(line, word, 0.U(2.W)).pad(25), n - 1.U, false.B, Source.Copy))
+    when (accepted(Source.Copy) && state === Read) {
+      chunk := n
+      state := Wait
+    }
+    when (readFor(Source.Copy)) {
+      buffer(read.bits.index) := read.bits.data
+      when (read.bits.last) {
+        state := Write
+      }
+    }
+    // The engine takes the words after it accepts the write and before it
+    // accepts anything else: the next read cannot overwrite them.
+    writeData(Source.Copy) := buffer(engine.io.writeIndex)
+    writeMask(Source.Copy) := "b1111".U
+    when (accepted(Source.Copy) && state === Write) {
+      word := word + chunk
+      left := left - chunk
+      to := to + (chunk << 2)
+      state := Mux(left === chunk, Idle, Read)
+    }
   }
 
   //////////////////////////////////

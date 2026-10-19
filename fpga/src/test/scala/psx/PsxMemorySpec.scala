@@ -2,6 +2,7 @@ package psx
 
 import chisel3._
 import chisel3.simulator.EphemeralSimulator._
+import chisel3.util.Decoupled
 import lib.mem.MemoryInterface
 import org.scalatest.freespec.AnyFreeSpec
 
@@ -23,6 +24,7 @@ object PsxMemorySpec {
       val host = new MemoryInterface(addressWidth = 26, dataWidth = 32)
       val pins = new SdramEngine.Pins(2)
       val ready = Output(Bool())
+      val copy = Flipped(Decoupled(new PsxMemory.LineCopy))
     })
     // The clocks run during reset (the memory's resets are synchronous).
     val (phase, clk3x, clk2x, clk1x) = withReset(false.B) {
@@ -44,6 +46,7 @@ object PsxMemorySpec {
     memory.io.pins <> io.pins
     memory.io.display.request.valid := false.B
     memory.io.display.request.bits := DontCare
+    memory.io.copy <> io.copy
     io.ready := memory.io.ready
   }
 }
@@ -95,6 +98,13 @@ class PsxMemorySpec extends AnyFreeSpec {
     var ddrReadExpected = mutable.Queue[Long]()
     var ddrReadPending = false
 
+    // clk3x domain: line copies
+    case class Copy(fromLine: Int, fromWord: Int, words: Int, to: Long)
+    val copyQueue = mutable.Queue[Copy]()
+    var copyActive: Option[Copy] = None
+    var copyReadyLast = false
+    var copyRunning = false
+
     // host (clk1x)
     case class HostRequest(address: Long, write: Boolean, data: Long)
     val hostQueue = mutable.Queue[HostRequest]()
@@ -116,6 +126,31 @@ class PsxMemorySpec extends AnyFreeSpec {
     }
 
     def on3x(): Unit = {
+      // Line copies: the one held in the previous cycle was taken if ready
+      // was high; it is done when ready is high again.
+      copyActive.foreach { c =>
+        if (copyReadyLast) {
+          copyActive = None
+          copyRunning = true
+          for (j <- 0 until c.words) {
+            val from = c.fromLine.toLong * 2048 + ((c.fromWord + j) & 511) * 4
+            shadow1(c.to + 4 * j) = shadow1.getOrElse(from, 0L)
+          }
+        }
+      }
+      if (copyActive.isEmpty && copyRunning && copyReadyLast) copyRunning = false
+      if (copyActive.isEmpty && !copyRunning && copyQueue.nonEmpty) copyActive = Some(copyQueue.dequeue())
+      copyActive match {
+        case Some(c) =>
+          dut.io.copy.valid.poke(true.B)
+          dut.io.copy.bits.fromLine.poke(c.fromLine.U)
+          dut.io.copy.bits.fromWord.poke(c.fromWord.U)
+          dut.io.copy.bits.words.poke(c.words.U)
+          dut.io.copy.bits.to.poke(c.to.U)
+        case None =>
+          dut.io.copy.valid.poke(false.B)
+      }
+      copyReadyLast = dut.io.copy.ready.peek().litToBoolean
       // DMA write FIFO (fall-through): the head goes when the read strobe was high.
       if (dmafifoReadLast) {
         assert(dmafifo.nonEmpty)
@@ -256,7 +291,7 @@ class PsxMemorySpec extends AnyFreeSpec {
       ddrBusyLast = dut.io.ddram.busy.peek().litToBoolean
     }
 
-    def busy: Boolean = ramQueue.nonEmpty || ramWaiting.nonEmpty || dmaOutstanding.size > dmaWordsComplete ||
+    def busy: Boolean = copyQueue.nonEmpty || copyActive.nonEmpty || copyRunning || ramQueue.nonEmpty || ramWaiting.nonEmpty || dmaOutstanding.size > dmaWordsComplete ||
       dmafifo.nonEmpty || ddrQueue.nonEmpty || ddrActive.nonEmpty || ddrReadPending || hostQueue.nonEmpty || hostActive.nonEmpty
     def dmaWordsComplete: Int = {
       // DMA requests whose words have all arrived
@@ -374,6 +409,36 @@ class PsxMemorySpec extends AnyFreeSpec {
       reads.foreach(b.ramQueue.enqueue)
       b.runUntilIdle()
       assert(b.dmaWords == (0 until 128).map(i => b.shadow0(base + 4 * i)))
+    }
+  }
+
+  "line copies within chip 1 (wrapping at the line's end, across rows)" in {
+    withBench { b =>
+      val rng = new Random(7)
+      // Two VRAM lines through the host.
+      for (line <- Seq(5, 6); w <- 0 until 512) {
+        val a = line * 2048L + 4 * w
+        val d = rng.nextLong() & 0xFFFFFFFFL
+        b.hostQueue.enqueue(b.HostRequest((1L << 25) | a, write = true, d))
+        b.shadow1(a) = d
+      }
+      b.runUntilIdle(limit = 4_000_000)
+      val copies = Seq(
+        b.Copy(5, 0, 481, 0x800000L),          // a 640-pixel 24-bit line
+        b.Copy(6, 300, 300, 0x900000L + 2048), // wraps at the line's end
+        b.Copy(5, 7, 13, 0x800000L + 4096),
+      )
+      copies.foreach(b.copyQueue.enqueue)
+      // CPU traffic meanwhile
+      for (i <- 0 until 40) b.ramQueue.enqueue(b.RamRequest(4L * rng.nextInt(1000), rnw = true, 15, 0, dma = false, 0, cache = i % 2 == 0))
+      b.runUntilIdle(limit = 4_000_000)
+      for (c <- copies; j <- 0 until c.words) b.hostQueue.enqueue(b.HostRequest((1L << 25) | (c.to + 4 * j), write = false, 0))
+      b.runUntilIdle(limit = 8_000_000)
+      for ((h, d) <- b.hostReads) {
+        val e = b.shadow1.getOrElse(h.address & 0x1FFFFFFL, 0L)
+        assert(d == e, f"copy at ${h.address & 0x1FFFFFFL}%x: $d%08x, expected $e%08x")
+      }
+      assert(b.hostReads.size == copies.map(_.words).sum)
     }
   }
 
