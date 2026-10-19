@@ -22,6 +22,13 @@ CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
 CONFIG_FATFS_API_ENCODING_UTF_8=y
 
+# Fast seek for files opened read-only: a cluster map built when the file is
+# opened, instead of walking the FAT chain from the file's start on every
+# backward seek (0.7 s into a CD image on a card with 4 KiB clusters). The map
+# holds (size - 1) / 2 fragments; a more fragmented file falls back.
+CONFIG_FATFS_USE_FASTSEEK=y
+CONFIG_FATFS_FAST_SEEK_BUFFER_SIZE=256
+
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_FLASHMODE_QIO=y
 
