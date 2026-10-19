@@ -147,7 +147,7 @@ When the game is paused, the firmware logs the core's counters (see
 
 | Label | Meaning |
 | --- | --- |
-| run rate | clk1x cycles running vs. waiting for main RAM |
+| run rate | clk1x cycles running vs. with a main RAM access outstanding (these overlap: compare the two counts; 32 bits, so a window over about 2 minutes wraps) |
 | SDRAM row hits / conflicts | accesses to an open row vs. ones that had to close another |
 | disc sectors, disc read errors | sectors the core read (and that the firmware failed to read) |
 | worst disc wait | the longest wait for a sector, in clk1x cycles (the percentage is of a sector's time at 2x speed) |
@@ -160,6 +160,16 @@ When the game is paused, the firmware logs the core's counters (see
 | MDEC status | MDECSTAT |
 | DMA state | bits 31-29 state, 28-26 active channel, 25 on, 24 autoread, 23 / 22 FIFO in / out empty, 21 paused, 20 to device, 19-12 blocks left, 11-0 words |
 | CPU/DMA flags | bit 15 CPU paused, 14 DMA on, 13 DMA request, 12 DMA possible, 11 DMA stalls the CPU, 10 / 9 MDEC in / out request, 8 GPU, 7 SPU request, 6 memory mux idle, 5 CPU stall next |
+| horizontal range | GP1(06h): start (bits 11-0), end (bits 23-12) |
+| display position | the display area in VRAM: x (bits 9-0), y (bits 24-16) |
+| scanout underruns | strips the LCD reached before they were fetched, since reset |
+
+A core.json can also list memory for the firmware to save to the core's
+directory at each pause (`"dumps": [{"file": "vram.bin", "address":
+"0x32000000", "size": "0x100000"}]`: VRAM, 1024 x 512 halfwords of 15-bit
+color), to look at on a computer; the statistics' addresses can likewise be
+any host address (main RAM at 0x3000_0000), but each is cleared, written
+with zero, after it is read.
 
 ### Tests
 

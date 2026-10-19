@@ -70,6 +70,18 @@
     {
       "label": "CPU/DMA flags",
       "address": "0x103C"
+    },
+    {
+      "label": "horizontal range",
+      "address": "0x1040"
+    },
+    {
+      "label": "display position",
+      "address": "0x1044"
+    },
+    {
+      "label": "scanout underruns",
+      "address": "0x1048"
     }
   ]
 }
