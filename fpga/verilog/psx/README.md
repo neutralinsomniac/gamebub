@@ -29,7 +29,9 @@ synthesizes with Vivado, and changes that make it fit the XC7A100T.
 | `rtl/dpram.vhd` | Rewritten: `dpram` and `dpram_dif` as inferrable block RAM (mixed-width ports in Altera's word order, clock enables gating the inputs, same-port write-first) instead of `altsyncram`. The RAM is read-first with a per-port bypass for the written word: in write-first mode a Xilinx block RAM returns garbage on the other port when it reads the address being written, whereas the Cyclone V returns the old data. |
 | `rtl/RamMLAB.vhd` | Rewritten: asynchronous-read distributed RAM instead of `altdpram`. |
 | `rtl/spu_ram.vhd` | `altera_mf` library clause removed (nothing in the file uses it). The reverb area (the top 64 KiB of SPU RAM) stays in block RAM as upstream has it: moved to the SRAM, its accesses took the SPU over its 768 cycles per sample (the core flagged its SPU timeout, and Final Fantasy IX hung before its intro movie). |
-| `rtl/psx_top.vhd`, `rtl/psx_mister.vhd` | `video_vDisplayRange` passed out from the GPU. |
+| `rtl/psx_top.vhd`, `rtl/psx_mister.vhd` | `video_vDisplayRange` passed out from the GPU. Debug outputs: `debug_errors` (every error code seen since reset, bit n for code n, the codes MiSTer shows on screen), `debug_pc` (the CPU's fetch address), `debug_mdec` and `debug_dma` (below) and `debug_flags` (the CPU's pause, the DMA requests). |
+| `rtl/dma.vhd` | Debug output `debug_state`: the controller's state, active channel, blocks and words left. |
+| `rtl/mdec.vhd` | Debug output `debug_status`: MDECSTAT. |
 | `rtl/cpu.vhd` | The data cache (`datacache`) is not instantiated (no hits, no data): it only serves the turbo modes, which the port does not offer, and its read data shares a multiplexer with the scratchpad's, so synthesis keeps all 19 of its block RAMs even with the modes off. |
 | `rtl/datacache.vhd` | Removed (see `cpu.vhd`). |
 | `rtl/gpu.vhd` | `video_fbmode` and `video_fb24` carry GPUSTAT's display-disable and 24-bit color bits (upstream: the 480p hack's framebuffer mode, unused here), and the new `video_vDisplayRange` output carries GP1(07h)'s vertical display range, for the Game Bub scanout. |
