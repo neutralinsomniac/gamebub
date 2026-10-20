@@ -17,6 +17,10 @@
 --   synthesized).
 -- * Input: one controller on port 1 (digital, analog or DualShock, chosen by
 --   the glue); no multitap, mouse, light guns, wheels or SNAC.
+-- * Save states: no rewind, and no header count (increaseSSHeaderCount
+--   off): the MiSTer's HPS watches that count to find new states, and the
+--   core stays paused for about a second after each save while it copies
+--   them. Here the glue knows when a save is done (savestate_busy).
 -- * No EXE loading and no cheats.
 
 library ieee;
@@ -173,6 +177,7 @@ entity psx_gamebub is
       savestate_number      : in  std_logic_vector(1 downto 0);
       state_loaded          : out std_logic;
       validSStates          : out std_logic_vector(3 downto 0);
+      savestate_busy        : out std_logic;
 
       -- debug (see psx_top)
       debug_errors          : out std_logic_vector(15 downto 0);
@@ -458,12 +463,13 @@ begin
       sound_out_left        => sound_out_left,
       sound_out_right       => sound_out_right,
       -- savestates
-      increaseSSHeaderCount => '1',
+      increaseSSHeaderCount => '0',
       save_state            => save_state,
       load_state            => load_state,
       savestate_number      => to_integer(unsigned(savestate_number)),
       state_loaded          => state_loaded,
       validSStates          => validSStates,
+      savestate_busy        => savestate_busy,
       rewind_on             => '0',
       rewind_active         => '0',
       debug_errors          => debug_errors,
