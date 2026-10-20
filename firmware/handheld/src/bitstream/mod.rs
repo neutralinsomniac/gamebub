@@ -17,7 +17,12 @@ pub mod gba;
 
 mod util;
 
-pub static SCRATCH: ScratchBuffer<{ 16 * 1024 }> = ScratchBuffer::new();
+/// File transfers go through this buffer (loads in two halves: one is read
+/// while the other is sent). A large one keeps SD commands large: FatFs
+/// reads or writes at most one cluster per command, and the card spends
+/// about 1.4 ms on each command whatever its size (32 KiB clusters: up to
+/// 32 KiB per command).
+pub static SCRATCH: ScratchBuffer<{ 64 * 1024 }> = ScratchBuffer::new();
 
 /// Driver for a specific bitstream.
 pub trait Bitstream {

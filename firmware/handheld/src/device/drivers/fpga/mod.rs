@@ -176,24 +176,41 @@ where
         log::info!("FPGA is in program mode");
         let start_time = Instant::now();
 
+        // The first read is sent as it is: after the header, a buffered file
+        // reader returns the rest of its buffer, and the file's following
+        // reads then go straight into the (word-aligned) buffer at a sector
+        // boundary. Filled up behind those first bytes instead, the buffer is
+        // misaligned for the SD card's DMA, which then reads one sector per
+        // command. The rest fills the buffer each time (a decompressor
+        // returns little per read; small writes cost time too).
         let mut num_read = 0;
+        let mut read_duration = Duration::ZERO;
         while num_read < header.length {
             let amount = (header.length - num_read).min(scratch_buf.len());
             let buf = &mut scratch_buf[0..amount];
-            bitstream
-                .read_exact(buf)
-                .map_err(|_| Error::BitstreamError)?;
-            num_read += amount;
+            let read_start = Instant::now();
+            let n = if num_read == 0 {
+                bitstream.read(buf)
+            } else {
+                bitstream.read_exact(buf).map(|_| amount)
+            }
+            .map_err(|_| Error::BitstreamError)?;
+            read_duration += read_start.elapsed();
+            if n == 0 {
+                return Err(Error::BitstreamError);
+            }
+            num_read += n;
 
             self.program_spi
-                .write(buf)
+                .write(&scratch_buf[0..n])
                 .map_err(|_| Error::ProgramError)?;
         }
 
         log::info!(
-            "Programmed FPGA, done={}, time={}",
+            "Programmed FPGA, done={}, time={} ({} ms reading the bitstream)",
             self.pin_done.is_high().map_err(|_| Error::PinError)?,
             start_time.elapsed().as_millis() as u32,
+            read_duration.as_millis() as u32,
         );
 
         Ok(())
