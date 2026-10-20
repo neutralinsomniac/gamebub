@@ -62,6 +62,50 @@
       "address": "0x32200000",
       "exact_size": "0x20000",
       "max_transfer_speed": 10000
+    },
+    {
+      "id": 6,
+      "label": "State 1",
+      "extensions": ["ss1"],
+      "dependent_on_0": true,
+      "per_disc": true,
+      "save_on_pause": true,
+      "address": "0x33000000",
+      "max_size": "0x400000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 7,
+      "label": "State 2",
+      "extensions": ["ss2"],
+      "dependent_on_0": true,
+      "per_disc": true,
+      "save_on_pause": true,
+      "address": "0x33400000",
+      "max_size": "0x400000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 8,
+      "label": "State 3",
+      "extensions": ["ss3"],
+      "dependent_on_0": true,
+      "per_disc": true,
+      "save_on_pause": true,
+      "address": "0x33800000",
+      "max_size": "0x400000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 9,
+      "label": "State 4",
+      "extensions": ["ss4"],
+      "dependent_on_0": true,
+      "per_disc": true,
+      "save_on_pause": true,
+      "address": "0x33C00000",
+      "max_size": "0x400000",
+      "max_transfer_speed": 10000
     }
   ]
 }

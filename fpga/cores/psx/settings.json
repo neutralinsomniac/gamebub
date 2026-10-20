@@ -8,6 +8,46 @@
       "value": 1
     },
     {
+      "id": 6,
+      "label": "Save State",
+      "address": "0x14",
+      "type": "action",
+      "value": 1,
+      "save_after": true
+    },
+    {
+      "id": 7,
+      "label": "Load State",
+      "address": "0x14",
+      "type": "action",
+      "value": 2
+    },
+    {
+      "id": 8,
+      "label": "State Slot",
+      "address": "0x18",
+      "default": 0,
+      "type": "list",
+      "items": [
+        {
+          "label": "1",
+          "value": 0
+        },
+        {
+          "label": "2",
+          "value": 1
+        },
+        {
+          "label": "3",
+          "value": 2
+        },
+        {
+          "label": "4",
+          "value": 3
+        }
+      ]
+    },
+    {
       "id": 1,
       "label": "Region",
       "address": "0x0",
