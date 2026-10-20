@@ -33,6 +33,7 @@ class PsxFrameGrabSpec extends AnyFreeSpec {
       d.disabled.poke(false.B)
       dut.io.skipLines.poke(mode.skip.U)
       dut.io.doubled.poke(mode.doubled.B)
+      dut.io.field.poke(0.U)
       dut.io.copy.ready.poke(true.B)
 
       val copies = mutable.ArrayBuffer[(Int, Int, Int, Long)]()
@@ -62,11 +63,16 @@ class PsxFrameGrabSpec extends AnyFreeSpec {
         frame()
         val f = dut.io.frame
         if (mode.doubled) {
-          // 480-line modes: no copies, the display itself
+          // 480-line modes: no copies, the display itself, the field shown
+          // (from the start of the blanking)
           assert(copies.isEmpty, s"frame $n: copies in a 480-line mode: ${copies.take(4)}")
+          dut.io.field.poke(((n + 1) % 2).U)
+          step(vblank = true, hblank = true)
           assert(f.base.peek().litValue == 0)
           assert(f.offsetX.peek().litValue == mode.offsetX)
           assert(f.offsetY.peek().litValue == mode.offsetY)
+          assert(f.bob.peek().litToBoolean)
+          assert(f.field.peek().litValue == (n + 1) % 2)
         } else {
           val base = CopyBase + n * CopyStride
           val shown = (frameLines - mode.skip).min(mode.rows).max(0)
@@ -75,6 +81,7 @@ class PsxFrameGrabSpec extends AnyFreeSpec {
           assert(f.base.peek().litValue == base)
           assert(f.offsetX.peek().litValue == (mode.offsetX & 1))
           assert(f.offsetY.peek().litValue == 0)
+          assert(!f.bob.peek().litToBoolean)
         }
         assert(f.rows.peek().litValue == mode.rows)
         assert(f.topRows.peek().litValue == mode.top)
@@ -91,7 +98,7 @@ class PsxFrameGrabSpec extends AnyFreeSpec {
     run(Mode(offsetX = 0, offsetY = 0, width = 368, depth24 = true, rows = 240, top = 0, skip = 3, doubled = false), frameLines = 243)
   }
 
-  "480-line mode: no copies, VRAM itself" in {
+  "480-line mode: no copies, VRAM itself, the field shown" in {
     run(Mode(offsetX = 10, offsetY = 0, width = 640, depth24 = false, rows = 480, top = 0, skip = 0, doubled = true), frameLines = 240)
   }
 }

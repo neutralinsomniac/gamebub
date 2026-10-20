@@ -720,6 +720,10 @@ class HandheldPsx extends Module with Core {
   grab.io.vblank := core.io.vblank
   grab.io.hblank := core.io.hblank
   grab.io.display.base := 0.U
+  grab.io.display.bob := false.B
+  grab.io.display.field := 0.U
+  // In 480-line modes, the field shown (VerRes and the field).
+  grab.io.field := core.io.video_interlace
   grab.io.display.offsetX := core.io.DisplayOffsetX
   grab.io.display.offsetY := core.io.DisplayOffsetY
   grab.io.display.areaWidth := core.io.DisplayWidth
