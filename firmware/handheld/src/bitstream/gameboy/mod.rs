@@ -118,6 +118,7 @@ impl Gameboy {
                     save_on_pause: false,
                     verify: false,
                     disc: false,
+                    per_disc: false,
 
                     address: 0x3000_0000, // SDRAM
                     max_size: 8 * 1024 * 1024,
@@ -140,6 +141,7 @@ impl Gameboy {
                     save_on_pause: false,
                     verify: false,
                     disc: false,
+                    per_disc: false,
 
                     address: 0x4000_0000, // SRAM
                     max_size: 128 * 1024 + 48,
@@ -162,6 +164,7 @@ impl Gameboy {
                     save_on_pause: false,
                     verify: false,
                     disc: false,
+                    per_disc: false,
 
                     address: 0x1000_0000 + 256,
                     max_size: 0,
@@ -184,6 +187,7 @@ impl Gameboy {
                     save_on_pause: false,
                     verify: false,
                     disc: false,
+                    per_disc: false,
 
                     address: 0x1000_0000,
                     max_size: 0,

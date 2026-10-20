@@ -891,12 +891,13 @@ impl CoreManager {
                 path = Some(core.core_dir.join(filename));
             } else if info.dependent_on_0 {
                 // Construct a new path based on file 0's path (a disc's
-                // saves are the game's, see `disc::save_path`)
+                // saves are the game's unless `per_disc`, see
+                // `disc::save_path`)
                 let extension = info.extensions[0].as_str();
                 let file_0_index = file_0_index.unwrap();
                 let file_0_disc = core.files[file_0_index].disc;
                 path = self.selected_files[file_0_index].as_ref().map(|p| {
-                    if file_0_disc {
+                    if file_0_disc && !info.per_disc {
                         disc::save_path(p, extension)
                     } else {
                         p.with_extension(extension)
