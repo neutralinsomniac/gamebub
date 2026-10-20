@@ -38,6 +38,9 @@ const NOTIFY_TIMEOUT: Duration = Duration::from_millis(10);
 const SETUP_TIMEOUT: Duration = Duration::from_millis(100);
 /// Only perform background I/O when reading files at least this large.
 const BG_IO_THRESHOLD: usize = 512 * 1024;
+/// For `FILE_READ_START`: a core may first finish the file (the PSX core
+/// holds it until a save state in progress is complete).
+const FILE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(unused)]
 mod command {
@@ -1095,12 +1098,18 @@ impl CoreManager {
         Ok(())
     }
 
-    /// Save the files that are not read-only and match `filter`. An
-    /// external core answers `FILE_READ_START` with the number of bytes to
-    /// save, 0 for nothing (no save memory, or no change since the file was
-    /// loaded or last saved): the file is then left as it is.
-    fn persist_files(&mut self, filter: impl Fn(&CoreFile) -> bool) -> Result<(), CoreError> {
+    /// Save the files that are not read-only and match `filter`, returning
+    /// the labels of those saved. An external core answers `FILE_READ_START`
+    /// with the number of bytes to save, 0 for nothing (no save memory, or
+    /// no change since the file was loaded or last saved): the file is then
+    /// left as it is. It may take a while to answer, finishing the file
+    /// first (see `FILE_READ_TIMEOUT`).
+    fn persist_files(
+        &mut self,
+        filter: impl Fn(&CoreFile) -> bool,
+    ) -> Result<Vec<String>, CoreError> {
         assert!(self.stage == Stage::Running);
+        let mut saved = Vec::new();
         let core = self.core_info.as_ref().unwrap();
         for (i, info) in core.files.iter().enumerate() {
             if info.read_only || !filter(info) {
@@ -1116,7 +1125,7 @@ impl CoreManager {
             self.run_core_command(
                 &[command::FILE_READ_START, info.id as u32],
                 std::slice::from_mut(&mut file_size),
-                SETUP_TIMEOUT,
+                FILE_READ_TIMEOUT,
             )?;
             let override_size = self
                 .core_handler
@@ -1165,6 +1174,7 @@ impl CoreManager {
                 file_size,
                 start_time.elapsed().as_millis() as u32
             );
+            saved.push(info.label.to_string());
 
             self.run_core_command(
                 &[command::FILE_READ_END, info.id as u32],
@@ -1177,7 +1187,7 @@ impl CoreManager {
                     .map_err(|e| FailedSaveFile(info.label.to_string(), e))?;
             }
         }
-        Ok(())
+        Ok(saved)
     }
 
     /// Called to persist core settings to the core settings JSON file

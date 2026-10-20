@@ -78,7 +78,7 @@ impl CoreManager {
 
         // Save updated value in core settings.
         let value = match &setting.inner {
-            Action { value } => *value,
+            Action { value, .. } => *value,
             Checkbox { value } => {
                 if ui_value != 0 {
                     *value
@@ -96,11 +96,40 @@ impl CoreManager {
         }
 
         log::info!("Core setting {} => {}", setting.label, value);
+        let save_after = matches!(setting.inner, Action { save_after: true, .. });
         self.setting_send(setting, value);
 
         if let Some(core_handler) = self.core_handler.get_mut() {
             core_handler.on_setting_changed(id, value);
         }
+
+        if save_after {
+            self.save_after_action();
+        }
+    }
+
+    /// Save what a pause saves (the `save_on_pause` files) after an action
+    /// that changes them (`save_after`), and say how it went: the core
+    /// holds `FILE_READ_START` until such a file is complete.
+    fn save_after_action(&mut self) {
+        if self.stage != super::Stage::Running {
+            return;
+        }
+        let text = match self.persist_files(|info| info.save_on_pause) {
+            Ok(saved) if saved.is_empty() => "Nothing saved".to_string(),
+            Ok(saved) => saved
+                .iter()
+                .map(|label| format!("{label} saved"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Err(e) => {
+                log::error!("Error saving: {}", e);
+                format!("Save failed: {e}")
+            }
+        };
+        crate::ui::send(crate::ui::Message::Notification(
+            crate::ui::Notification::new_short(text),
+        ));
     }
 
     /// Send an updated setting to the FPGA.

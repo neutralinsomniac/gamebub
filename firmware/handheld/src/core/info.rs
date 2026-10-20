@@ -144,6 +144,11 @@ pub enum CoreSettingType {
     Action {
         #[serde(deserialize_with = "deserialize_hex_u32")]
         value: u32,
+        /// If true, the action changes a file that is saved when the core
+        /// is paused (`save_on_pause`), such as a save state: those files
+        /// are saved right after it, with a notification.
+        #[serde(default)]
+        save_after: bool,
     },
     Checkbox {
         #[serde(deserialize_with = "deserialize_hex_u32")]

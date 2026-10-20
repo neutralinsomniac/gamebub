@@ -335,7 +335,10 @@ impl Gba {
                     address: 0x0000_2000,
                     mask: 0,
                     default: 0,
-                    inner: CoreSettingType::Action { value: 1 },
+                    inner: CoreSettingType::Action {
+                        value: 1,
+                        save_after: false,
+                    },
                 },
                 CoreSetting {
                     id: SETTING_COLOR_CORRECTIONS,
