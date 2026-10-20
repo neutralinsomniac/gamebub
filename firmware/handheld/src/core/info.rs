@@ -87,6 +87,12 @@ pub struct CoreFile {
     /// the file, and the core reads sectors by request (see `core::disc`).
     #[serde(default)]
     pub disc: bool,
+    /// If true, a file `dependent_on_0` on a disc image is named after the
+    /// disc rather than the game (see `disc::save_path`): for what only goes
+    /// with that disc, such as a save state, which includes the drive's
+    /// position on it.
+    #[serde(default)]
+    pub per_disc: bool,
 
     /// The address to load the file to.
     #[serde(deserialize_with = "deserialize_hex_u32")]
