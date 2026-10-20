@@ -27,15 +27,22 @@ object PsxFrameGrab {
  * One frame of latency, as a framebuffer has.
  *
  * `display` is the core's display state in the scanout's terms (VRAM; its
- * `base` is ignored); its format is taken for the frame when `vblank` falls.
- * `skipLines` are the display range's lines above the TV picture (not
- * shown).
+ * `base`, `bob` and `field` are ignored); its format is taken for the frame
+ * when `vblank` falls. `skipLines` are the display range's lines above the
+ * TV picture (not shown).
  *
  * In 480-line modes (`doubled`, each line of the picture two rows of it)
- * nothing is copied: two 640-pixel rows per line, on top of the scanout's
- * own reads of them, is more than the memory has to spare (the copy fell
- * behind into the frame being shown). `frame` is then the display itself,
- * in VRAM, as it is (the scanout takes it once per frame).
+ * nothing is copied and `frame` is the display itself, in VRAM, showing
+ * only the field the TV shows (`bob`): the rows of parity `field` (0 for the
+ * even rows of the picture), each in its own place and the other field's.
+ * The game does not draw those while they are shown (it draws the other
+ * field's, for the next field), so they hold still while the scanout reads
+ * them. Reading the other field's rows too, the scanout showed them half
+ * drawn (Valkyrie Profile's title redraws its background, then its logo, in
+ * every field); taking them from a copy of the field before, as the TV
+ * showed it, took about 40% of the memory's time with the scanout, which
+ * slowed the CPU and the GPU enough that the BIOS's PlayStation logo ended
+ * different in its two fields.
  */
 class PsxFrameGrab extends Module {
   import PsxFrameGrab._
@@ -46,6 +53,8 @@ class PsxFrameGrab extends Module {
     val display = Input(new PsxScanout.Params)
     val skipLines = Input(UInt(10.W))
     val doubled = Input(Bool())
+    /** The field the TV shows (480-line modes), from the start of the vertical blanking. */
+    val field = Input(UInt(1.W))
 
     val copy = Decoupled(new PsxMemory.LineCopy)
     /** The last complete copy. */
@@ -63,7 +72,6 @@ class PsxFrameGrab extends Module {
   /** The frame being copied: format, where it goes. */
   val format = Reg(new PsxScanout.Params)
   val skip = Reg(UInt(10.W))
-  val doubled = Reg(Bool())
   /** Lines of the picture so far. */
   val line = Reg(UInt(10.W))
 
@@ -76,6 +84,8 @@ class PsxFrameGrab extends Module {
   val direct = Wire(new PsxScanout.Params)
   direct := io.display
   direct.base := 0.U
+  direct.bob := true.B
+  direct.field := io.field
   io.frame := Mux(io.doubled, direct, done)
 
   when (frameStart) {
@@ -84,7 +94,6 @@ class PsxFrameGrab extends Module {
     format := io.display
     format.base := CopyBase.U + Mux(writing.asBool, CopyStride.U, 0.U)
     skip := io.skipLines
-    doubled := io.doubled
   }
   when (frameEnd) {
     when (copying) {
@@ -93,6 +102,7 @@ class PsxFrameGrab extends Module {
       done := format
       done.offsetX := format.offsetX(0)
       done.offsetY := 0.U
+      done.bob := false.B
       done.disabled := format.disabled || format.rows === 0.U
       writing := !writing
     } .otherwise {
@@ -102,10 +112,9 @@ class PsxFrameGrab extends Module {
     copying := false.B
   }
 
-  // The rows of this line still to queue (two in 480-line modes).
-  val pending = RegInit(0.U(2.W))
+  // This line's row is still to queue.
+  val pending = RegInit(false.B)
   val row = Reg(UInt(10.W))
-  val pictureLines = Mux(doubled, format.rows >> 1, format.rows)
 
   // A line whose first pixel would sit elsewhere in its word than the
   // frame's (the display moved by an odd number of pixels mid-frame) keeps
@@ -114,21 +123,20 @@ class PsxFrameGrab extends Module {
   val bytes = format.areaWidth * Mux(format.depth24, 3.U, 2.U) +& Cat(offsetX(0), 0.U(1.W))
   val queue = Module(new Queue(new PsxMemory.LineCopy, 4))
   io.copy <> queue.io.deq
-  queue.io.enq.valid := pending =/= 0.U
+  queue.io.enq.valid := pending
   queue.io.enq.bits.fromLine := (io.display.offsetY + row)(8, 0)
   queue.io.enq.bits.fromWord := offsetX(9, 1)
   queue.io.enq.bits.words := ((bytes + 3.U) >> 2)(9, 0)
   queue.io.enq.bits.to := format.base + (row << 11)
   when (queue.io.enq.fire) {
-    pending := pending - 1.U
-    row := row + 1.U
+    pending := false.B
   }
   when (lineStart && copying) {
     line := line + 1.U
     val k = line - skip
-    when (line >= skip && k < pictureLines) {
-      row := Mux(doubled, k << 1, k)
-      pending := Mux(doubled, 2.U, 1.U)
+    when (line >= skip && k < format.rows) {
+      row := k
+      pending := true.B
     }
   }
 }

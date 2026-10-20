@@ -129,13 +129,20 @@ VRAM itself, column by column, the left strips (all their rows) are read
 at the start of the frame, which showed whatever the game was still
 drawing there, ahead of a TV's beam: Final Fantasy IX flips its buffers
 some time into the blanking (its movies flickered) and draws its battle
-menus after the flip, into the buffer being shown (they flickered). In
-480-line modes nothing is copied (two 640-pixel rows per line is more than
-the memory has to spare) and the scanout reads VRAM, taking the display's
-position once per frame.
+menus after the flip, into the buffer being shown (they flickered).
 
-Not yet: HDMI (row by row: black for now), interlaced games that draw one
-field at a time.
+In 480-line (interlaced) modes nothing is copied and the scanout reads
+VRAM, but only the field the TV shows, each of its lines twice (bob, as a
+TV shows it: a slight shimmer on fine horizontal detail). Games draw the
+other field meanwhile, for the next one, so the shown field holds still
+while it is read. Reading both fields from VRAM showed the other one half
+drawn (Valkyrie Profile's title and the BIOS logos were striped). Taking
+the other field from a copy made while it was shown (weave) cost about 40%
+of the SDRAM's time, against about 13% for bob, and slowed the CPU and the
+GPU enough that the BIOS's PlayStation logo ended up different in its two
+fields.
+
+Not yet: HDMI (row by row: black for now).
 
 ### Discs
 
