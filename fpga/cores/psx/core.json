@@ -82,6 +82,15 @@
     {
       "label": "scanout underruns",
       "address": "0x1048"
+    },
+    {
+      "label": "save states",
+      "address": "0x14"
+    },
+    {
+      "label": "last save/load time",
+      "address": "0x104C",
+      "percent_of": "0x20492D7"
     }
   ]
 }

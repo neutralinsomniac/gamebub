@@ -64,7 +64,8 @@ object HandheldPsx {
     /**
      * SDRAM: chip 0 at 0x3000_0000 (main RAM at 0; the BIOS slots, 512 KiB
      * each, US / Japan / Europe, from 8 MiB), chip 1 at 0x3200_0000 (the
-     * core's DDR3 space: the memory cards at 1 and 2 MiB, see [[Card]]).
+     * core's DDR3 space: the memory cards at 1 and 2 MiB, see [[Card]]; the
+     * save-state slots from 16 MiB, see [[SaveState]]).
      */
     val Sdram = 0x3000_0000L
     val Bios = Sdram + 0x80_0000
@@ -76,7 +77,8 @@ object HandheldPsx {
 
   /**
    * File IDs (files.json): the disc, the BIOS for each region (slots 0-2,
-   * the core's region codes) and the memory cards in slots 1 and 2.
+   * the core's region codes), the memory cards in slots 1 and 2 and the
+   * save-state slots (6-9 for slots 1-4).
    */
   object FileId {
     val Disc = 0
@@ -85,6 +87,7 @@ object HandheldPsx {
     val BiosEurope = 3
     val Card1 = 4
     val Card2 = 5
+    val State1 = 6
   }
 
   /** The memory cards: raw 128 KiB images in the core's DDR3 space, slot 1's at 1 MiB, slot 2's at 2 MiB. */
@@ -96,6 +99,30 @@ object HandheldPsx {
      * find a card (to clear its "new card" flag); it holds no save data.
      */
     val WriteTestFrame = 63
+  }
+
+  /**
+   * Save states: four slots of 4 MiB in the core's DDR3 space from 224 MiB
+   * (chip 1 at 16 MiB, see [[psx.PsxMemory.ddramToChip]]; host 0x3300_0000
+   * on). A slot's file is the slot as it is, header included (the layout of
+   * the MiSTer's `.ss` files).
+   */
+  object SaveState {
+    val Slots = 4
+    val Size = 0x40_0000
+    /** Requests written to register 0x0014. */
+    val RequestSave = 1
+    val RequestLoad = 2
+    /**
+     * clk1x cycles to wait for the core to take a request: it does within a
+     * few cycles, or not at all (a load from a slot whose header it does not
+     * recognize).
+     */
+    val StartTimeout = 1024
+
+    object Step extends ChiselEnum {
+      val idle, request, starting, busy = Value
+    }
   }
 }
 
@@ -198,6 +225,20 @@ class HandheldPsx extends Module with Core {
     val region = UInt(2.W)
   }))
   val statusWire = Wire(UInt(8.W))
+  /**
+   * Save states (see below): the slot (register 0x0018), a request (written
+   * to 0x0014: [[SaveState.RequestSave]] or [[SaveState.RequestLoad]]) and
+   * the slots' status (read from 0x0014: bit 9 the core's save-state machine
+   * busy, 8 a request in progress, 7-4 the slots saved since the host last
+   * saved them, 3-0 the slots holding a state).
+   */
+  val stateSlot = RegInit(0.U(2.W))
+  val stateRequest = RegInit(0.U(2.W))
+  val stateStatus = Wire(UInt(10.W))
+  /** The clk1x cycles the last save or load took, from the request. */
+  val stateCycles = RegInit(0.U(32.W))
+  /** A save or load is in progress. */
+  val stateActive = Wire(Bool())
   val discTocInterface = Wire(new MemoryInterface(addressWidth = 11, dataWidth = 32))
   val discSectorInterface = Wire(new MemoryInterface(addressWidth = 12, dataWidth = 32))
   // Statistics (the firmware logs them when the game is paused, clearing
@@ -251,6 +292,10 @@ class HandheldPsx extends Module with Core {
     dataWidth = 32,
     entries = Seq(
       0x0000 -> RegisterMap.Entry.rw(configReg),
+      0x0014 -> RegisterMap.Entry(32,
+        RegisterMap.ReadFn(_ => stateStatus),
+        RegisterMap.WriteFn((write, data) => { when (write) { stateRequest := data(1, 0) } })),
+      0x0018 -> RegisterMap.Entry.rw(stateSlot),
       0x0100 -> RegisterMap.Entry.r(statusWire),
       statEntry(0, statMemoryWait),
       statEntry(1, statRun),
@@ -270,6 +315,7 @@ class HandheldPsx extends Module with Core {
       0x1040 -> RegisterMap.Entry.r(debugHRange),
       0x1044 -> RegisterMap.Entry.r(debugOffset),
       0x1048 -> RegisterMap.Entry.r(debugUnderruns),
+      0x104C -> RegisterMap.Entry.r(stateCycles),
       0x1028 -> RegisterMap.Entry.r(disc.io.debugState),
       0x102C -> RegisterMap.Entry.r(disc.io.lastLba),
       // The disc's region (bit 2: recognized; bits 1-0: 0 US, 1 Japan, 2 Europe)
@@ -347,7 +393,10 @@ class HandheldPsx extends Module with Core {
   core.io.clk3x := clk3x
   val coreReset = RegNext(hostReset, true.B)
   core.io.reset := coreReset
-  core.io.pause := !regCoreFocus
+  // The pause menu's pause is lifted for a save or load: the core's save
+  // states stop the console themselves, where it can stop. (Stopped by the
+  // menu, it may have work in hand, which a pause holds there.)
+  core.io.pause := !regCoreFocus && !stateActive
 
   core.io.fastboot := configReg.fastboot
   core.io.ditherOff := configReg.ditherOff
@@ -484,10 +533,83 @@ class HandheldPsx extends Module with Core {
   core.io.memcard2_addr := 0.U
   core.io.memcard2_dataIn := 0.U
 
-  // Save states: not yet.
-  core.io.save_state := false.B
-  core.io.load_state := false.B
-  core.io.savestate_number := 0.U
+  // Save states: the core saves the whole console (its registers, main RAM,
+  // VRAM, SPU RAM) into a slot in its DDR3 space, and loads it back from
+  // there (savestates.vhd: it pauses the core first, if the pause menu has
+  // not, and resets it to load). The host loads each slot from its file
+  // before the core runs, and saves the slots the core has saved into since
+  // (FILE_READ_START answers 0 bytes for the others). A slot holds a state
+  // if its file was loaded or the core has saved into it, and the core finds
+  // the state's header there; a save that does not finish (the core is
+  // reset first) leaves its slot without one, its old state overwritten in
+  // part.
+  /** The slots holding a state, the slots saved into since the host saved them. */
+  val stateHeld = RegInit(VecInit(Seq.fill(SaveState.Slots)(false.B)))
+  val stateSaved = RegInit(VecInit(Seq.fill(SaveState.Slots)(false.B)))
+  locally {
+    import SaveState.Step
+    val step = RegInit(Step.idle)
+    val slot = RegInit(0.U(2.W))
+    val saving = Reg(Bool())
+    val timer = Reg(UInt(log2Ceil(SaveState.StartTimeout + 1).W))
+    val held = stateHeld.asUInt & core.io.validSStates
+    // The core takes a request on the rising edge, and needs the slot to
+    // stay until it is done.
+    core.io.save_state := step === Step.request && saving
+    core.io.load_state := step === Step.request && !saving
+    core.io.savestate_number := slot
+    stateActive := step =/= Step.idle
+    stateStatus := Cat(core.io.savestate_busy, stateActive, stateSaved.asUInt, held)
+    switch (step) {
+      is (Step.idle) {
+        // (Busy without a request: clearing the memory after a reset.)
+        when (stateRequest =/= 0.U && !core.io.savestate_busy) {
+          val save = stateRequest === SaveState.RequestSave.U
+          val load = stateRequest === SaveState.RequestLoad.U
+          stateRequest := 0.U
+          when (save || (load && held(stateSlot))) {
+            step := Step.request
+            slot := stateSlot
+            saving := save
+            when (save) {
+              stateHeld(stateSlot) := false.B
+              stateSaved(stateSlot) := false.B
+            }
+          }
+        }
+      }
+      is (Step.request) {
+        step := Step.starting
+        timer := 0.U
+        stateCycles := 0.U
+      }
+      is (Step.starting) {
+        timer := timer + 1.U
+        when (core.io.savestate_busy) {
+          step := Step.busy
+        } .elsewhen (timer === SaveState.StartTimeout.U) {
+          step := Step.idle
+        }
+      }
+      is (Step.busy) {
+        when (!core.io.savestate_busy) {
+          step := Step.idle
+          when (saving) {
+            stateHeld(slot) := true.B
+            stateSaved(slot) := true.B
+          }
+        }
+      }
+    }
+    when (step === Step.starting || step === Step.busy) {
+      stateCycles := stateCycles + 1.U
+    }
+    // A reset ends a save or load (the core's too).
+    when (coreReset) {
+      step := Step.idle
+      stateRequest := 0.U
+    }
+  }
 
   //////////////////////////////////
   // SPU RAM (SRAM, 16-bit accesses)
@@ -655,11 +777,23 @@ class HandheldPsx extends Module with Core {
   )
   val setupReady = regCoreSetup && memoryReady
   statusWire := Cat(0.U(5.W), regCoreReset, regCoreSetup, memoryReady)
-  io.host.commandHost.busy := commandHostState === CommandState.busy
+  // FILE_READ_START waits for a save or load in progress (the firmware saves
+  // a save state's file right after the request, see settings.json), for up
+  // to 2^26 cycles (2 s, within the firmware's 5 s for the command).
+  val readWait = RegInit(0.U(26.W))
+  val holdRead = regCommandHost(0)(15, 0) === HostV0.CommandFileReadStart.U &&
+    (stateRequest =/= 0.U || stateActive) && !readWait.andR
+  when (!io.host.commandHost.request) {
+    readWait := 0.U
+  } .elsewhen (commandHostState === CommandState.idle && holdRead) {
+    readWait := readWait + 1.U
+  }
+  io.host.commandHost.busy := commandHostState === CommandState.busy ||
+    (io.host.commandHost.request && commandHostState === CommandState.idle && holdRead)
   io.host.commandHost.done := commandHostState === CommandState.done
   io.host.commandHost.error := commandHostState === CommandState.error
   when (io.host.commandHost.request) {
-    when (commandHostState === CommandState.idle) {
+    when (commandHostState === CommandState.idle && !holdRead) {
       val command = regCommandHost(0)(15, 0)
       val fileId = regCommandHost(1)(15, 0)
       for (reg <- regCommandHost) {
@@ -692,6 +826,11 @@ class HandheldPsx extends Module with Core {
         when (!memoryReady) {
           commandHostState := CommandState.busy
         }
+        for (slot <- 0 until SaveState.Slots) {
+          when (fileId === (FileId.State1 + slot).U) {
+            stateHeld(slot) := false.B
+          }
+        }
       } .elsewhen (command === HostV0.CommandFileWriteEnd.U) {
         val loaded = regCommandHost(2) =/= 0.U
         when (fileId === FileId.Disc.U) {
@@ -707,13 +846,26 @@ class HandheldPsx extends Module with Core {
             cardLoaded(slot) := loaded
           }
         }
+        for (slot <- 0 until SaveState.Slots) {
+          when (fileId === (FileId.State1 + slot).U) {
+            stateHeld(slot) := regCommandHost(2) === SaveState.Size.U
+            stateSaved(slot) := false.B
+          }
+        }
       } .elsewhen (command === HostV0.CommandFileReadStart.U) {
         // Word 0: the bytes to save; none for a card the core has not
-        // written to since it was last saved.
+        // written to, or a save-state slot it has not saved into, since it
+        // was last saved.
         for (slot <- 0 until 2) {
           when (fileId === (FileId.Card1 + slot).U && cardWritten(slot)) {
             regCommandHost(0) := Card.Size.U
             cardSaving(slot) := true.B
+          }
+        }
+        for (slot <- 0 until SaveState.Slots) {
+          when (fileId === (FileId.State1 + slot).U && stateSaved(slot)) {
+            regCommandHost(0) := SaveState.Size.U
+            stateSaved(slot) := false.B
           }
         }
       } .elsewhen (command === HostV0.CommandFileReadEnd.U) {
