@@ -295,19 +295,25 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
   }
 
   // Audio
-  val coreAudioData = Wire(new Bundle {
-    val left = SInt(16.W)
-    val right = SInt(16.W)
-  })
-  core.getInterface("audio") match {
+  val coreAudioData = Wire(new AudioV1.Sample)
+  /** The clock domain of coreAudioData. */
+  val coreAudioClock = Wire(Clock())
+  val coreAudio = core.getInterface("audio")
+  coreAudio match {
     case Some(audio: AudioV0) => {
       coreAudioData.left := audio.left
       coreAudioData.right := audio.right
+      coreAudioClock := clock
+    }
+    case Some(audio: AudioV1) => {
+      // coreAudioData: the sample being played (see the DAC output below).
+      coreAudioClock := audio.clock
     }
     case Some(x) => throw new CoreException("Unknown 'audio': " + x.getClass())
     case None => {
       coreAudioData.left := 0.S
       coreAudioData.right := 0.S
+      coreAudioClock := clock
     }
   }
 
@@ -627,7 +633,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     val framebufferReadAddress = Wire(UInt(log2Ceil(videoWidth * videoHeight).W))
     val overlayReadAddress = Wire(UInt(log2Ceil(overlayWidth * overlayHeight).W))
 
-    val audioData = XpmCdcHandshake.continuous(clock, coreAudioData)
+    val audioData = XpmCdcHandshake.continuous(coreAudioClock, coreAudioData)
 
     // Buffering the read allows this to be a block ram instead of distributed ram
     // and an additional output buffer allows Vivado to improve timing.
@@ -850,22 +856,22 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
   //////////////////////////////////
   // Audio
   //////////////////////////////////
-  val reset50M = withClock(io.clockIn50Mhz) { XpmCdcSyncRst(reset) }
-  withClockAndReset (clock = io.clockIn50Mhz, reset = reset50M) {
-    // Synchronize audio data into this domain
-    val syncAudioData = XpmCdcHandshake.continuous(clock, coreAudioData)
-
-    // 16-bit, 2 channel audio output at 48 kHz
-    // MCLK = 48 KHz * 256 = 12.288 MHz
+  /**
+   * The DAC's serial input: 16-bit, 2 channel frames, MCLK = 256 * the
+   * sample rate. The DAC runs from MCLK alone (its PLL is unused), so its
+   * sample rate follows MCLK. MCLK toggles in the cycles `toggle` is high;
+   * `sample` (left channel in the upper half) is taken at the start of each
+   * frame, in the cycle the returned signal is high.
+   */
+  def dacOutput(toggle: Bool, sample: UInt): Bool = {
     val mclkFactor = 256
     val bitWidth = 16
     val channels = 2
     val regMClock = Reg(Bool())
-    val divider = Module(new FractionalDivider(inputHz = 50_000_000, targetHz = 12_288_000 * 2))
-    when (divider.io.pulse) {
+    when (toggle) {
       regMClock := !regMClock
     }
-    val mclkEdge = divider.io.pulse && !regMClock
+    val mclkEdge = toggle && !regMClock
 
     val regSample = RegInit(0.U((bitWidth * channels).W))
     val regWordClock = RegInit(false.B)
@@ -873,6 +879,7 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
 
     val bitClockCounter = Counter(mclkFactor / bitWidth / channels / 2)
     val sampleCounter = Counter(mclkFactor)
+    val frameStart = WireDefault(false.B)
 
     when (mclkEdge) {
       when (bitClockCounter.inc()) {
@@ -884,8 +891,9 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         }
       }
       when (sampleCounter.inc()) {
-        regSample := syncAudioData.asUInt
+        regSample := sample
         regWordClock := true.B
+        frameStart := true.B
       }
     }
 
@@ -893,6 +901,35 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     io.dac.wclk := regWordClock
     io.dac.bclk := regBitClock
     io.dac.data := regSample(regSample.getWidth - 1)
+    frameStart
+  }
+
+  coreAudio match {
+    case Some(audio: AudioV1) => {
+      // The core's own rate: MCLK = half its audio clock.
+      val audioReset = withClock(audio.clock) { XpmCdcSyncRst(reset) }
+      withClockAndReset (clock = audio.clock, reset = audioReset) {
+        // One sample per frame; the last one again when the core has none.
+        val regPlaying = RegInit(0.U.asTypeOf(new AudioV1.Sample))
+        val next = Mux(audio.sample.valid, audio.sample.bits, regPlaying)
+        audio.sample.ready := dacOutput(toggle = true.B, sample = next.asUInt)
+        when (audio.sample.fire) {
+          regPlaying := audio.sample.bits
+        }
+        coreAudioData := regPlaying
+      }
+    }
+    case _ => {
+      val reset50M = withClock(io.clockIn50Mhz) { XpmCdcSyncRst(reset) }
+      withClockAndReset (clock = io.clockIn50Mhz, reset = reset50M) {
+        // Synchronize audio data into this domain
+        val syncAudioData = XpmCdcHandshake.continuous(clock, coreAudioData)
+
+        // 48 kHz: MCLK = 48 KHz * 256 = 12.288 MHz
+        val divider = Module(new FractionalDivider(inputHz = 50_000_000, targetHz = 12_288_000 * 2))
+        dacOutput(toggle = divider.io.pulse, sample = syncAudioData.asUInt)
+      }
+    }
   }
 
   // Overlay (host UI) access.
