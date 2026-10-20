@@ -115,6 +115,7 @@ pub fn mount_sdcard(
         )
     };
     EspError::convert(sdmmc_mount_result)?;
+    log_card_info(card);
 
     // Configure TinyUSB MSC driver with the sdcard. This doesn't actually expose it
     // over USB, but it configures it for if/when we actually do install tinyusb.
@@ -134,4 +135,51 @@ pub fn mount_sdcard(
     EspError::convert(tinyusb_result)?;
 
     Ok(Sdcard { card })
+}
+
+/// Log how the card is driven (clock, bus width) and its cluster size: a
+/// diagnostic for slow file transfers. FatFs reads or writes at most one
+/// cluster per command, and the card spends about 1.4 ms on each command
+/// (measured with 4 and 64 KiB reads: 1.6 and 4.6 ms), so 4 KiB clusters
+/// make transfers four to eight times slower than 32 KiB ones.
+fn log_card_info(card: *mut esp_idf_sys::sdmmc_card_t) {
+    const SECTOR: usize = 512;
+    let c = unsafe { &*card };
+    log::info!(
+        "SD card: {} kHz (limit {} kHz), {}-bit bus{}, {} MiB",
+        c.real_freq_khz,
+        c.max_freq_khz,
+        1 << c.log_bus_width(),
+        if c.is_ddr() != 0 { ", DDR" } else { "" },
+        (c.csd.capacity as u64 * c.csd.sector_size as u64) >> 20,
+    );
+
+    // Words: the SDMMC DMA needs a word-aligned buffer in internal RAM.
+    let mut words = vec![0u32; SECTOR / 4];
+    let mut read = |sector: usize| -> Result<&[u8], EspError> {
+        EspError::convert(unsafe {
+            esp_idf_sys::sdmmc_read_sectors(card, words.as_mut_ptr() as *mut c_void, sector, 1)
+        })?;
+        Ok(unsafe { std::slice::from_raw_parts(words.as_ptr() as *const u8, SECTOR) })
+    };
+
+    // The cluster size, from the FAT boot sector: sector 0, or the first
+    // partition's.
+    let cluster = (|| -> Result<Option<usize>, EspError> {
+        let mut boot = read(0)?;
+        let is_fat =
+            |s: &[u8]| &s[82..87] == b"FAT32" || &s[54..59] == b"FAT16" || &s[54..59] == b"FAT12";
+        if !is_fat(boot) {
+            let start = u32::from_le_bytes(boot[0x1C6..0x1CA].try_into().unwrap()) as usize;
+            boot = read(start)?;
+        }
+        Ok(is_fat(boot).then(|| {
+            u16::from_le_bytes(boot[11..13].try_into().unwrap()) as usize * boot[13] as usize
+        }))
+    })();
+    match cluster {
+        Ok(Some(bytes)) => log::info!("SD card: FAT, {} KiB clusters", bytes / 1024),
+        Ok(None) => log::info!("SD card: no FAT boot sector found"),
+        Err(e) => log::warn!("SD card: reading the boot sector failed: {e}"),
+    }
 }
