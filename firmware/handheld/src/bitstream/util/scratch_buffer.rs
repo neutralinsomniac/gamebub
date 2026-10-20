@@ -4,6 +4,10 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// The data is word-aligned (first, in a word-aligned struct): the SD card
+/// driver reads and writes sectors by DMA only to and from word-aligned
+/// buffers, and otherwise one sector per command through a buffer of its own.
+#[repr(C, align(4))]
 pub struct ScratchBuffer<const N: usize> {
     data: UnsafeCell<[u8; N]>,
     used: AtomicBool,
