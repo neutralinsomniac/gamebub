@@ -160,6 +160,8 @@ class PsxCore extends ExtModule {
     // Sound
     val sound_out_left = Output(UInt(16.W))
     val sound_out_right = Output(UInt(16.W))
+    // Pulses with each new sample (a Game Bub addition).
+    val sound_out_valid = Output(Bool())
 
     // Save states: a rising edge of save_state / load_state saves / loads
     // slot savestate_number (which must hold until savestate_busy falls).

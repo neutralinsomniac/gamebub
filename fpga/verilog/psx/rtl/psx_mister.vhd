@@ -262,6 +262,8 @@ entity psx_mister is
       -- sound                          
       sound_out_left        : out std_logic_vector(15 downto 0) := (others => '0');
       sound_out_right       : out std_logic_vector(15 downto 0) := (others => '0');
+      -- Game Bub: pulses with each new sample
+      sound_out_valid       : out std_logic;
       -- savestates
       increaseSSHeaderCount : in  std_logic;
       save_state            : in  std_logic;
@@ -650,6 +652,7 @@ begin
       -- sound              => -- sound       
       sound_out_left        => sound_out_left, 
       sound_out_right       => sound_out_right,
+      sound_out_valid       => sound_out_valid,
       -- savestates         
       increaseSSHeaderCount => increaseSSHeaderCount,
       save_state            => save_state,           
