@@ -1145,14 +1145,22 @@ impl CoreManager {
             }
             log::info!("Saving file {} to {}", info.label, path.display());
 
-            let mut file = File::create(path)
+            // The file is overwritten in place, and cut to size after: on
+            // FAT, truncating it first frees all of its clusters, which
+            // writing then allocates again.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(path)
                 .map_err(|_| FailedSaveFile(info.label.to_string(), "Open failed".to_string()))?;
+            let old_size = file.metadata().map(|m| m.len()).unwrap_or(0);
             let mut scratch = crate::bitstream::SCRATCH.take().expect("scratch buffer");
             let buf = scratch.deref_mut();
             let mut address: u32 = info.address;
             let mut bytes_left = file_size as usize;
 
             let start_time = Instant::now();
+            let mut write_duration = Duration::ZERO;
             while bytes_left > 0 {
                 let to_read = bytes_left.min(buf.len());
                 let data = &mut buf[0..to_read];
@@ -1163,16 +1171,24 @@ impl CoreManager {
                 let _ = Device::lock()
                     .fpga
                     .spi_read(max_clock, command, address, data);
-                file.write(data).map_err(|_| {
+                let write_start = Instant::now();
+                file.write_all(data).map_err(|_| {
                     FailedSaveFile(info.label.to_string(), "Write failed".to_string())
                 })?;
+                write_duration += write_start.elapsed();
                 address += to_read as u32;
                 bytes_left -= to_read;
             }
+            if old_size > file_size as u64 {
+                file.set_len(file_size as u64).map_err(|_| {
+                    FailedSaveFile(info.label.to_string(), "Truncate failed".to_string())
+                })?;
+            }
             log::info!(
-                "Saved {} bytes in {}ms",
+                "Saved {} bytes in {}ms ({} ms writing the file)",
                 file_size,
-                start_time.elapsed().as_millis() as u32
+                start_time.elapsed().as_millis() as u32,
+                write_duration.as_millis() as u32
             );
             saved.push(info.label.to_string());
 
