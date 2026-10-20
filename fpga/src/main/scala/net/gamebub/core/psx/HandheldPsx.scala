@@ -46,6 +46,13 @@ object HandheldPsx {
   /** Host SPI clock, above the framework's 160 MHz minimum: 169.27 MHz. */
   val SpiDivider = 6
   require(MmcmVcoHz / SpiDivider > 160e6)
+  /**
+   * The DAC runs at the SPU's own rate, clk1x / 768 (44.08 kHz), from an
+   * output at 512 times that ([[AudioV1]]): 22.57 MHz. 512 * 45 = 768 * 30
+   * VCO periods, so both sides' sample periods are the same length exactly.
+   */
+  val AudioDivider = 45
+  require(512 * AudioDivider == 768 * Clk1xDivider)
 
   /**
    * The core's NTSC frame in its synchronous video timing (the only one
@@ -146,7 +153,7 @@ class HandheldPsx extends Module with Core {
       clockSpiHz = (MmcmVcoHz / SpiDivider).toInt,
     )
     val video = new VideoPullV0(framePeriod = FramePeriod, latency = PsxScanout.Latency)
-    val audio = new AudioV0()
+    val audio = new AudioV1()
     val host = new HostV0()
     val input = new InputV0()
     val vibrate = new VibrateV0()
@@ -168,6 +175,7 @@ class HandheldPsx extends Module with Core {
       MMCM.ClockOut(displayDivider),
       MMCM.ClockOut(SpiDivider),
       MMCM.ClockOut(Clk3xDivider, phase = SdramClockPhaseDegrees), // SDRAM chips
+      MMCM.ClockOut(AudioDivider),
     )
   ))
   mmcm.io.clockIn := io.clocks.clockIn50M
@@ -695,10 +703,19 @@ class HandheldPsx extends Module with Core {
   //////////////////////////////////
   // Audio
   //////////////////////////////////
-  // 44.1 kHz samples, held between updates; the framework samples them at
-  // the DAC's rate.
-  io.audio.left := core.io.sound_out_left.asSInt
-  io.audio.right := core.io.sound_out_right.asSInt
+  // The SPU finishes a sample anywhere in its 768-cycle period (two in a row
+  // when it has fallen behind); the DAC takes one every period, at the same
+  // rate. The FIFO between them passes every sample on exactly once.
+  io.audio.clock := mmcm.io.clockOuts(6)
+  val audioSamples = Module(new RelatedClockFifo(new AudioV1.Sample, 32))
+  audioSamples.io.writeClock := clock
+  audioSamples.io.writeReset := reset.asBool
+  audioSamples.io.enq.valid := core.io.sound_out_valid
+  audioSamples.io.enq.bits.left := core.io.sound_out_left.asSInt
+  audioSamples.io.enq.bits.right := core.io.sound_out_right.asSInt
+  audioSamples.io.readClock := io.audio.clock
+  audioSamples.io.readReset := withClock(io.audio.clock) { RegNext(RegNext(reset.asBool, true.B), true.B) }
+  io.audio.sample <> audioSamples.io.deq
 
   //////////////////////////////////
   // Video

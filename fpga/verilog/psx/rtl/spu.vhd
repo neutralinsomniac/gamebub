@@ -33,6 +33,8 @@ entity spu is
       
       sound_out_left       : out std_logic_vector(15 downto 0) := (others => '0');
       sound_out_right      : out std_logic_vector(15 downto 0) := (others => '0');
+      -- Game Bub: pulses with each new sample on sound_out_left/right
+      sound_out_valid      : out std_logic := '0';
       
       bus_addr             : in  unsigned(9 downto 0); 
       bus_dataWrite        : in  std_logic_vector(15 downto 0);
@@ -833,6 +835,7 @@ begin
          ram_isReverb            <= '0';
             
          sound_timeout           <= '0';
+         sound_out_valid         <= '0';
          
          if (SS_reset = '1') then
             ss_voice_loading <= '1';
@@ -2364,6 +2367,7 @@ begin
                   elsif (soundmulresult15 > 32767) then sound_out_right <= x"7FFF";
                   else sound_out_right <= std_logic_vector(soundmulresult15(15 downto 0));
                   end if;
+                  sound_out_valid <= '1';
                
                when others => null;
             end case;
