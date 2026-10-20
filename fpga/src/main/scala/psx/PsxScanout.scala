@@ -40,6 +40,13 @@ object PsxScanout {
     val rows = UInt(10.W)
     val depth24 = Bool()
     val disabled = Bool()
+    /**
+     * 480-line modes (see [[PsxFrameGrab]]): only the rows of parity
+     * `field` (the field the TV shows), each in its own place and the other
+     * field's, as the TV shows them.
+     */
+    val bob = Bool()
+    val field = UInt(1.W)
   }
 
   /** What the fetcher (clk3x) needs to know, from the display side. */
@@ -56,6 +63,9 @@ object PsxScanout {
     val startByte = UInt(11.W)
     /** Bytes of the display area per strip (consecutive strips follow each other). */
     val stripBytes = UInt(6.W)
+    /** Only the rows of parity `field` (one buffer row each). */
+    val bob = Bool()
+    val field = UInt(1.W)
     /** 32-bit words fetched per strip row (covering the strip's bytes wherever they start). */
     val words = UInt(4.W)
     /** Halfwords per strip buffer row. */
@@ -73,8 +83,8 @@ object PsxScanout {
  * nearest neighbor (a DDA in each direction). The LCD scans the screen one
  * column at a time, so a column of the picture is a column of VRAM, one
  * pixel from each of up to 480 lines: VRAM is read in strips, a few pixels
- * wide (16 in 15-bit color, 10 in 24-bit; half that for 480-line modes) and
- * the display area's height, into a buffer of two strips: while the scan
+ * wide (16 in 15-bit color, 10 in 24-bit; half that for more than 256 rows)
+ * and the display area's height, into a buffer of two strips: while the scan
  * is in one, the next is fetched (in clk3x, through
  * [[PsxMemory]]'s display port). The first two are fetched in the screen's
  * left border, `LatchColumns` before the picture, where the display state
@@ -83,13 +93,14 @@ object PsxScanout {
  * ([[PsxFrameGrab]]), the last one completed when the display's frame
  * started (with the core's vertical blanking, see `VideoPullV0`). Reading
  * VRAM itself column by column, the left strips (all their rows read at the
- * start of the frame) showed what the game was still drawing there.
- * (`frameStart` is not used.)
+ * start of the frame) showed what the game was still drawing there. In
+ * 480-line modes it reads VRAM, the field the TV shows only (`bob`), which
+ * holds still while it is shown. (`frameStart` is not used.)
  *
  * Vertically, the picture is what a TV shows (see `Params.areaHeight`):
  * the lines of the game's vertical display range, black around them.
  *
- * Not yet: HDMI (row-major scanning; black for now), interlaced fields.
+ * Not yet: HDMI (row-major scanning; black for now).
  */
 class PsxScanout(simulation: Boolean = false) extends Module {
   import PsxScanout._
@@ -146,7 +157,8 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     frameCount := frameCount + 1.U
   }
 
-  val tall = frame.rows > 256.U
+  // (With `bob`, a strip holds the field's rows only.)
+  val tall = frame.rows > 256.U && !frame.bob
   val bytesPerPixel = Mux(frame.depth24, 3.U(2.W), 2.U(2.W))
   val pixelsPerStrip = Mux(tall, Mux(frame.depth24, 5.U(5.W), 8.U(5.W)), Mux(frame.depth24, 10.U(5.W), 16.U(5.W)))
   val stripBytes = Mux(tall, Mux(frame.depth24, 15.U(6.W), 16.U(6.W)), Mux(frame.depth24, 30.U(6.W), 32.U(6.W)))
@@ -219,7 +231,8 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   }
   val pictureRow = sourceRowNow - frame.topRows
   val inRows = sourceRowNow >= frame.topRows && pictureRow < frame.rows
-  val rowBaseNow = Mux(tall, pictureRow * 10.U, pictureRow * 18.U)(12, 0)
+  val bufferRow = Mux(frame.bob, pictureRow >> 1, pictureRow)
+  val rowBaseNow = Mux(tall, bufferRow * 10.U, bufferRow * 18.U)(12, 0)
 
   // Stage 1: the buffer address (halfwords) of the pixel's first halfword.
   val visible = io.columnMajor && inPicture && inRows && io.y < PictureHeight.U && !frame.disabled
@@ -284,6 +297,8 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   request.rows := frame.rows
   request.startByte := startByte
   request.stripBytes := stripBytes
+  request.bob := frame.bob
+  request.field := frame.field
   request.words := Mux(tall, 5.U, 9.U)
   request.pitch := pitch
   val displayClock = clock
@@ -324,9 +339,10 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     } .elsewhen (!active) {
       when (nextStrip <= req.wanted && req.rows =/= 0.U) {
         active := true.B
-        row := 0.U
+        // (With `bob`, the field's rows: every other one.)
+        row := Mux(req.bob, req.field, 0.U)
         rowBuffer := Mux(nextStrip(0), StripHalfwords.U(14.W), 0.U(14.W))
-        byte := Cat(stripStart(10, 2), 0.U(2.W))
+        byte := rowStartByte
         left := req.words
       }
     } .elsewhen (io.fetch.fire) {
@@ -335,11 +351,12 @@ class PsxScanout(simulation: Boolean = false) extends Module {
       left := left - run
       when (left === run) {
         // Row done
-        row := row + 1.U
+        val nextRow = row + Mux(req.bob, 2.U, 1.U)
+        row := nextRow
         rowBuffer := rowBuffer + req.pitch
         byte := rowStartByte
         left := req.words
-        when (row === req.rows - 1.U) {
+        when (nextRow >= req.rows) {
           active := false.B
           nextStrip := nextStrip + 1.U
           stripStart := stripStart + req.stripBytes
