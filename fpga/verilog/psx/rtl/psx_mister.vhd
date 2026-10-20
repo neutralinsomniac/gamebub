@@ -269,6 +269,8 @@ entity psx_mister is
       savestate_number      : in  integer range 0 to 3;
       state_loaded          : out std_logic;
       validSStates          : out std_logic_vector(3 downto 0);
+      -- Game Bub: the save state machine is busy (see psx_top)
+      savestate_busy        : out std_logic;
       rewind_on             : in  std_logic;
       rewind_active         : in  std_logic;
       -- Game Bub: debug (every error code seen since reset, bit n = code n;
@@ -655,6 +657,7 @@ begin
       savestate_number      => savestate_number,     
       state_loaded          => state_loaded,
       validSStates          => validSStates,
+      savestate_busy_out    => savestate_busy,
       rewind_on             => rewind_on,    
       rewind_active         => rewind_active,
       debug_errors          => debug_errors,

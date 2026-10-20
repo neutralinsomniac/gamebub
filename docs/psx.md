@@ -8,11 +8,11 @@ lists the local changes) and wrapped by Chisel glue in
 `fpga/src/main/scala/psx/`. It ships as the external core `jeremy.PSX`
 (`fpga/cores/psx/`) and needs a rev 4 board: it uses both SDRAM chips.
 
-**Status (2026-10-18):** first hardware tests: Final Fantasy IX (US) boots
-and plays its intro movie. Discs are read from CD images on the SD card
-(with firmware support, see "Discs"), memory cards are files on the SD card
-(see "Memory cards"; not yet tested on hardware). Not there yet: save states,
-HDMI.
+**Status (2026-10-19):** first hardware tests: Final Fantasy IX (US) boots
+and plays its intro movie and battles. Discs are read from CD images on the
+SD card (with firmware support, see "Discs"), memory cards are files on the
+SD card (see "Memory cards"). Save states (see "Save states") are not yet
+tested on hardware. Not there yet: HDMI.
 
 Vivado 2025.1: 43.5 k LUTs (69 %), 92.5 of 135 block RAM tiles, 101 DSPs;
 timing met at 33.85 / 67.71 / 101.56 MHz.
@@ -43,6 +43,14 @@ emulators keep them (`.mcd`, `.mcr`, MiSTer's `.sav`: rename to `.mcd`). A
 missing card starts out formatted and empty, and is only written once the
 game saves to it. Cards are written to the SD card when the pause menu
 opens and when the core exits, if the game has changed them.
+
+Save states: the pause menu's Settings have Save State, Load State and State
+Slot (1-4). Each slot is a file next to the disc's `.cue`, named after the
+disc rather than the game (a state includes where the drive is on the disc,
+so it only goes with that disc): "Final Fantasy IX (USA) (Disc 2).ss1" to
+`.ss4`, 4 MiB each. They are read when the core starts; Save State writes
+its slot's file right away and says so ("State 1 saved"). A loaded state
+takes over when the menu closes.
 
 Controls: the PlayStation's face buttons are where the Game Bub's are (Cross
 = B, Circle = A, Square = Y, Triangle = X), L / R are L1 / R1, and Select + L /
@@ -190,6 +198,44 @@ write that frame (the write-test frame, a copy of the header) whenever a game
 looks for a card, to clear the card's "new card" flag. So an unchanged card is not rewritten, and a game that
 never saves leaves no file behind.
 
+### Save states
+
+The core's own save states (`savestates.vhd`): on a request it pauses the
+console once it is somewhere it can stop (the pause menu has usually done
+that already) and copies its registers, the CD controller's state, SPU RAM,
+VRAM and main RAM into a 4 MiB slot in its DDR3 space; loading resets the
+console and copies it all back. The four slots are at DDR3 224 MiB, which
+the memory maps to chip 1 at 16 MiB (host 0x3300_0000, 0x3340_0000, ...).
+Each slot is a file (6-9 in `files.json`) that the firmware loads into place
+while the core is held, header and all: the layout of a MiSTer `.ss` file.
+
+The glue takes requests in register 0x0014 (1 save, 2 load; the slot in
+0x0018), which the settings' actions and list write, and keeps, per slot,
+whether it holds a state (its file was loaded, 4 MiB, or the core has saved
+into it) and whether the core has saved into it since the firmware last
+wrote the file: `FILE_READ_START` answers 4 MiB for those and 0 for the
+others, so only they are written. The Save State action has the firmware
+save right after it (`save_after`), and `FILE_READ_START` waits for a save
+in progress (up to 2 s); the files are also `save_on_pause`, as the cards,
+should that fail. A save that a reset cuts short leaves its slot without a
+state: part of the old one is overwritten, and the file keeps the old one.
+The pause menu's pause is lifted while a save or load is in progress: the
+core's save states stop the console only where it can stop (no CD sector,
+DMA or GPU work in hand), and a console the menu has stopped somewhere else
+never gets there (a save then waited for the menu to close). The core also checks each
+slot's header (a size word) after every reset, and loads only from a slot
+that passes both. A save takes the core's busy flag (`savestate_busy`, passed
+out of `psx_top` for this) to finish. Off: upstream's rewind, and its header
+count, which the MiSTer's HPS watches to find new states (the core waits
+about a second after each save while it copies them).
+
+Firmware options this uses (generic): `per_disc`, a file `dependent_on_0`
+on a disc image named after the disc instead of the game; `save_after` on a
+settings action, which saves the `save_on_pause` files right after it and
+shows a notification ("State 1 saved", or what went wrong); and
+`FILE_READ_START` may take up to 5 s. Saves overwrite their file in place
+(cut to size after) instead of truncating it first.
+
 ### Statistics
 
 When the game is paused, the firmware logs the core's counters (see
@@ -213,6 +259,8 @@ When the game is paused, the firmware logs the core's counters (see
 | horizontal range | GP1(06h): start (bits 11-0), end (bits 23-12) |
 | display position | the display area in VRAM: x (bits 9-0), y (bits 24-16) |
 | scanout underruns | strips the LCD reached before they were fetched, since reset |
+| save states | register 0x0014: bit 9 the core's save-state machine busy, 8 a request in progress, 7-4 slots saved into since their files were written, 3-0 slots holding a state |
+| last save/load time | clk1x cycles from the request to the end of the last save or load (the percentage is of a second) |
 
 A core.json can also list memory for the firmware to save to the core's
 directory at each pause (`"dumps": [{"file": "vram.bin", "address":

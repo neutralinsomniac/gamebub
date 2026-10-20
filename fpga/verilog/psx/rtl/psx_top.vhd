@@ -223,6 +223,9 @@ entity psx_top is
       savestate_number      : in  integer range 0 to 3;
       state_loaded          : out std_logic;
       validSStates          : out std_logic_vector(3 downto 0);
+      -- Game Bub: the save state machine is saving or loading a state (or
+      -- clearing the memory after a reset)
+      savestate_busy_out    : out std_logic;
       rewind_on             : in  std_logic;
       rewind_active         : in  std_logic;
       -- Game Bub: debug (every error code seen since reset, bit n = code n;
@@ -2193,6 +2196,8 @@ begin
       SS_SPURAM_dataRead      => SS_SPURAM_dataRead, 
       SS_SPURAM_done          => SS_SPURAM_done     
    );  
+
+   savestate_busy_out <= savestate_busy;
 
    istatemanager : entity work.statemanager
    generic map
