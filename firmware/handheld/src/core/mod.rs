@@ -557,6 +557,22 @@ impl CoreManager {
             100.0 * cycles as f32 / total as f32,
             played.unwrap_or_default().as_secs_f32()
         );
+        // Internal RAM (there is no PSRAM): the headroom for static buffers.
+        let caps = esp_idf_svc::sys::MALLOC_CAP_INTERNAL;
+        let (free, lowest, largest) = unsafe {
+            (
+                esp_idf_svc::sys::heap_caps_get_free_size(caps),
+                esp_idf_svc::sys::heap_caps_get_minimum_free_size(caps),
+                esp_idf_svc::sys::heap_caps_get_largest_free_block(caps),
+            )
+        };
+        pace();
+        log::info!(
+            "  heap: {} KiB free, {} KiB at the lowest, largest block {} KiB",
+            free / 1024,
+            lowest / 1024,
+            largest / 1024
+        );
         for (statistic, value) in statistics.iter().zip(values) {
             pace();
             let Some(value) = value else {
