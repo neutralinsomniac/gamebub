@@ -204,7 +204,10 @@ impl Gameboy {
                     address: REG_RESET_ONCE,
                     mask: 0,
                     default: 0,
-                    inner: CoreSettingType::Action { value: 1 },
+                    inner: CoreSettingType::Action {
+                        value: 1,
+                        save_after: false,
+                    },
                 },
                 CoreSetting {
                     id: SETTING_GB_MODE,
