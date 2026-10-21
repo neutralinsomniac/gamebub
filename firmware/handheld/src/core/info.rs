@@ -149,6 +149,10 @@ pub enum CoreSettingType {
         /// are saved right after it, with a notification.
         #[serde(default)]
         save_after: bool,
+        /// If true, the pause menu closes after the action and the game
+        /// goes on, such as after loading a save state.
+        #[serde(default)]
+        resume_after: bool,
     },
     Checkbox {
         #[serde(deserialize_with = "deserialize_hex_u32")]

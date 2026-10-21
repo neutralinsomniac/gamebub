@@ -59,6 +59,13 @@ impl CoreManager {
                     },
                     value: ui_value,
                     choices,
+                    resume_after: matches!(
+                        setting.inner,
+                        Action {
+                            resume_after: true,
+                            ..
+                        }
+                    ),
                 }
             })
             .collect();

@@ -113,6 +113,10 @@ export component GameScreen inherits ScreenBase {
                 init => {
                     self.focus();
                 }
+                // Such as Load State: back to the game.
+                resume => {
+                    root.set-menu-open(false);
+                }
             }
         }
 
