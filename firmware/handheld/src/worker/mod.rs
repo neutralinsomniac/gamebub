@@ -42,6 +42,8 @@ pub enum Message {
     CoreFileSelected(PathBuf),
     /// Core file selection was cancelled.
     CoreFileCancelled,
+    /// Choose another disc for the running core
+    CoreChangeDisc,
     /// Core focus changed
     CoreFocusChanged(bool),
     /// Load core settings
@@ -146,6 +148,7 @@ fn dispatch(message: Message) {
         Message::ExitCore => CoreManager::lock().exit_core(),
         Message::CoreFileSelected(file) => CoreManager::lock().handle_file_selected(file),
         Message::CoreFileCancelled => CoreManager::lock().cancel_file_select(),
+        Message::CoreChangeDisc => CoreManager::lock().begin_disc_change(),
         Message::CoreFocusChanged(focused) => CoreManager::lock().focus_changed(focused),
         Message::CoreSettingsLoad => CoreManager::lock().ui_load_settings(),
         Message::CoreSettingChanged { id, value } => CoreManager::lock().setting_changed(id, value),

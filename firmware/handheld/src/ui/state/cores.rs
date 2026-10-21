@@ -130,7 +130,7 @@ impl UiState {
         backend.set_core_list(list);
     }
 
-    pub fn cores_file_select_begin(&mut self, label: String, path: PathBuf) {
+    pub fn cores_file_select_begin(&mut self, label: String, path: PathBuf, in_game: bool) {
         // `path` may be either a specific file (in which case
         // that file should be selected), or a directory.
         if path.is_file() {
@@ -148,13 +148,17 @@ impl UiState {
 
         let root = self.root.unwrap();
         let backend = root.global::<Backend>();
-        root.invoke_set_title(format!("Select {label}").into());
+        if !in_game {
+            root.invoke_set_title(format!("Select {label}").into());
+        }
         backend.set_core_file_select_label(label.into());
         backend.set_core_file_select_list(slint::ModelRc::default());
         backend.set_core_file_select_index(-1);
         backend.set_core_file_select_is_loading(true);
         self.cores_file_select_update_path();
-        backend.set_core_subscreen(CoreSubscreen::FileSelect);
+        if !in_game {
+            backend.set_core_subscreen(CoreSubscreen::FileSelect);
+        }
     }
 
     pub fn cores_file_select_list(&mut self, files: Vec<(String, bool)>) {

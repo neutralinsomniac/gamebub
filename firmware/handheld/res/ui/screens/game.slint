@@ -4,10 +4,16 @@ import { Button } from "../components/button.slint";
 import { ButtonList } from "../components/button_list.slint";
 import { CoreSettingList } from "cores/core_settings.slint";
 import { CoreSettingType } from "cores/types.slint";
+import { CoreFileSelect } from "cores/core_file_select.slint";
 
 export component GameScreen inherits ScreenBase {
     private property <bool> menu-open: false;
     private property <bool> settings-open: false;
+    // Choosing another disc.
+    private property <bool> file-select-open: false;
+    private property <[string]> menu-items: Backend.game-can-change-disc
+        ? ["Return", "Settings", "Change Disc", "Exit Core"]
+        : ["Return", "Settings", "Exit Core"];
     forward-focus: i-focus-scope;
 
     // /** todo: dev remove */
@@ -26,7 +32,16 @@ export component GameScreen inherits ScreenBase {
             i-list.focus();
         } else {
             settings-open = false;
+            file-select-open = false;
             i-focus-scope.focus();
+        }
+    }
+
+    // The disc has changed: back to the game.
+    private property <int> disc-changes: Backend.game-disc-changes;
+    changed disc-changes => {
+        if (self.menu-open) {
+            set-menu-open(false);
         }
     }
 
@@ -63,14 +78,17 @@ export component GameScreen inherits ScreenBase {
             height: i-list.min-height;
 
             i-list := ButtonList {
-                items: ["Return", "Settings", "Exit Core"];
+                items: root.menu-items;
                 on-selected(item) => {
-                    if (item == 0) {
+                    if (root.menu-items[item] == "Return") {
                         root.set-menu-open(false);
-                    } else if (item == 1) {
+                    } else if (root.menu-items[item] == "Settings") {
                         Backend.game-settings-load();
                         root.settings-open = true;
-                    } else if (item == 2) {
+                    } else if (root.menu-items[item] == "Change Disc") {
+                        root.file-select-open = true;
+                        Backend.game-change-disc();
+                    } else if (root.menu-items[item] == "Exit Core") {
                         Backend.game-exit();
                     }
                 }
@@ -94,6 +112,32 @@ export component GameScreen inherits ScreenBase {
                 height: parent.height - 4px;
                 init => {
                     self.focus();
+                }
+            }
+        }
+
+        file-select := Rectangle {
+            visible: file-select-open;
+            background: #FFF;
+            border-color: black;
+            border-width: 1px;
+            x: 16px;
+            y: 16px;
+            width: root.width - 32px;
+            height: root.height - 32px;
+
+            if file-select-open: CoreFileSelect {
+                x: 4px;
+                y: 4px;
+                width: parent.width - 8px;
+                height: parent.height - 8px;
+                init => {
+                    self.focus();
+                }
+                on-cancel => {
+                    root.file-select-open = false;
+                    Backend.core-file-select-cancel();
+                    i-list.focus();
                 }
             }
         }

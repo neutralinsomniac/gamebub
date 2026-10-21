@@ -40,6 +40,9 @@ impl UiState {
             // Fetch new settings
             worker::send(worker::Message::CoreSettingsLoad);
         });
+        backend.on_game_change_disc(move || {
+            worker::send(worker::Message::CoreChangeDisc);
+        });
         backend.on_game_settings_set(move |id, value| {
             worker::send(worker::Message::CoreSettingChanged {
                 id: id as u16,
