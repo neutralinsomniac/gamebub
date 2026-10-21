@@ -87,20 +87,44 @@ class PsxCrtSpec extends AnyFreeSpec {
     check(run((3, 0, 0), scanlinesAllowed = false, pixels.map(_._1)), pixels)((p, _) => p.color)
   }
 
-  "scanlines 50 %: each line's second row as it is, the first a quarter of the light of each line around it" in {
+  /**
+   * With scanlines at `strength`: each line's second row as it is, the
+   * first the light of each line around it, weighted by that line's
+   * brightness in each color.
+   */
+  def scanlines(strength: Int)(p: In, previous: Int): Int =
+    if (!p.lineStart) {
+      p.color
+    } else {
+      val weights = channels(p.color).zip(channels(previous)).map { case (c, q) =>
+        (PsxCrt.CurrentWeights(strength)(p.phase)(c >> 4), PsxCrt.PreviousWeights(strength)(p.phase)(q >> 4))
+      }
+      fromLight(light(p.color).zip(light(previous)).zip(weights).map { case ((c, q), (wc, wq)) => (c * wc + q * wq) >> 8 })
+    }
+
+  "scanlines 50 %: the dark rows, each line's light by its brightness" in {
     val pixels = picture(Seq(100, 101), seed = 3)
-    def expected(p: In, previous: Int): Int =
-      if (!p.lineStart) p.color
-      else fromLight(light(p.color).zip(light(previous)).map { case (c, q) => (c * 64 + q * 64) >> 8 })
-    check(run((2, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(expected)
+    check(run((2, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(scanlines(2))
   }
 
-  "scanlines 75 %: the dark rows an eighth of the light of each line" in {
+  "scanlines 75 %" in {
     val pixels = picture(Seq(7), seed = 4)
-    def expected(p: In, previous: Int): Int =
-      if (!p.lineStart) p.color
-      else fromLight(light(p.color).zip(light(previous)).map { case (c, q) => (c * 32 + q * 32) >> 8 })
-    check(run((3, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(expected)
+    check(run((3, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(scanlines(3))
+  }
+
+  "scanlines: between dark lines nearly the strength's darkening, between bright ones little of it" in {
+    // The dark row's light against its lines' (both the same gray), for each strength and brightness.
+    def gap(strength: Int, gray: Int): Double = {
+      val phase = 240 >> 5 // the first of a line's two rows in 240-line modes
+      val w = PsxCrt.CurrentWeights(strength)(phase)(gray >> 4) + PsxCrt.PreviousWeights(strength)(phase)(gray >> 4)
+      w / 256.0
+    }
+    for ((strength, s) <- Seq(1 -> 0.25, 2 -> 0.5, 3 -> 0.75)) {
+      assert(gap(strength, 0x00) < 1 - 0.9 * s, s"strength $strength: black lines' gap ${gap(strength, 0)}")
+      assert(gap(strength, 0xFF) > 1 - 0.2 * s, s"strength $strength: white lines' gap ${gap(strength, 0xFF)}")
+      val gaps = (0 until 256 by 16).map(gap(strength, _))
+      assert(gaps.zip(gaps.tail).forall { case (a, b) => b >= a }, s"strength $strength: not filling up with brightness: $gaps")
+    }
   }
 
   "mask 50 %, red / green / blue stripes: the other colors' light halved, the column's own doubled" in {
