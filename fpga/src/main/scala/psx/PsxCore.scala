@@ -166,14 +166,16 @@ class PsxCore extends ExtModule {
     // Save states: a rising edge of save_state / load_state saves / loads
     // slot savestate_number (which must hold until savestate_busy falls).
     // validSStates: the slots holding a state (by their header, read after
-    // each reset, and those saved since). savestate_busy (a Game Bub
-    // addition to psx_top): a state is being saved or loaded, or the memory
-    // cleared after a reset.
+    // each reset, and those saved since, or marked by a validSStates_set
+    // pulse, a Game Bub addition). savestate_busy (a Game Bub addition to
+    // psx_top): a state is being saved or loaded, or the memory cleared
+    // after a reset.
     val save_state = Input(Bool())
     val load_state = Input(Bool())
     val savestate_number = Input(UInt(2.W))
     val state_loaded = Output(Bool())
     val validSStates = Output(UInt(4.W))
+    val validSStates_set = Input(UInt(4.W))
     val savestate_busy = Output(Bool())
 
     // Debug (a Game Bub addition to psx_top): every error code seen since

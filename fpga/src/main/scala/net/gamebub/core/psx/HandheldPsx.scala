@@ -206,6 +206,8 @@ class HandheldPsx extends Module with Core {
 
   /** Files loaded: the disc's table of contents, the BIOS slots. */
   val discLoaded = RegInit(false.B)
+  /** Pulse: a disc's table of contents has been loaded (at the start, or a disc change while the core runs). */
+  val discChanged = WireDefault(false.B)
   val biosLoaded = RegInit(VecInit(Seq.fill(3)(false.B)))
   val coreRunPulse = WireDefault(false.B)
   val disc = Module(new PsxDisc(sectorHostAddress = HostMap.DiscSector))
@@ -456,7 +458,10 @@ class HandheldPsx extends Module with Core {
   core.io.DDRAM_DOUT := memory.io.ddram.dout
   core.io.DDRAM_DOUT_READY := memory.io.ddram.doutReady
 
-  // CD: no disc yet.
+  // CD. A disc change is MiSTer's: the core gets the new disc's track table
+  // while it runs, and its drive stops, shows the lid open for a moment, and
+  // spins the new disc up. The console is not reset, and the region stays
+  // the first disc's.
   core.io.region := regionReg
   core.io.hasCD := discLoaded
   core.io.LIDopen := false.B
@@ -464,6 +469,7 @@ class HandheldPsx extends Module with Core {
   disc.io.sector <> discSectorInterface
   io.host.commandCore <> disc.io.commandCore
   disc.io.discLoaded := discLoaded
+  disc.io.discChanged := RegNext(discChanged, false.B)
   disc.io.start := coreRunPulse
   disc.io.coreReset := coreReset
   disc.io.hpsReq := core.io.cd_hps_req
@@ -554,6 +560,14 @@ class HandheldPsx extends Module with Core {
   /** The slots holding a state, the slots saved into since the host saved them. */
   val stateHeld = RegInit(VecInit(Seq.fill(SaveState.Slots)(false.B)))
   val stateSaved = RegInit(VecInit(Seq.fill(SaveState.Slots)(false.B)))
+  /**
+   * Pulses: a state has been loaded into the slot from its file. The core
+   * takes it as holding one: it only checks the slots after a reset, and the
+   * host loads them again without one when the disc is changed (the states
+   * are the disc's).
+   */
+  val stateFileLoaded = WireDefault(VecInit(Seq.fill(SaveState.Slots)(false.B)))
+  core.io.validSStates_set := RegNext(stateFileLoaded.asUInt, 0.U)
   locally {
     import SaveState.Step
     val step = RegInit(Step.idle)
@@ -856,6 +870,7 @@ class HandheldPsx extends Module with Core {
         val loaded = regCommandHost(2) =/= 0.U
         when (fileId === FileId.Disc.U) {
           discLoaded := loaded
+          discChanged := loaded
         }
         for (slot <- 0 until 3) {
           when (fileId === (FileId.BiosUs + slot).U) {
@@ -871,6 +886,7 @@ class HandheldPsx extends Module with Core {
           when (fileId === (FileId.State1 + slot).U) {
             stateHeld(slot) := regCommandHost(2) === SaveState.Size.U
             stateSaved(slot) := false.B
+            stateFileLoaded(slot) := regCommandHost(2) === SaveState.Size.U
           }
         }
       } .elsewhen (command === HostV0.CommandFileReadStart.U) {
