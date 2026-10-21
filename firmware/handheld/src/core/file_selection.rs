@@ -43,18 +43,12 @@ impl CoreManager {
             .as_ref()
             .and_then(|x| x.file_paths.iter().find(|(id, _)| *id == file.id))
             .map(|(_, path)| path.as_path());
-        let last_dir = last_path.and_then(|p| p.parent());
-
-        // Use the last path, or the last dir, or finally the root path.
-        let (initial_path, initial_dir) = match (last_path, last_dir) {
-            (Some(file), Some(parent)) if file.is_file() => (file, parent),
-            (_, Some(parent)) if parent.is_dir() => (parent, parent),
-            _ => (Path::new(DIR_SDCARD), Path::new(DIR_SDCARD)),
-        };
+        let (initial_path, initial_dir) = browse_start(last_path);
 
         ui::send(ui::Message::CoreFileSelectBegin {
             label: file.label.to_string(),
             path: initial_path.to_path_buf(),
+            in_game: false,
         });
         self.send_core_file_list(initial_dir);
     }
@@ -65,19 +59,22 @@ impl CoreManager {
         let is_none = path.as_os_str().is_empty();
         if is_none || path.is_file() {
             log::info!("File selected: {}", path.display());
+            if self.stage == Stage::Running && self.changing_disc.is_some() {
+                self.change_disc(path);
+                return;
+            }
             let Stage::LoadSelectFile(file_index) = self.stage else {
                 panic!()
             };
 
             // Update settings
-            let settings = self.core_settings.as_mut().unwrap();
-            let file_id = self.core_info.as_ref().unwrap().files[file_index].id;
-            settings.file_paths.retain(|x| x.0 != file_id);
-
             if is_none {
+                let settings = self.core_settings.as_mut().unwrap();
+                let file_id = self.core_info.as_ref().unwrap().files[file_index].id;
+                settings.file_paths.retain(|x| x.0 != file_id);
                 self.selected_files[file_index] = None;
             } else {
-                settings.file_paths.push((file_id, path.clone()));
+                self.remember_path(file_index, &path);
                 self.selected_files[file_index] = Some(path);
             }
 
@@ -91,11 +88,16 @@ impl CoreManager {
     pub fn cancel_file_select(&mut self) {
         // TODO support multiple file select (go back to previous file)
         log::info!("File select cancelled");
+        if self.stage == Stage::Running {
+            // Choosing another disc: the old one stays in.
+            self.changing_disc = None;
+            return;
+        }
         self.core_info = None;
         self.stage = Stage::Idle;
     }
 
-    fn send_core_file_list(&self, path: &Path) {
+    pub(super) fn send_core_file_list(&self, path: &Path) {
         let files = match self.list_core_files(path) {
             Ok(files) => files,
             Err(e) => {
@@ -119,8 +121,9 @@ impl CoreManager {
     /// Get the list of eligible files for the file select menu at the given directory
     fn list_core_files(&self, path: &Path) -> std::io::Result<Vec<(String, bool)>> {
         // Assumes we're in a valid file selection stage.
-        let file_index = match self.stage {
-            Stage::LoadSelectFile(i) => i,
+        let file_index = match (self.stage, self.changing_disc) {
+            (Stage::LoadSelectFile(i), _) => i,
+            (Stage::Running, Some(i)) => i,
             _ => panic!(),
         };
 
@@ -170,5 +173,17 @@ impl CoreManager {
         let files =
             std::iter::chain(no_file, files.into_iter().map(|f| (f.0, f.1.is_dir()))).collect();
         Ok(files)
+    }
+}
+
+/// Where the file browser starts for a file last loaded from `last_path`:
+/// on that file, or in its directory, or finally at the root (the path to
+/// highlight, the directory to list).
+pub(super) fn browse_start(last_path: Option<&Path>) -> (&Path, &Path) {
+    let last_dir = last_path.and_then(|p| p.parent());
+    match (last_path, last_dir) {
+        (Some(file), Some(parent)) if file.is_file() => (file, parent),
+        (_, Some(parent)) if parent.is_dir() => (parent, parent),
+        _ => (Path::new(DIR_SDCARD), Path::new(DIR_SDCARD)),
     }
 }
