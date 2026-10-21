@@ -87,13 +87,14 @@ class PsxScanoutSpec extends AnyFreeSpec {
       }
     }
     // With scanlines, the first row of each line (two rows each) is a
-    // quarter of it and a quarter of the line above.
+    // quarter of its light and a quarter of the line above's.
     def onScreen(x: Int, y: Int): Int =
       if (!mode.scanlines || y % 2 == 1) {
         expected(x, y)
       } else {
         val above = if (y > 0) expected(x, y - 1) else 0
-        Seq(16, 8, 0).map(s => ((((expected(x, y) >> s) & 255) * 64 + ((above >> s) & 255) * 64) >> 8) << s).sum
+        def light(c: Int, s: Int): Int = PsxCrt.ToLinear((c >> s) & 255)
+        Seq(16, 8, 0).map(s => PsxCrt.ToGamma((light(expected(x, y), s) * 64 + light(above, s) * 64) >> 8) << s).sum
       }
 
     simulate(new Harness) { dut =>
