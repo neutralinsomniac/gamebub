@@ -178,6 +178,7 @@ entity psx_gamebub is
       savestate_number      : in  std_logic_vector(1 downto 0);
       state_loaded          : out std_logic;
       validSStates          : out std_logic_vector(3 downto 0);
+      validSStates_set      : in  std_logic_vector(3 downto 0);
       savestate_busy        : out std_logic;
 
       -- debug (see psx_top)
@@ -471,6 +472,7 @@ begin
       savestate_number      => to_integer(unsigned(savestate_number)),
       state_loaded          => state_loaded,
       validSStates          => validSStates,
+      validSStates_set      => validSStates_set,
       savestate_busy        => savestate_busy,
       rewind_on             => '0',
       rewind_active         => '0',
