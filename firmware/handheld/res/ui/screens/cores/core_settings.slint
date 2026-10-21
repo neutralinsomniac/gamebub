@@ -71,6 +71,9 @@ export component CoreSettingListItem {
     in-out property <CoreSetting> item;
     in property <bool> selected;
 
+    // The action was chosen and it closes the pause menu (`resume-after`).
+    callback resume();
+
     i-highlight := Rectangle {
         width: root.width;
         height: root.height;
@@ -126,6 +129,9 @@ export component CoreSettingListItem {
     public function handle-selected() {
         if item.type == CoreSettingType.action {
             Backend.game-settings-set(item.id, item.value);
+            if item.resume-after {
+                resume();
+            }
         } else if item.type == CoreSettingType.checkbox {
             item.value = (item.value == 0) ? 1 : 0;
             Backend.game-settings-set(item.id, item.value);
@@ -179,6 +185,7 @@ export component CoreSettingListBase inherits ListView {
     in-out property <int> current-item: 0;
 
     callback current-item-changed(current-item: int);
+    callback resume();
 
     public function set-current-item(index: int) {
         if index < 0 || index >= model.length || index == root.current-item {
@@ -245,16 +252,24 @@ export component CoreSettingListBase inherits ListView {
         height: 20px;
         item: item;
         selected: index == root.current-item;
+        resume => {
+            root.resume();
+        }
     }
 }
 
 export component CoreSettingList {
     forward-focus: i-focus-scope;
 
+    callback resume();
+
     i-focus-scope := FocusScope {
         i-list := CoreSettingListBase {
             width: 100%;
             height: 100%;
+            resume => {
+                root.resume();
+            }
         }
 
         key-pressed(event) => {

@@ -413,7 +413,9 @@ register `0x0018`, the "State Slot" list) and the status register
 (`SS_AVAIL`, `SS_BUSY`, "save done", "request pending", "in progress", the
 valid slots). Requests come from the settings menu, i.e. while the game is
 paused and the core has no focus, so the glue runs the core's clock without
-focus (no input, no sound) from the request until the program has finished.
+focus (no input, no sound) from the request until the program has finished
+(Save State and Load State also close the menu, `resume_after`, so they mostly
+run with the focus back).
 Because the core only acts at an NMI / IRQ, a game that is waiting with
 interrupts off never gets there; the glue gives up after 5 s and cancels the
 request (as a write with both request bits clear does), which stops the
