@@ -9,8 +9,8 @@ object PsxScanout {
   /** The picture: 4:3, the full height of the screen, centered. */
   val PictureWidth = 640
   val PictureHeight = 480
-  /** Display clock cycles from a request to its color. */
-  val Latency = 4
+  /** Display clock cycles from a request to its color: reading the strip buffer, then the CRT effect. */
+  val Latency = 3 + PsxCrt.Latency
   /**
    * Screen columns before the picture at which a frame's display state is
    * taken and its first two strips are fetched (a column is about 21 us on
@@ -100,6 +100,9 @@ object PsxScanout {
  * Vertically, the picture is what a TV shows (see `Params.areaHeight`):
  * the lines of the game's vertical display range, black around them.
  *
+ * The scaled picture goes through [[PsxCrt]] (scanlines and a mask, as
+ * set), which is told where each pixel lies in its source line.
+ *
  * Not yet: HDMI (row-major scanning; black for now).
  */
 class PsxScanout(simulation: Boolean = false) extends Module {
@@ -119,9 +122,10 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     /** Debug: strips the scan reached before their fetch was done (since reset). */
     val underruns = Output(UInt(32.W))
 
-    /** The core's display state, in clk1x. */
+    /** The core's display state and the CRT effect's settings, in clk1x. */
     val clk1x = Input(Clock())
     val params = Input(new Params)
+    val crt = Input(new PsxCrt.Settings)
 
     /** The fetcher, in clk3x. */
     val clk3x = Input(Clock())
@@ -142,6 +146,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   // Display side
   //////////////////////////////////
   val params = cdc(io.clk1x, io.params)
+  val crtSettings = cdc(io.clk1x, io.crt)
   // The display state is taken for the frame a few columns before the
   // picture (where its first strips are fetched), not at the start of the
   // frame: the display's frame starts as the core's vertical blanking does,
@@ -232,6 +237,11 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   val pictureRow = sourceRowNow - frame.topRows
   val inRows = sourceRowNow >= frame.topRows && pictureRow < frame.rows
   val bufferRow = Mux(frame.bob, pictureRow >> 1, pictureRow)
+  // For the CRT effect: the center of the screen row in its source line
+  // (in 960ths of a line; 30ths, PsxCrt.PhasesPerLine, below), and whether
+  // the row above showed another line.
+  val rowCenter = (rowAccNow << 1) +& frame.areaHeight
+  val lineStart = firstRow || sourceRowNow =/= RegNext(sourceRowNow)
   val rowBaseNow = Mux(tall, bufferRow * 10.U, bufferRow * 18.U)(12, 0)
 
   // Stage 1: the buffer address (halfwords) of the pixel's first halfword.
@@ -270,8 +280,15 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     color.g := hi(7, 0)
     color.b := hi(15, 8)
   }
-  // Stage 4: out.
-  io.data := RegNext(Mux(visible3, color, 0.U.asTypeOf(color)))
+  // Stages 4-6: the CRT effect.
+  val crt = Module(new PsxCrt)
+  crt.io.settings := crtSettings
+  crt.io.scanlinesAllowed := !frame.bob && frame.areaHeight < PictureHeight.U
+  crt.io.in.color := Mux(visible3, color, 0.U.asTypeOf(color))
+  crt.io.in.column := ShiftRegister(io.x, 3)
+  crt.io.in.phase := ShiftRegister((rowCenter >> 5)(5, 0), 3)
+  crt.io.in.lineStart := ShiftRegister(lineStart, 3)
+  io.data := crt.io.out
 
   // Underruns: the fetcher's progress (its frame, strips fetched) against
   // the strip on screen, once per strip.

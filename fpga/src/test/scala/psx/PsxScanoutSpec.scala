@@ -18,6 +18,7 @@ object PsxScanoutSpec {
       val frameStart = Input(Bool())
       val data = Output(UInt(24.W))
       val params = Input(new PsxScanout.Params)
+      val crt = Input(new PsxCrt.Settings)
       val fetch = Decoupled(new PsxMemory.DisplayFetch)
       val word = Flipped(Valid(new PsxMemory.DisplayWord))
     })
@@ -36,6 +37,7 @@ object PsxScanoutSpec {
     io.data := scanout.io.data.asUInt
     scanout.io.clk1x := clock
     scanout.io.params := io.params
+    scanout.io.crt := io.crt
     scanout.io.clk3x := clock
     scanout.io.reset3x := reset.asBool
     io.fetch <> scanout.io.fetch
@@ -55,10 +57,11 @@ class PsxScanoutSpec extends AnyFreeSpec {
 
   /**
    * `height`: the TV window's lines; `top` black, then `picture` from VRAM
-   * (all by default); `bob`: each pair of rows shows the one of parity `field`.
+   * (all by default); `bob`: each pair of rows shows the one of parity `field`;
+   * `scanlines`: the CRT effect's 50 % scanlines (checked for 240 lines only).
    */
   case class Mode(offsetX: Int, offsetY: Int, width: Int, height: Int, depth24: Boolean, top: Int = 0, picture: Int = -1,
-                  bob: Boolean = false, field: Int = 0) {
+                  bob: Boolean = false, field: Int = 0, scanlines: Boolean = false) {
     val pictureRows = if (picture < 0) height - top else picture
   }
 
@@ -83,6 +86,15 @@ class PsxScanoutSpec extends AnyFreeSpec {
         (expand(p & 31) << 16) | (expand((p >> 5) & 31) << 8) | expand((p >> 10) & 31)
       }
     }
+    // With scanlines, the first row of each line (two rows each) is a
+    // quarter of it and a quarter of the line above.
+    def onScreen(x: Int, y: Int): Int =
+      if (!mode.scanlines || y % 2 == 1) {
+        expected(x, y)
+      } else {
+        val above = if (y > 0) expected(x, y - 1) else 0
+        Seq(16, 8, 0).map(s => ((((expected(x, y) >> s) & 255) * 64 + ((above >> s) & 255) * 64) >> 8) << s).sum
+      }
 
     simulate(new Harness) { dut =>
       dut.reset.poke(true.B)
@@ -97,6 +109,9 @@ class PsxScanoutSpec extends AnyFreeSpec {
       dut.io.params.rows.poke(mode.pictureRows.U)
       dut.io.params.depth24.poke(mode.depth24.B)
       dut.io.params.disabled.poke(false.B)
+      dut.io.crt.scanlines.poke((if (mode.scanlines) 2 else 0).U)
+      dut.io.crt.mask.poke(0.U)
+      dut.io.crt.maskPattern.poke(0.U)
       dut.io.params.bob.poke(mode.bob.B)
       dut.io.params.field.poke(mode.field.U)
       dut.io.word.valid.poke(false.B)
@@ -136,7 +151,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
             val (x, y) = history.dequeue()
             if (x >= 80 && x < 80 + lines && y < rows) {
               val got = dut.io.data.peek().litValue.toInt
-              val e = expected(x, y)
+              val e = onScreen(x, y)
               checked += 1
               if (got != e) {
                 errors += 1
@@ -210,6 +225,10 @@ class PsxScanoutSpec extends AnyFreeSpec {
 
   "320 x 240 window, a 224-line display range in the middle" in {
     run(Mode(offsetX = 0, offsetY = 16, width = 320, height = 240, depth24 = false, top = 8, picture = 224), lineCycles = 500, rows = 480, lines = 40, seed = 5)
+  }
+
+  "320 x 240 window, a 224-line display range, 50 % scanlines" in {
+    run(Mode(offsetX = 0, offsetY = 16, width = 320, height = 240, depth24 = false, top = 8, picture = 224, scanlines = true), lineCycles = 500, rows = 480, lines = 20, seed = 10)
   }
 
   "640 x 480 bob, field 1, 15-bit, odd x offset" in {
