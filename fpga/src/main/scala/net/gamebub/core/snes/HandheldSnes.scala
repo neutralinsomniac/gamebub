@@ -84,6 +84,19 @@ object HandheldSnes {
   }
 
   /**
+   * How the last save-state request ended (register 0x001C), 0 while it is
+   * in progress: done, a load of a slot holding no state, given up after 5 s
+   * (the game never let the program run), or save states unavailable for
+   * the cartridge.
+   */
+  object SaveStateResult {
+    val Done = 1
+    val Empty = 2
+    val TimedOut = 3
+    val Unavailable = 4
+  }
+
+  /**
    * Synthesize the audio debug facilities (test tone, sample capture buffer
    * and its playback; config register bits 3-6, host window 0x1xxxxx). Costs
    * 4 block RAMs, so off by default.
@@ -603,9 +616,14 @@ object HandheldSnes {
  *           game's next NMI (or IRQ). The core runs without focus from the
  *           request until the program has finished (status bit 10), at
  *           most 5 s; a write with bits 1:0 clear cancels that. A load of
- *           a slot holding no state (status bits 14:11) is ignored. Reads
- *           back the slot in bits 3:2.
+ *           a slot holding no state (status bits 14:11) is ignored, as is
+ *           any request when save states are unavailable (status bit 6).
+ *           Reads back the slot in bits 3:2.
  *  - 0x0018 the save-state slot for requests with bit 4 set (bits 1:0).
+ *  - 0x001C (read-only) how the last save / load request ended: 0 in
+ *           progress (or none), 1 done, 2 a load of a slot holding no state,
+ *           3 given up after 5 s, 4 save states unavailable; a request
+ *           clears it (see `SaveStateResult`).
  *  - 0x0100 status (read-only): bit 0 HIGH_RES, bit 1 V224_MODE, bit 2 INTERLACE,
  *           bit 3 FIELD, bit 4 GSU_ACTIVE, bit 5 TURBO_ALLOW, bit 6 SS_AVAIL
  *           (the cartridge type supports save states), bit 7 SS_BUSY (the
@@ -948,6 +966,8 @@ class HandheldSnes extends Module with Core {
   val ssSlot = RegInit(0.U(2.W))
   /** Slot register (0x0018): the slot a request with bit 4 set uses (a settings descriptor's "State Slot"). */
   val ssSlotReg = RegInit(0.U(2.W))
+  /** How the last save / load request ended (register 0x001C, see `SaveStateResult`). */
+  val ssResult = RegInit(0.U(3.W))
   /** Debug: audio capture running (ring buffer of raw DSP samples). */
   val captureRunReg = RegInit(false.B)
   val captureIndexWire = Wire(UInt(CaptureIndexBits.W))
@@ -993,6 +1013,7 @@ class HandheldSnes extends Module with Core {
           ssControlWriteData := data
         })),
       0x0018 -> RegisterMap.Entry.rw(ssSlotReg),
+      0x001C -> RegisterMap.Entry.r(ssResult),
       0x0030 -> RegisterMap.Entry.r(romInfoWire),
       0x0100 -> RegisterMap.Entry.r(statusWire),
     ) ++ (if (debugAudio) Seq(
@@ -1316,6 +1337,8 @@ class HandheldSnes extends Module with Core {
   // Always write the save counter to the header (the MiSTer's "save to SD
   // card" mode), so the firmware can tell a save has finished.
   core.io.SS_TOSD := true.B
+  /** The cartridge type supports save states and the program fits above the ROM. */
+  val ssAvailable = core.io.SS_AVAIL && ssProgramFits
 
   statusWire := Cat(
     ssSlotValid,
@@ -1323,7 +1346,7 @@ class HandheldSnes extends Module with Core {
     ssSaveRequest || ssLoadRequest,
     ssSaveDone,
     core.io.SS_BUSY,
-    core.io.SS_AVAIL && ssProgramFits,
+    ssAvailable,
     core.io.TURBO_ALLOW,
     core.io.GSU_ACTIVE,
     core.io.FIELD,
@@ -1544,14 +1567,14 @@ class HandheldSnes extends Module with Core {
   // The slot comes with the write (bits 3:2) or, with bit 4 set, from the
   // slot register, so that a settings descriptor can request a save or a
   // load with a fixed value. A load of a slot that holds no state is
-  // ignored; a save is remembered so the slots are rescanned when it has
-  // finished.
+  // ignored, as is any request when save states are unavailable; a save is
+  // remembered so the slots are rescanned when it has finished.
   val ssRequestSlot = Mux(ssControlWriteData(4), ssSlotReg, ssControlWriteData(3, 2))
-  val ssSaveWrite = ssControlWrite && ssControlWriteData(0)
-  val ssLoadWrite = ssControlWrite && ssControlWriteData(1) && ssSlotValid(ssRequestSlot)
+  val ssSaveWrite = ssControlWrite && ssControlWriteData(0) && ssAvailable
+  val ssLoadWrite = ssControlWrite && ssControlWriteData(1) && ssAvailable && ssSlotValid(ssRequestSlot)
   val ssLastWasSave = RegInit(false.B)
   when (ssControlWrite) {
-    when (ssControlWriteData(0)) {
+    when (ssSaveWrite) {
       ssSaveRequest := true.B
       ssSaveDone := false.B
       ssLastWasSave := true.B
@@ -1573,6 +1596,7 @@ class HandheldSnes extends Module with Core {
   val regSsBusy = RegNext(core.io.SS_BUSY, false.B)
   when (regSsBusy && !core.io.SS_BUSY) {
     ssRunPending := false.B
+    ssResult := SaveStateResult.Done.U
     when (ssLastWasSave) {
       ssSlotRescan := true.B
     }
@@ -1582,9 +1606,13 @@ class HandheldSnes extends Module with Core {
     ssLoadRequest := false.B
     ssRunPending := false.B
     ssCancel := true.B
+    ssResult := SaveStateResult.TimedOut.U
   }
   when (ssControlWrite) {
     ssRunPending := ssSaveWrite || ssLoadWrite
+    // A request starts without a result, or ends right away.
+    ssResult := Mux(ssControlWriteData(1, 0) === 0.U || ssSaveWrite || ssLoadWrite, 0.U,
+      Mux(ssAvailable, SaveStateResult.Empty.U, SaveStateResult.Unavailable.U))
     // Every write drops the request the core may still hold from before:
     // a cancelling write leaves nothing armed, a new request replaces it
     // (the core takes the request that arrives with the cancel).
@@ -1596,6 +1624,7 @@ class HandheldSnes extends Module with Core {
     ssSaveDone := false.B
     ssRunPending := false.B
     ssCancel := false.B
+    ssResult := 0.U
   }
   when (regCoreFocus) {
     when (coreRun) {

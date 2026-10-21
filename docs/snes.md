@@ -414,15 +414,19 @@ register `0x0018`, the "State Slot" list) and the status register
 valid slots). Requests come from the settings menu, i.e. while the game is
 paused and the core has no focus, so the glue runs the core's clock without
 focus (no input, no sound) from the request until the program has finished
-(Save State and Load State also close the menu, `resume_after`, so they mostly
-run with the focus back).
+(Save State and Load State also close the menu, `resume_after`, but the
+firmware gives the focus back only once the glue has said how the request
+ended, register `0x001C`: done, a slot holding no state, given up, or save
+states unavailable, each a notification).
 Because the core only acts at an NMI / IRQ, a game that is waiting with
 interrupts off never gets there; the glue gives up after 5 s and cancels the
 request (as a write with both request bits clear does), which stops the
 clock again. The cancel also reaches the core (`SS_CANCEL`, a Game Bub
 addition to `savestates.sv`), so a request the game never serviced does not
 fire at the next NMI after the game resumes; a new request replaces one
-that is still armed. A load of a slot holding no state is ignored. The four slots are one core
+that is still armed. A load of a slot holding no state is ignored, as is any
+request when save states are unavailable (`SS_AVAIL`, or a ROM reaching the
+program's address). The four slots are one core
 file, `<rom>.ss` next to the ROM (whole 1 MiB slots up to the last one in
 use), which the core manager loads into the SDRAM with the ROM and writes
 back when the core exits, like the `.srm` save: a state reaches the SD card
