@@ -4,12 +4,14 @@ import { CoreSetting, CoreSettingType } from "types.slint";
 import { Icons } from "../../icons.slint";
 import { ListView } from "std-widgets.slint";
 
+// Shows the chosen item only. With a Flickable holding a Text for every
+// item, the PSX menu's 9 rows on screen took 46 KiB of heap (31 KiB like
+// this); with the core's buffers in the heap, scrolling a 10th into view ran
+// out of memory and the device rebooted.
 component ListBox {
     in-out property <int> index;
     in property <[string]> choices;
     in property <bool> focused;
-
-    private property <length> item-height: i-area.viewport-height / choices.length;
 
     callback on-changed();
 
@@ -22,19 +24,9 @@ component ListBox {
             colorize: #000;
         }
 
-        i-area := Flickable {
-            viewport-y: -root.item-height * root.index;
-            viewport-height: i-items.min-height;
-            height: item-height;
-            width: i-items.min-width;
-
-            i-items := VerticalLayout {
-                width: self.min-width;
-                for choice[i] in root.choices: child-items := Text {
-                    text: choice;
-                    horizontal-alignment: right;
-                }
-            }
+        Text {
+            text: root.choices[root.index];
+            horizontal-alignment: right;
         }
 
         Image {
