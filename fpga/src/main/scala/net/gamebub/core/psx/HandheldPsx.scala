@@ -126,6 +126,14 @@ object HandheldPsx {
      * recognize).
      */
     val StartTimeout = 1024
+    /**
+     * How the last request ended (register 0x001C), 0 while it is in
+     * progress: done, a load of a slot holding no state, or one the core
+     * did not take (`StartTimeout`).
+     */
+    val ResultDone = 1
+    val ResultEmpty = 2
+    val ResultNotTaken = 3
 
     object Step extends ChiselEnum {
       val idle, request, starting, busy = Value
@@ -240,11 +248,17 @@ class HandheldPsx extends Module with Core {
    * to 0x0014: [[SaveState.RequestSave]] or [[SaveState.RequestLoad]]) and
    * the slots' status (read from 0x0014: bit 9 the core's save-state machine
    * busy, 8 a request in progress, 7-4 the slots saved since the host last
-   * saved them, 3-0 the slots holding a state).
+   * saved them, 3-0 the slots holding a state), and how the last request
+   * ended (read from 0x001C, see [[SaveState.ResultDone]]; a request clears
+   * it).
    */
   val stateSlot = RegInit(0.U(2.W))
   val stateRequest = RegInit(0.U(2.W))
   val stateStatus = Wire(UInt(10.W))
+  val stateResult = RegInit(0.U(2.W))
+  /** Register 0x0014 is written: the strobe and data, acted on below. */
+  val stateWriteLevel = WireDefault(false.B)
+  val stateWriteData = WireDefault(0.U(2.W))
   /** The clk1x cycles the last save or load took, from the request. */
   val stateCycles = RegInit(0.U(32.W))
   /** A save or load is in progress. */
@@ -304,8 +318,12 @@ class HandheldPsx extends Module with Core {
       0x0000 -> RegisterMap.Entry.rw(configReg),
       0x0014 -> RegisterMap.Entry(32,
         RegisterMap.ReadFn(_ => stateStatus),
-        RegisterMap.WriteFn((write, data) => { when (write) { stateRequest := data(1, 0) } })),
+        RegisterMap.WriteFn((write, data) => {
+          stateWriteLevel := write
+          stateWriteData := data(1, 0)
+        })),
       0x0018 -> RegisterMap.Entry.rw(stateSlot),
+      0x001C -> RegisterMap.Entry.r(stateResult),
       0x0100 -> RegisterMap.Entry.r(statusWire),
       statEntry(0, statMemoryWait),
       statEntry(1, statRun),
@@ -568,6 +586,14 @@ class HandheldPsx extends Module with Core {
    */
   val stateFileLoaded = WireDefault(VecInit(Seq.fill(SaveState.Slots)(false.B)))
   core.io.validSStates_set := RegNext(stateFileLoaded.asUInt, 0.U)
+  // One cycle per host write: the register interface holds its strobe for
+  // two cycles or more (see HandheldSnes), and a request it latched again
+  // after the state machine took it would run twice (or, for a load of an
+  // empty slot, clear its result).
+  val stateWrite = stateWriteLevel && !RegNext(stateWriteLevel, false.B)
+  when (stateWrite) {
+    stateRequest := stateWriteData
+  }
   locally {
     import SaveState.Step
     val step = RegInit(Step.idle)
@@ -582,6 +608,11 @@ class HandheldPsx extends Module with Core {
     core.io.savestate_number := slot
     stateActive := step =/= Step.idle
     stateStatus := Cat(core.io.savestate_busy, stateActive, stateSaved.asUInt, held)
+    // The result of a request that has ended, unless another one is
+    // waiting (its own result is to come).
+    def finish(result: Int): Unit = {
+      when (stateRequest === 0.U) { stateResult := result.U }
+    }
     switch (step) {
       is (Step.idle) {
         // (Busy without a request: clearing the memory after a reset.)
@@ -597,6 +628,8 @@ class HandheldPsx extends Module with Core {
               stateHeld(stateSlot) := false.B
               stateSaved(stateSlot) := false.B
             }
+          } .elsewhen (load) {
+            stateResult := SaveState.ResultEmpty.U
           }
         }
       }
@@ -611,11 +644,13 @@ class HandheldPsx extends Module with Core {
           step := Step.busy
         } .elsewhen (timer === SaveState.StartTimeout.U) {
           step := Step.idle
+          finish(SaveState.ResultNotTaken)
         }
       }
       is (Step.busy) {
         when (!core.io.savestate_busy) {
           step := Step.idle
+          finish(SaveState.ResultDone)
           when (saving) {
             stateHeld(slot) := true.B
             stateSaved(slot) := true.B
@@ -625,6 +660,9 @@ class HandheldPsx extends Module with Core {
     }
     when (step === Step.starting || step === Step.busy) {
       stateCycles := stateCycles + 1.U
+    }
+    when (stateWrite && stateWriteData =/= 0.U) {
+      stateResult := 0.U
     }
     // A reset ends a save or load (the core's too).
     when (coreReset) {
