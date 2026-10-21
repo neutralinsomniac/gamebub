@@ -88,6 +88,16 @@ pub struct CoreManager {
     focus_since: Option<Instant>,
     /// The CD images of the running core's `disc` files, by file ID.
     discs: Vec<(u16, disc::DiscImage)>,
+    /// The disc file whose new disc is being chosen while the core runs
+    /// (see `begin_disc_change`).
+    changing_disc: Option<usize>,
+}
+
+/// Progress over a core's files, for the loading bar.
+struct LoadProgress {
+    transferred: u64,
+    total: u64,
+    last_update: Instant,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -192,6 +202,7 @@ impl CoreManager {
             run_cartridge: false,
             focus_since: None,
             discs: Vec::new(),
+            changing_disc: None,
         }
     }
 
@@ -339,6 +350,7 @@ impl CoreManager {
         self.stage = Stage::Idle;
         self.selected_files.clear();
         self.discs.clear();
+        self.changing_disc = None;
 
         Device::lock().set_cart_power(false);
     }
@@ -662,20 +674,120 @@ impl CoreManager {
             .as_ref()
             .and_then(|x| x.file_paths.iter().find(|(id, _)| *id == file.id))
             .map(|(_, path)| path.as_path());
-        let last_dir = last_path.and_then(|p| p.parent());
-
-        // Use the last path, or the last dir, or finally the root path.
-        let (initial_path, initial_dir) = match (last_path, last_dir) {
-            (Some(file), Some(parent)) if file.is_file() => (file, parent),
-            (_, Some(parent)) if parent.is_dir() => (parent, parent),
-            _ => (Path::new(DIR_SDCARD), Path::new(DIR_SDCARD)),
-        };
+        let (initial_path, initial_dir) = browse_start(last_path);
 
         ui::send(ui::Message::CoreFileSelectBegin {
             label: file.label.to_string(),
             path: initial_path.to_path_buf(),
+            in_game: false,
         });
         self.send_core_file_list(initial_dir);
+    }
+
+    /// The running core's disc file that another disc can be put in (the
+    /// user-selected `disc`), if it has one.
+    fn changeable_disc(&self) -> Option<usize> {
+        let core = self.core_info.as_ref()?;
+        if self.run_cartridge {
+            return None;
+        }
+        core.files.iter().position(|f| f.disc && f.user_selected)
+    }
+
+    /// Start choosing another disc for the running core (the pause menu's
+    /// "Change Disc"): the file browser opens on the disc in the drive.
+    pub fn begin_disc_change(&mut self) {
+        let index = match (self.stage, self.changeable_disc()) {
+            (Stage::Running, Some(index)) => index,
+            _ => {
+                log::warn!("No disc to change");
+                return;
+            }
+        };
+        self.changing_disc = Some(index);
+        let label = self.core_info.as_ref().unwrap().files[index].label.to_string();
+        let current = self.selected_files[index].clone();
+        let (initial_path, initial_dir) = browse_start(current.as_deref());
+        ui::send(ui::Message::CoreFileSelectBegin {
+            label,
+            path: initial_path.to_path_buf(),
+            in_game: true,
+        });
+        self.send_core_file_list(initial_dir);
+    }
+
+    /// Put the disc at `path` in the running core's drive, in place of the
+    /// one in `changing_disc`. The core gets the new table of contents while
+    /// it runs, and its drive sees the disc change. What goes with the disc
+    /// (the `per_disc` files, such as save states) is saved under the old
+    /// disc's name and loaded again under the new one's; what goes with the
+    /// game (a memory card) stays as it is.
+    fn change_disc(&mut self, path: PathBuf) {
+        let index = self.changing_disc.unwrap();
+        match self.change_disc_inner(index, &path) {
+            Ok(failed) => {
+                self.changing_disc = None;
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                log::info!("Disc changed to {}", path.display());
+                let mut text = format!("Inserted {name}");
+                if !failed.is_empty() {
+                    text += &format!("\n{} failed to load", failed.join(", "));
+                }
+                ui::send(ui::Message::CoreDiscChanged);
+                ui::send(ui::Message::Notification(ui::Notification::new_long(text)));
+            }
+            Err(e) => {
+                log::error!("Disc change to {} failed: {e}", path.display());
+                ui::send(ui::Message::CoreFileSelectError(e.to_string()));
+            }
+        }
+    }
+
+    /// Returns the labels of the disc's files that failed to load (the disc
+    /// has changed all the same; those slots are left empty).
+    fn change_disc_inner(&mut self, index: usize, path: &Path) -> Result<Vec<String>, CoreError> {
+        let core = self.core_info.as_ref().unwrap();
+        let disc_file = &core.files[index];
+        let image = disc::DiscImage::open(path)
+            .map_err(|e| FailedLoadFile(disc_file.label.to_string(), e))?;
+        // The files named after the disc, if this is the file they depend on.
+        let goes_with_disc = |info: &CoreFile| info.dependent_on_0 && info.per_disc;
+        let dependents: Vec<usize> = if disc_file.id == 0 {
+            (0..core.files.len())
+                .filter(|&i| goes_with_disc(&core.files[i]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if !dependents.is_empty() {
+            self.persist_files(goes_with_disc)?;
+        }
+
+        self.send_disc(index, image)?;
+        self.selected_files[index] = Some(path.to_path_buf());
+        self.remember_path(index, path);
+
+        let mut failed = Vec::new();
+        let mut scratch = crate::bitstream::SCRATCH.take().expect("scratch buffer");
+        for i in dependents {
+            if let Err(e) = self.load_file(i, &mut scratch, None, true) {
+                let label = self.core_info.as_ref().unwrap().files[i].label.to_string();
+                log::error!("Loading {label} for the new disc failed: {e}");
+                failed.push(label);
+            }
+        }
+        Ok(failed)
+    }
+
+    /// Keep `path` as the file's last choice (the file browser starts there next time).
+    fn remember_path(&mut self, index: usize, path: &Path) {
+        let settings = self.core_settings.as_mut().unwrap();
+        let file_id = self.core_info.as_ref().unwrap().files[index].id;
+        settings.file_paths.retain(|x| x.0 != file_id);
+        settings.file_paths.push((file_id, path.to_path_buf()));
     }
 
     fn finish_loading(&mut self) {
@@ -742,6 +854,7 @@ impl CoreManager {
         log::info!("Core ready to run");
 
         // Clear loading bar
+        ui::send(ui::Message::GameCanChangeDisc(self.changeable_disc().is_some()));
         ui::send(ui::Message::EnterGame);
         self.stage = Stage::Running;
 
@@ -887,210 +1000,259 @@ impl CoreManager {
 
     fn load_files(&mut self) -> Result<(), CoreError> {
         // TODO: Sum of size of files to load (rather than doing it file-by-file).
-        let mut overall_transferred = 0u64;
-        let mut overall_total = 0u64;
-        let mut last_progress_update = Instant::now();
+        let mut progress = LoadProgress {
+            transferred: 0,
+            total: 0,
+            last_update: Instant::now(),
+        };
 
         let mut scratch = crate::bitstream::SCRATCH.take().expect("scratch buffer");
 
-        let core = self.core_info.as_ref().unwrap();
-        let file_0_index = core.files.iter().position(|f| f.id == 0);
-        for (i, info) in core.files.iter().enumerate() {
+        for i in 0..self.core_info.as_ref().unwrap().files.len() {
+            let info = &self.core_info.as_ref().unwrap().files[i];
             if self.run_cartridge && (info.id == 0 || info.dependent_on_0) {
                 continue;
             }
+            self.load_file(i, &mut scratch, Some(&mut progress), false)?;
+        }
 
-            // Get the file path
-            let mut path = self.selected_files[i].clone();
+        Ok(())
+    }
 
-            if let Some(filename) = info.filename.as_ref() {
-                // Construct path based on core directory
-                path = Some(core.core_dir.join(filename));
-            } else if info.dependent_on_0 {
-                // Construct a new path based on file 0's path (a disc's
-                // saves are the game's unless `per_disc`, see
-                // `disc::save_path`)
-                let extension = info.extensions[0].as_str();
-                let file_0_index = file_0_index.unwrap();
-                let file_0_disc = core.files[file_0_index].disc;
-                path = self.selected_files[file_0_index].as_ref().map(|p| {
-                    if file_0_disc && !info.per_disc {
-                        disc::save_path(p, extension)
-                    } else {
-                        p.with_extension(extension)
-                    }
-                });
-            }
+    /// The path to load file `i` from, if it has one.
+    fn file_path(&mut self, i: usize) -> Option<PathBuf> {
+        let core = self.core_info.as_ref().unwrap();
+        let info = &core.files[i];
+        let mut path = self.selected_files[i].clone();
 
-            // Possibly override the path
-            if let Some(core_handler) = self.core_handler.get_mut() {
-                path = path.or(core_handler.get_file_path_override(info.id));
-            }
-
-            let path = match path {
-                Some(path) => path,
-                // Use an empty path. Open will fail and we'll clear it.
-                None if info.optional => PathBuf::new(),
-                // It shouldn't be possible to have no path for a required file.
-                None => panic!("Missing path for required file {}", info.label),
-            };
-
-            log::info!("Load file {} from {}", info.label, path.display());
-
-            let file = File::open(&path).or_else(|e| match info.blank.as_ref() {
-                Some(blank) => {
-                    log::info!("Failed to open file, loading {blank}");
-                    File::open(core.core_dir.join(blank.as_str()))
+        if let Some(filename) = info.filename.as_ref() {
+            // Construct path based on core directory
+            path = Some(core.core_dir.join(filename));
+        } else if info.dependent_on_0 {
+            // Construct a new path based on file 0's path (a disc's
+            // saves are the game's unless `per_disc`, see
+            // `disc::save_path`)
+            let extension = info.extensions[0].as_str();
+            let file_0_index = core.files.iter().position(|f| f.id == 0).unwrap();
+            let file_0_disc = core.files[file_0_index].disc;
+            path = self.selected_files[file_0_index].as_ref().map(|p| {
+                if file_0_disc && !info.per_disc {
+                    disc::save_path(p, extension)
+                } else {
+                    p.with_extension(extension)
                 }
-                None => Err(e),
             });
-            self.selected_files[i] = Some(path);
-            let mut file = match file {
-                Ok(file) => file,
-                Err(_) if info.optional && info.initialize => {
-                    log::info!("Failed to open file, clearing");
-                    self.clear_file_slot(info, &mut scratch)?;
-                    continue;
-                }
-                Err(_) if info.optional => {
-                    log::info!("Failed to open file, skipping");
-                    continue;
-                }
-                Err(_) => {
-                    return Err(CannotOpenFile(info.label.to_string()));
-                }
-            };
+        }
 
-            if info.disc {
-                // A CD image: the core gets its table of contents, and sectors on request.
-                drop(file);
-                let path = self.selected_files[i].as_ref().unwrap();
-                let image = disc::DiscImage::open(path)
-                    .map_err(|e| FailedLoadFile(info.label.to_string(), e))?;
-                image.log();
-                let toc = image.toc();
-                if info.max_size != 0 && toc.len() > info.max_size as usize {
-                    return Err(FileTooBig(info.label.to_string(), info.max_size, toc.len() as u32));
-                }
+        // Possibly override the path
+        if let Some(core_handler) = self.core_handler.get_mut() {
+            path = path.or(core_handler.get_file_path_override(info.id));
+        }
+        path
+    }
+
+    /// Load file `i` into the core, updating `progress` (the loading bar)
+    /// if given. `replacing`: the core runs with an earlier file in the
+    /// slot (a disc change), so an optional file that cannot be opened is
+    /// loaded as nothing (0 bytes), for the core to drop the old one.
+    fn load_file(
+        &mut self,
+        i: usize,
+        scratch: &mut [u8],
+        mut progress: Option<&mut LoadProgress>,
+        replacing: bool,
+    ) -> Result<(), CoreError> {
+        let path = self.file_path(i);
+        let core = self.core_info.as_ref().unwrap();
+        let info = &core.files[i];
+
+        let path = match path {
+            Some(path) => path,
+            // Use an empty path. Open will fail and we'll clear it.
+            None if info.optional => PathBuf::new(),
+            // It shouldn't be possible to have no path for a required file.
+            None => panic!("Missing path for required file {}", info.label),
+        };
+
+        log::info!("Load file {} from {}", info.label, path.display());
+
+        let file = File::open(&path).or_else(|e| match info.blank.as_ref() {
+            Some(blank) => {
+                log::info!("Failed to open file, loading {blank}");
+                File::open(core.core_dir.join(blank.as_str()))
+            }
+            None => Err(e),
+        });
+        self.selected_files[i] = Some(path);
+        let mut file = match file {
+            Ok(file) => file,
+            Err(_) if info.optional && info.initialize => {
+                log::info!("Failed to open file, clearing");
+                return self.clear_file_slot(info, scratch);
+            }
+            Err(_) if info.optional && replacing => {
+                log::info!("Failed to open file, emptying the slot");
                 self.run_core_command(
                     &[command::FILE_WRITE_START, info.id as u32],
                     &mut [],
                     SETUP_TIMEOUT,
                 )?;
-                Device::lock()
-                    .fpga
-                    .spi_write(None, SpiCommand::new(info.transfer_word_size), info.address, &toc)
-                    .unwrap();
-                self.run_core_command(
-                    &[command::FILE_WRITE_END, info.id as u32, toc.len() as u32, 0],
+                return self.run_core_command(
+                    &[command::FILE_WRITE_END, info.id as u32, 0, 0],
                     &mut [],
                     NOTIFY_TIMEOUT,
-                )?;
-                self.discs.push((info.id, image));
-                continue;
+                );
             }
-
-            self.run_core_command(
-                &[command::FILE_WRITE_START, info.id as u32],
-                &mut [],
-                SETUP_TIMEOUT,
-            )?;
-
-            if let Some(core_handler) = self.core_handler.get_mut() {
-                core_handler
-                    .on_before_file_load(info.id, &mut file)
-                    .map_err(|e| FailedLoadFile(info.label.to_string(), e))?;
+            Err(_) if info.optional => {
+                log::info!("Failed to open file, skipping");
+                return Ok(());
             }
-            let file_size = file.metadata().unwrap().len();
-            overall_total += file_size;
-
-            if info.exact_size != 0 && file_size != (info.exact_size as u64) {
-                return Err(FileWrongSize(
-                    info.label.to_string(),
-                    info.exact_size,
-                    file_size as u32,
-                ));
+            Err(_) => {
+                return Err(CannotOpenFile(info.label.to_string()));
             }
-            if info.max_size != 0 && file_size > (info.max_size as u64) {
-                return Err(FileTooBig(
-                    info.label.to_string(),
-                    info.max_size,
-                    file_size as u32,
-                ));
-            }
+        };
 
-            let start_time = Instant::now();
-            let mut transfer_duration = Duration::ZERO;
-            let mut handler_duration = Duration::ZERO;
-            let mut transferred = 0;
-            // (length, FNV-1a) of every chunk sent, for the read-back below.
-            let mut chunk_sums: Vec<(u32, u32)> = Vec::new();
-            // TODO: maybe only bother with background I/O for a large file (> 256KB?)
-            let result = crate::util::background_io::iter_chunks(file, &mut scratch, |chunk| {
-                let transfer_start = Instant::now();
-                if info.verify {
-                    chunk_sums.push((chunk.len() as u32, fnv1a(chunk)));
-                }
-                let max_clock = Some(Hertz(info.max_transfer_speed * 1000 * 2));
-                let command = SpiCommand::new(info.transfer_word_size);
-                Device::lock()
-                    .fpga
-                    .spi_write(max_clock, command, info.address + transferred, chunk)
-                    .unwrap();
-                transferred += chunk.len() as u32;
-                overall_transferred += chunk.len() as u64;
-                transfer_duration += transfer_start.elapsed();
-
-                let handler_start = Instant::now();
-
-                if let Some(core_handler) = self.core_handler.get_mut() {
-                    core_handler.on_during_file_load(info.id, chunk);
-                }
-                handler_duration += handler_start.elapsed();
-
-                // Update UI progress bar.
-                if last_progress_update.elapsed() > PROGRESS_UPDATE_INTERVAL {
-                    let progress = (overall_transferred as f32) / (overall_total as f32);
-                    ui::send(ui::Message::CoreLoadProgress(progress));
-                    last_progress_update = Instant::now();
-                }
-            });
-            let read_duration = result
-                .map_err(|_| FailedLoadFile(info.label.to_string(), "I/O error".to_string()))?;
-
-            let duration = start_time.elapsed();
-            self.run_core_command(
-                &[
-                    // Command
-                    command::FILE_WRITE_END,
-                    // Arg 1: file ID
-                    info.id as u32,
-                    // Arg 2: file size (bytes)
-                    transferred as u32,
-                    // Arg 3: reserved (0)
-                    0,
-                ],
-                &mut [],
-                NOTIFY_TIMEOUT,
-            )?;
-            if let Some(core_handler) = self.core_handler.get_mut() {
-                core_handler.on_after_file_load(info.id);
-            }
-
-            log::info!(
-                "Loaded {} bytes in {} ms ({}/{}/{} ms read/transfer/handler)",
-                transferred,
-                duration.as_millis(),
-                read_duration.as_millis(),
-                transfer_duration.as_millis(),
-                handler_duration.as_millis(),
-            );
-
-            if info.verify {
-                self.verify_file(info, &chunk_sums, &mut scratch);
-            }
+        if info.disc {
+            // A CD image: the core gets its table of contents, and sectors on request.
+            drop(file);
+            let path = self.selected_files[i].as_ref().unwrap();
+            let image = disc::DiscImage::open(path)
+                .map_err(|e| FailedLoadFile(info.label.to_string(), e))?;
+            return self.send_disc(i, image);
         }
 
+        self.run_core_command(
+            &[command::FILE_WRITE_START, info.id as u32],
+            &mut [],
+            SETUP_TIMEOUT,
+        )?;
+
+        if let Some(core_handler) = self.core_handler.get_mut() {
+            core_handler
+                .on_before_file_load(info.id, &mut file)
+                .map_err(|e| FailedLoadFile(info.label.to_string(), e))?;
+        }
+        let file_size = file.metadata().unwrap().len();
+        if let Some(progress) = progress.as_deref_mut() {
+            progress.total += file_size;
+        }
+
+        if info.exact_size != 0 && file_size != (info.exact_size as u64) {
+            return Err(FileWrongSize(
+                info.label.to_string(),
+                info.exact_size,
+                file_size as u32,
+            ));
+        }
+        if info.max_size != 0 && file_size > (info.max_size as u64) {
+            return Err(FileTooBig(
+                info.label.to_string(),
+                info.max_size,
+                file_size as u32,
+            ));
+        }
+
+        let start_time = Instant::now();
+        let mut transfer_duration = Duration::ZERO;
+        let mut handler_duration = Duration::ZERO;
+        let mut transferred = 0;
+        // (length, FNV-1a) of every chunk sent, for the read-back below.
+        let mut chunk_sums: Vec<(u32, u32)> = Vec::new();
+        // TODO: maybe only bother with background I/O for a large file (> 256KB?)
+        let result = crate::util::background_io::iter_chunks(file, scratch, |chunk| {
+            let transfer_start = Instant::now();
+            if info.verify {
+                chunk_sums.push((chunk.len() as u32, fnv1a(chunk)));
+            }
+            let max_clock = Some(Hertz(info.max_transfer_speed * 1000 * 2));
+            let command = SpiCommand::new(info.transfer_word_size);
+            Device::lock()
+                .fpga
+                .spi_write(max_clock, command, info.address + transferred, chunk)
+                .unwrap();
+            transferred += chunk.len() as u32;
+            transfer_duration += transfer_start.elapsed();
+
+            let handler_start = Instant::now();
+
+            if let Some(core_handler) = self.core_handler.get_mut() {
+                core_handler.on_during_file_load(info.id, chunk);
+            }
+            handler_duration += handler_start.elapsed();
+
+            // Update UI progress bar.
+            if let Some(progress) = progress.as_deref_mut() {
+                progress.transferred += chunk.len() as u64;
+                if progress.last_update.elapsed() > PROGRESS_UPDATE_INTERVAL {
+                    let fraction = (progress.transferred as f32) / (progress.total as f32);
+                    ui::send(ui::Message::CoreLoadProgress(fraction));
+                    progress.last_update = Instant::now();
+                }
+            }
+        });
+        let read_duration = result
+            .map_err(|_| FailedLoadFile(info.label.to_string(), "I/O error".to_string()))?;
+
+        let duration = start_time.elapsed();
+        self.run_core_command(
+            &[
+                // Command
+                command::FILE_WRITE_END,
+                // Arg 1: file ID
+                info.id as u32,
+                // Arg 2: file size (bytes)
+                transferred as u32,
+                // Arg 3: reserved (0)
+                0,
+            ],
+            &mut [],
+            NOTIFY_TIMEOUT,
+        )?;
+        if let Some(core_handler) = self.core_handler.get_mut() {
+            core_handler.on_after_file_load(info.id);
+        }
+
+        log::info!(
+            "Loaded {} bytes in {} ms ({}/{}/{} ms read/transfer/handler)",
+            transferred,
+            duration.as_millis(),
+            read_duration.as_millis(),
+            transfer_duration.as_millis(),
+            handler_duration.as_millis(),
+        );
+
+        if info.verify {
+            self.verify_file(info, &chunk_sums, scratch);
+        }
+        Ok(())
+    }
+
+    /// Give the core disc file `i`'s table of contents (at the file's
+    /// address), and serve its sector reads from `image` from now on.
+    fn send_disc(&mut self, i: usize, image: disc::DiscImage) -> Result<(), CoreError> {
+        let info = &self.core_info.as_ref().unwrap().files[i];
+        image.log();
+        let toc = image.toc();
+        if info.max_size != 0 && toc.len() > info.max_size as usize {
+            return Err(FileTooBig(info.label.to_string(), info.max_size, toc.len() as u32));
+        }
+        self.run_core_command(
+            &[command::FILE_WRITE_START, info.id as u32],
+            &mut [],
+            SETUP_TIMEOUT,
+        )?;
+        Device::lock()
+            .fpga
+            .spi_write(None, SpiCommand::new(info.transfer_word_size), info.address, &toc)
+            .unwrap();
+        self.run_core_command(
+            &[command::FILE_WRITE_END, info.id as u32, toc.len() as u32, 0],
+            &mut [],
+            NOTIFY_TIMEOUT,
+        )?;
+        let id = info.id;
+        self.discs.retain(|(d, _)| *d != id);
+        self.discs.push((id, image));
         Ok(())
     }
 
@@ -1226,15 +1388,16 @@ impl CoreManager {
     pub fn handle_file_selected(&mut self, path: PathBuf) {
         if path.is_file() {
             log::info!("File selected: {}", path.display());
+            if self.stage == Stage::Running && self.changing_disc.is_some() {
+                self.change_disc(path);
+                return;
+            }
             let Stage::LoadSelectFile(file_index) = self.stage else {
                 panic!()
             };
 
             // Update settings
-            let settings = self.core_settings.as_mut().unwrap();
-            let file_id = self.core_info.as_ref().unwrap().files[file_index].id;
-            settings.file_paths.retain(|x| x.0 != file_id);
-            settings.file_paths.push((file_id, path.clone()));
+            self.remember_path(file_index, &path);
 
             self.selected_files[file_index] = Some(path);
             self.next_file_select();
@@ -1247,6 +1410,11 @@ impl CoreManager {
     pub fn cancel_file_select(&mut self) {
         // TODO support multiple file select (go back to previous file)
         log::info!("File select cancelled");
+        if self.stage == Stage::Running {
+            // Choosing another disc: the old one stays in.
+            self.changing_disc = None;
+            return;
+        }
         self.core_info = None;
         self.stage = Stage::Idle;
     }
@@ -1275,8 +1443,9 @@ impl CoreManager {
     /// Get the list of eligible files for the file select menu at the given directory
     fn list_core_files(&self, path: &Path) -> std::io::Result<Vec<(String, bool)>> {
         // Assumes we're in a valid file selection stage.
-        let file_index = match self.stage {
-            Stage::LoadSelectFile(i) => i,
+        let file_index = match (self.stage, self.changing_disc) {
+            (Stage::LoadSelectFile(i), _) => i,
+            (Stage::Running, Some(i)) => i,
             _ => panic!(),
         };
 
@@ -1358,6 +1527,18 @@ impl CoreManager {
         )?;
 
         Ok(())
+    }
+}
+
+/// Where the file browser starts for a file last loaded from `last_path`:
+/// on that file, or in its directory, or finally at the root (the path to
+/// highlight, the directory to list).
+fn browse_start(last_path: Option<&Path>) -> (&Path, &Path) {
+    let last_dir = last_path.and_then(|p| p.parent());
+    match (last_path, last_dir) {
+        (Some(file), Some(parent)) if file.is_file() => (file, parent),
+        (_, Some(parent)) if parent.is_dir() => (parent, parent),
+        _ => (Path::new(DIR_SDCARD), Path::new(DIR_SDCARD)),
     }
 }
 

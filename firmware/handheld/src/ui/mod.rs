@@ -66,8 +66,13 @@ pub enum Message {
     Screenshot,
     /// Core info listing
     CoreList(Vec<crate::core::CoreListEntry>),
-    /// Open core file selection screen
-    CoreFileSelectBegin { label: String, path: PathBuf },
+    /// Open core file selection screen (`in_game`: the game screen's, to
+    /// change the disc)
+    CoreFileSelectBegin {
+        label: String,
+        path: PathBuf,
+        in_game: bool,
+    },
     /// Update core file selection list
     CoreFileSelectList(Vec<(String, bool)>),
     /// Core file select error
@@ -78,6 +83,10 @@ pub enum Message {
     CoreLoadProgress(f32),
     /// Core settings
     CoreSettingsList(Vec<CoreSettingUiItem>),
+    /// Whether the running core's disc can be changed (the pause menu offers it)
+    GameCanChangeDisc(bool),
+    /// The disc has changed: close the game screen's file selection and menu
+    CoreDiscChanged,
 }
 
 /// Send a message to the UI thread.
@@ -315,8 +324,14 @@ impl UI {
             Message::CoreList(list) => {
                 self.state.borrow_mut().cores_list(list);
             }
-            Message::CoreFileSelectBegin { label, path } => {
-                self.state.borrow_mut().cores_file_select_begin(label, path);
+            Message::CoreFileSelectBegin {
+                label,
+                path,
+                in_game,
+            } => {
+                self.state
+                    .borrow_mut()
+                    .cores_file_select_begin(label, path, in_game);
             }
             Message::CoreFileSelectList(files) => {
                 self.state.borrow_mut().cores_file_select_list(files);
@@ -329,6 +344,15 @@ impl UI {
             }
             Message::CoreSettingsList(items) => {
                 self.state.borrow_mut().game_settings_list(items);
+            }
+            Message::GameCanChangeDisc(available) => {
+                self.root
+                    .global::<slint::Backend>()
+                    .set_game_can_change_disc(available);
+            }
+            Message::CoreDiscChanged => {
+                let backend = self.root.global::<slint::Backend>();
+                backend.set_game_disc_changes(backend.get_game_disc_changes() + 1);
             }
         }
     }

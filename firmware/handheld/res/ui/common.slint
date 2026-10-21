@@ -115,6 +115,10 @@ export global Backend {
     in property <percent> core-progress: 0%;
     in property <bool> core-is-loading: false;
     in property <[CoreSetting]> core-settings;
+    // The running core's disc can be changed (the pause menu offers it).
+    in property <bool> game-can-change-disc: false;
+    // Counts disc changes: each closes the game screen's file selection and menu.
+    in property <int> game-disc-changes: 0;
 
     callback volume-changed(int);
     callback brightness-changed(int);
@@ -127,6 +131,7 @@ export global Backend {
     callback game-exit();
     callback game-settings-load();
     callback game-settings-set(int, int);
+    callback game-change-disc();
     callback settings-changed(int, SettingValue);
     callback settings-back() -> bool;
     callback tools-start-usb-drive();
