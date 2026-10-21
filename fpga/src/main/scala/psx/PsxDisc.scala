@@ -59,7 +59,9 @@ object PsxDisc {
  *   "... Inc.", "...Euro pe"), as the MiSTer does.
  * - Table of contents: every time the core leaves reset, it gets its track
  *   table through its `trackinfo` port (MiSTer's `disk_t` layout; the core
- *   ignores the port in reset).
+ *   ignores the port in reset), and again when the host loads another disc
+ *   while it runs (`discChanged`): the core's drive takes that as a disc
+ *   change, as on the MiSTer, and shows its lid opened and closed.
  * - Sectors: when the core asks for one (`hpsReq`, `hpsLba`), it is
  *   requested from the firmware, then acknowledged and streamed into the
  *   core as 1176 halfwords, low half of each word first (the bytes in file
@@ -76,6 +78,8 @@ class PsxDisc(sectorHostAddress: Long) extends Module {
 
     /** A disc's table of contents has been loaded. */
     val discLoaded = Input(Bool())
+    /** Pulse: a disc's table of contents has been loaded, into the RAM already. */
+    val discChanged = Input(Bool())
     /** Pulse: the core is started (CoreRun). */
     val start = Input(Bool())
     /** Keep the core in reset (the region is being read). */
@@ -238,8 +242,10 @@ class PsxDisc(sectorHostAddress: Long) extends Module {
   val tocWord = Reg(UInt(9.W))
   val tocPhase = RegInit(false.B)
   val leftReset = io.discLoaded && !io.coreReset && RegNext(io.coreReset, true.B)
+  // (In reset, a new disc waits for the core to leave it.)
+  val changedRunning = io.discChanged && !io.coreReset
   val settle = RegInit(0.U(5.W))
-  when (leftReset) {
+  when (leftReset || changedRunning) {
     settle := 16.U
   }
   when (settle =/= 0.U) {

@@ -11,7 +11,8 @@ import scala.util.Random
  * Plays the firmware (the table of contents, sector reads on request) and
  * the core's CD drive against [[PsxDisc]]: the region from the license
  * sector while the core is held, the core's track table after it leaves
- * reset, sectors streamed in file order.
+ * reset, sectors streamed in file order, another disc's track table while
+ * the core runs (a disc change).
  */
 class PsxDiscSpec extends AnyFreeSpec {
   val SectorAddress = 0x7000_0000L
@@ -45,6 +46,7 @@ class PsxDiscSpec extends AnyFreeSpec {
       dut.io.commandCore.error.poke(false.B)
       dut.io.start.poke(false.B)
       dut.io.discLoaded.poke(false.B)
+      dut.io.discChanged.poke(false.B)
       dut.io.coreReset.poke(true.B)
       dut.io.hpsReq.poke(false.B)
       dut.io.clearSectorReads.poke(false.B)
@@ -146,6 +148,33 @@ class PsxDiscSpec extends AnyFreeSpec {
       val expectedHalfwords = (0 until PsxDisc.SectorBytes / 2).map(i => (bytes(2 * i) & 0xFF) | ((bytes(2 * i + 1) & 0xFF) << 8))
       assert(stream == expectedHalfwords)
       assert(dut.io.sectorReads.peek().litValue == 1)
+
+      // Another disc (one data track, lead-out 40000 = 08:53:25) while the
+      // core runs: its track table, with the first disc's region.
+      val toc2: Seq[Long] = Seq(1 | (1 << 8), 40000, 0x085325, 0, 150, 39999, 150, 0x000200)
+      for ((w, i) <- toc2.zipWithIndex) hostWrite(dut.io.toc, 4 * i, w)
+      def changeDisc(): Unit = {
+        trackinfo.clear()
+        dut.io.discChanged.poke(true.B)
+        step()
+        dut.io.discChanged.poke(false.B)
+        for (_ <- 0 until 200) step()
+      }
+      changeDisc()
+      val expected2 = Seq(
+        0 -> toc2(0), 1 -> toc2(1), 2 -> 0x0853L, 3 -> (metadataRegion << 16),
+        4 -> 0L, 5 -> 39999L, 6 -> 0x0002L, 7 -> 0L,
+      )
+      assert(trackinfo == expected2, s"trackinfo after the change $trackinfo")
+
+      // In reset, the core gets it when it leaves.
+      dut.io.coreReset.poke(true.B)
+      step()
+      changeDisc()
+      assert(trackinfo.isEmpty, s"trackinfo in reset $trackinfo")
+      dut.io.coreReset.poke(false.B)
+      for (_ <- 0 until 200) step()
+      assert(trackinfo == expected2, s"trackinfo after reset $trackinfo")
     }
   }
 

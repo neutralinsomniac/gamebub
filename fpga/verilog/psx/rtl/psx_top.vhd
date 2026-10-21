@@ -225,6 +225,8 @@ entity psx_top is
       savestate_number      : in  integer range 0 to 3;
       state_loaded          : out std_logic;
       validSStates          : out std_logic_vector(3 downto 0);
+      -- Game Bub: the host has loaded a state into these slots (pulses)
+      validSStates_set      : in  std_logic_vector(3 downto 0);
       -- Game Bub: the save state machine is saving or loading a state (or
       -- clearing the memory after a reset)
       savestate_busy_out    : out std_logic;
@@ -2140,6 +2142,7 @@ begin
            
       load_done               => state_loaded,
       validSStates            => validSStates,
+      validSStates_set        => validSStates_set,
             
       savestate_number        => savestate_number,
       increaseSSHeaderCount   => increaseSSHeaderCount,

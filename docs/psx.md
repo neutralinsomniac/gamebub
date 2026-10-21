@@ -33,6 +33,13 @@ sectors (the usual rips; `.iso` and CHD are not supported). The region (and
 with it the BIOS and NTSC / PAL) is taken from the disc unless set in the
 core's settings.
 
+Changing discs (a game on several discs): the pause menu's Change Disc opens
+the file browser on the disc in the drive; choose the next one. The game
+goes on (it is not restarted): once the menu closes, the drive shows its lid
+opened and closed again, then reads the new disc, which is what a game
+asking for the next disc waits for. The memory cards stay; the save states are the new disc's
+(see below). The next start offers the disc last put in.
+
 Memory cards: slot 1 holds the game's own card, `<game>.mcd` next to the
 disc's `.cue`, named after the game rather than the disc: a " (Disc N)" in the
 name is left out, so all of a game's discs share it ("Final Fantasy IX (USA)
@@ -48,9 +55,10 @@ Save states: the pause menu's Settings have Save State, Load State and State
 Slot (1-4). Each slot is a file next to the disc's `.cue`, named after the
 disc rather than the game (a state includes where the drive is on the disc,
 so it only goes with that disc): "Final Fantasy IX (USA) (Disc 2).ss1" to
-`.ss4`, 4 MiB each. They are read when the core starts; Save State writes
-its slot's file right away and says so ("State 1 saved"). A loaded state
-takes over when the menu closes.
+`.ss4`, 4 MiB each. They are read when the core starts, and when the disc is
+changed (the old disc's are saved first); Save State writes its slot's file
+right away and says so ("State 1 saved"). A loaded state takes over when the
+menu closes.
 
 Controls: the PlayStation's face buttons are where the Game Bub's are (Cross
 = B, Circle = A, Square = Y, Triangle = X), L / R are L1 / R1, and Select + L /
@@ -168,13 +176,32 @@ request channel (`HostV0.commandCore`):
   license sector (154): its text ends in "...Entertainment Amer  ica",
   "... Inc." or "...Euro pe", which gives the region. Each time the core leaves
   reset it gets the track table (MiSTer's `disk_t` layout, with that region).
+- A disc change is the MiSTer's: the firmware writes the new disc's table of
+  contents while the core runs (`FILE_WRITE_START` / `FILE_WRITE_END` for
+  file 0, as at the start) and serves its sectors from then on, and the glue
+  gives the core the new track table. The core's drive takes a track table
+  out of reset as a new disc (`cd_top.vhd`'s `newCD`, which then ignores
+  more track tables for 2 s): it stops, answers the command in hand with a
+  "shell open" error, shows the lid open (status bit 4) for 0.38 s of
+  running time (0.74 s at double speed), and spins the new disc up; the
+  next Getstat shows the lid closed. The console is not reset (MiSTer resets it for a disc
+  from another directory: a new game), and the region stays the first disc's.
+  `LIDopen` (upstream: the OSD's CD Lid option) stays low.
 
 The BIOS images are three optional files with fixed names (IDs 1-3, the
 core's BIOS slots at 8 MiB + 512 KiB x region); the glue uses the region's,
 or the first that was loaded, and fails `SETUP_COMPLETE` without any.
 
+The firmware side is generic: a core whose `disc` file is `user_selected`
+gets Change Disc in its pause menu. The file browser is the core's file
+selection, shown on the game screen. A disc change first saves the files
+`dependent_on_0` and `per_disc` (named after the disc), then loads them again
+under the new disc's name; a missing one is loaded as nothing
+(`FILE_WRITE_START`, then `FILE_WRITE_END` with 0 bytes) for the core to drop
+the old disc's. Files named after the game (the memory card) stay.
+
 Not supported: libcrypt (`.sbi` subchannel data; the protected games need
-it), multi-disc swapping, CHD.
+it), CHD.
 
 ### Memory cards
 
@@ -232,7 +259,10 @@ DMA or GPU work in hand), and a console the menu has stopped somewhere else
 never gets there (a save then waited for the menu to close). The core also checks each
 slot's header (a size word) after every reset, and loads only from a slot
 that passes both. A save takes the core's busy flag (`savestate_busy`, passed
-out of `psx_top` for this) to finish. Off: upstream's rewind, and its header
+out of `psx_top` for this) to finish. The core sees a slot's header only
+after a reset, so a state file loaded without one (a disc change) is marked
+as there through `validSStates_set` (a Game Bub addition to
+`savestates.vhd`). Off: upstream's rewind, and its header
 count, which the MiSTer's HPS watches to find new states (the core waits
 about a second after each save while it copies them).
 
