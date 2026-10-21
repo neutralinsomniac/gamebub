@@ -24,4 +24,6 @@ export struct CoreSetting {
     type: CoreSettingType,
     value: int,
     choices: [string],
+    // An action after which the pause menu closes (see `resume`).
+    resume-after: bool,
 }

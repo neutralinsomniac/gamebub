@@ -5,21 +5,24 @@
       "label": "Reset Core",
       "address": "0x2000",
       "type": "action",
-      "value": 1
+      "value": 1,
+      "resume_after": true
     },
     {
       "id": 6,
       "label": "Save State",
       "address": "0x14",
       "type": "action",
-      "value": "0x11"
+      "value": "0x11",
+      "resume_after": true
     },
     {
       "id": 7,
       "label": "Load State",
       "address": "0x14",
       "type": "action",
-      "value": "0x12"
+      "value": "0x12",
+      "resume_after": true
     },
     {
       "id": 8,

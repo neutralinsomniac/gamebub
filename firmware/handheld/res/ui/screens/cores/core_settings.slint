@@ -68,6 +68,9 @@ export component CoreSettingList inherits FocusScope {
     preferred-width: 100%;
     preferred-height: 100%;
 
+    // An action was chosen and it closes the pause menu (`resume-after`).
+    callback resume();
+
     function set-current-value(entry: CoreSetting, val: int) {
         Backend.core-settings[i-list.current-item] = {
             id: entry.id,
@@ -75,6 +78,7 @@ export component CoreSettingList inherits FocusScope {
             type: entry.type,
             value: val,
             choices: entry.choices,
+            resume-after: entry.resume-after,
         };
         Backend.game-settings-set(entry.id, val);
     }
@@ -82,6 +86,9 @@ export component CoreSettingList inherits FocusScope {
     function activate-item(entry: CoreSetting) {
         if (entry.type == CoreSettingType.action) {
             Backend.game-settings-set(entry.id, entry.value);
+            if (entry.resume-after) {
+                root.resume();
+            }
         } else if (entry.type == CoreSettingType.checkbox) {
             root.set-current-value(entry, (entry.value == 0) ? 1 : 0);
         } else if (entry.type == CoreSettingType.list && entry.choices.length > 0) {
