@@ -24,6 +24,8 @@ entity savestates is
          
       load_done               : out std_logic := '0';
       validSStates            : out std_logic_vector(3 downto 0);
+      -- Game Bub: the host has loaded a state into these slots (clk1x pulses)
+      validSStates_set        : in  std_logic_vector(3 downto 0) := (others => '0');
             
       savestate_number        : in integer range 0 to 3;
       increaseSSHeaderCount   : in  std_logic;  
@@ -709,6 +711,14 @@ begin
             
          
          end case;
+         
+         -- Game Bub: a state loaded by the host is valid without the header
+         -- check after a reset (which finds it there too)
+         for i in 0 to 3 loop
+            if (validSStates_set(i) = '1') then
+               ssValid(i) <= '1';
+            end if;
+         end loop;
          
          reset_in_1 <= reset_in;
          if (reset_in = '1' and reset_in_1 = '0') then
