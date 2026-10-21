@@ -86,15 +86,20 @@ class PsxScanoutSpec extends AnyFreeSpec {
         (expand(p & 31) << 16) | (expand((p >> 5) & 31) << 8) | expand((p >> 10) & 31)
       }
     }
-    // With scanlines, the first row of each line (two rows each) is a
-    // quarter of its light and a quarter of the line above's.
+    // With scanlines, the first row of each line (two rows each) blends
+    // its light and the line above's, by their brightness.
     def onScreen(x: Int, y: Int): Int =
       if (!mode.scanlines || y % 2 == 1) {
         expected(x, y)
       } else {
         val above = if (y > 0) expected(x, y - 1) else 0
-        def light(c: Int, s: Int): Int = PsxCrt.ToLinear((c >> s) & 255)
-        Seq(16, 8, 0).map(s => PsxCrt.ToGamma((light(expected(x, y), s) * 64 + light(above, s) * 64) >> 8) << s).sum
+        val phase = 240 >> 5 // the first of a line's two rows
+        Seq(16, 8, 0).map { s =>
+          val (c, a) = ((expected(x, y) >> s) & 255, (above >> s) & 255)
+          val l = PsxCrt.ToLinear(c) * PsxCrt.CurrentWeights(2)(phase)(c >> 4) +
+            PsxCrt.ToLinear(a) * PsxCrt.PreviousWeights(2)(phase)(a >> 4)
+          PsxCrt.ToGamma(l >> 8) << s
+        }.sum
       }
 
     simulate(new Harness) { dut =>
