@@ -7,7 +7,7 @@ import lib.fifo.RelatedClockFifo
 import lib.mem.sram.AsyncSramController
 import net.gamebub.framework.Core
 import net.gamebub.framework.interface._
-import psx.{PsxCore, PsxDisc, PsxFrameGrab, PsxMemory, PsxScanout, SdramEngine}
+import psx.{PsxCore, PsxCrt, PsxDisc, PsxFrameGrab, PsxMemory, PsxScanout, SdramEngine}
 import xilinx.{MMCM, ODDRWrapper, XpmCdcHandshake}
 
 object HandheldPsx {
@@ -242,6 +242,8 @@ class HandheldPsx extends Module with Core {
     /** Bits 1-0: console region (0 US, 1 Japan, 2 Europe, 3 the disc's). */
     val region = UInt(2.W)
   }))
+  /** The CRT effect's settings (register 0x0020; see [[PsxCrt]]): a 25 % magenta / green mask, no scanlines. */
+  val crtReg = RegInit(0x14.U(5.W).asTypeOf(new PsxCrt.Settings))
   val statusWire = Wire(UInt(8.W))
   /**
    * Save states (see below): the slot (register 0x0018), a request (written
@@ -324,6 +326,7 @@ class HandheldPsx extends Module with Core {
         })),
       0x0018 -> RegisterMap.Entry.rw(stateSlot),
       0x001C -> RegisterMap.Entry.r(stateResult),
+      0x0020 -> RegisterMap.Entry.rw(crtReg),
       0x0100 -> RegisterMap.Entry.r(statusWire),
       statEntry(0, statMemoryWait),
       statEntry(1, statRun),
@@ -784,6 +787,7 @@ class HandheldPsx extends Module with Core {
   io.video.data := scanout.io.data
   debugUnderruns := XpmCdcHandshake.continuous(io.video.clock, scanout.io.underruns)
   scanout.io.clk1x := clk1x
+  scanout.io.crt := crtReg
   // The scanout shows copies of the display made line by line (see PsxFrameGrab).
   val grab = Module(new PsxFrameGrab)
   grab.io.vblank := core.io.vblank
