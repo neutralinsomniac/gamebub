@@ -17,6 +17,7 @@ pub struct CoreSettingUiItem {
     pub setting_type: CoreSettingType,
     pub value: u32,
     pub choices: Vec<SharedString>,
+    pub resume_after: bool,
 }
 
 impl UiState {
@@ -77,6 +78,7 @@ impl UiState {
                     r#type: item.setting_type,
                     value: item.value as i32,
                     choices: ModelRc::from(Rc::new(VecModel::from(item.choices))),
+                    resume_after: item.resume_after,
                 })
                 .collect::<Vec<_>>(),
         )));

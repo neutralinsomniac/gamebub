@@ -57,8 +57,9 @@ disc rather than the game (a state includes where the drive is on the disc,
 so it only goes with that disc): "Final Fantasy IX (USA) (Disc 2).ss1" to
 `.ss4`, 4 MiB each. They are read when the core starts, and when the disc is
 changed (the old disc's are saved first); Save State writes its slot's file
-right away and says so ("State 1 saved"). A loaded state takes over when the
-menu closes.
+right away, says so ("State 1 saved") and closes the menu (the game goes on
+once the file is written); Load State closes the menu, and the game goes on
+from the state.
 
 Controls: the PlayStation's face buttons are where the Game Bub's are (Cross
 = B, Circle = A, Square = Y, Triangle = X), L / R are L1 / R1, and Select + L /
@@ -269,7 +270,9 @@ about a second after each save while it copies them).
 Firmware options this uses (generic): `per_disc`, a file `dependent_on_0`
 on a disc image named after the disc instead of the game; `save_after` on a
 settings action, which saves the `save_on_pause` files right after it and
-shows a notification ("State 1 saved", or what went wrong); and
+shows a notification ("State 1 saved", or what went wrong); `resume_after`
+on a settings action, which closes the pause menu after it (the state actions
+and Reset Core); and
 `FILE_READ_START` may take up to 5 s. Saves overwrite their file in place
 (cut to size after) instead of truncating it first.
 
