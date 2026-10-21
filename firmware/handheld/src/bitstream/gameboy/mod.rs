@@ -208,6 +208,7 @@ impl Gameboy {
                         value: 1,
                         save_after: false,
                         resume_after: true,
+                        result: None,
                     },
                 },
                 CoreSetting {

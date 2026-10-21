@@ -153,6 +153,10 @@ pub enum CoreSettingType {
         /// goes on, such as after loading a save state.
         #[serde(default)]
         resume_after: bool,
+        /// If set, the core reports how the action went, which is shown in
+        /// a notification (such as a load of a slot holding no state).
+        #[serde(default)]
+        result: Option<ActionResult>,
     },
     Checkbox {
         #[serde(deserialize_with = "deserialize_hex_u32")]
@@ -161,6 +165,26 @@ pub enum CoreSettingType {
     List {
         items: ArrayVec<CoreSettingListItem, 8>,
     },
+}
+
+/// A core's report on how an action went: the firmware reads the register
+/// at `address` after the action until it is not 0 (the action clears it),
+/// for at most `timeout_ms`, and shows the message for the value read.
+#[derive(Deserialize)]
+pub struct ActionResult {
+    #[serde(deserialize_with = "deserialize_hex_u32")]
+    pub address: u32,
+    pub timeout_ms: u32,
+    pub messages: Vec<ActionResultMessage>,
+}
+
+#[derive(Deserialize)]
+pub struct ActionResultMessage {
+    /// The register's value; 0 for the core not answering in time.
+    #[serde(deserialize_with = "deserialize_hex_u32")]
+    pub value: u32,
+    /// "{N}" stands for the chosen item of list setting N (such as the slot).
+    pub text: String,
 }
 
 #[derive(Deserialize)]

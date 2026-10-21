@@ -14,7 +14,17 @@
       "address": "0x14",
       "type": "action",
       "value": "0x11",
-      "resume_after": true
+      "resume_after": true,
+      "result": {
+        "address": "0x1C",
+        "timeout_ms": 6000,
+        "messages": [
+          { "value": 0, "text": "State {8} did not save in time" },
+          { "value": 1, "text": "State {8} saved" },
+          { "value": 3, "text": "State {8} not saved (game busy)" },
+          { "value": 4, "text": "No save states for this game" }
+        ]
+      }
     },
     {
       "id": 7,
@@ -22,7 +32,18 @@
       "address": "0x14",
       "type": "action",
       "value": "0x12",
-      "resume_after": true
+      "resume_after": true,
+      "result": {
+        "address": "0x1C",
+        "timeout_ms": 6000,
+        "messages": [
+          { "value": 0, "text": "State {8} did not load in time" },
+          { "value": 1, "text": "State {8} loaded" },
+          { "value": 2, "text": "No state in slot {8}" },
+          { "value": 3, "text": "State {8} not loaded (game busy)" },
+          { "value": 4, "text": "No save states for this game" }
+        ]
+      }
     },
     {
       "id": 8,
