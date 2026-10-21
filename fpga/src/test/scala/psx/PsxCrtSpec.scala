@@ -61,6 +61,9 @@ class PsxCrtSpec extends AnyFreeSpec {
 
   def channels(c: Int): Seq[Int] = Seq(c >> 16, (c >> 8) & 255, c & 255)
   def color(cs: Seq[Int]): Int = (cs(0) << 16) | (cs(1) << 8) | cs(2)
+  /** A color's light (linear, 12 bits per channel), and back (clipped at full light). */
+  def light(c: Int): Seq[Int] = channels(c).map(PsxCrt.ToLinear(_))
+  def fromLight(ls: Seq[Int]): Int = color(ls.map(l => PsxCrt.ToGamma(l.min(PsxCrt.LinearMax))))
   /** Compares the picture's pixels (not the blanking's, where the last line's beam may still show). */
   def check(got: Seq[Int], pixels: Seq[(In, Int, Int)])(expected: (In, Int) => Int): Unit = {
     val wrong = got.zip(pixels).zipWithIndex.collect {
@@ -68,6 +71,10 @@ class PsxCrtSpec extends AnyFreeSpec {
     }
     assert(wrong.isEmpty, s"${wrong.size} of ${got.size} pixels wrong, first: " +
       wrong.take(5).map { case ((g, e), i) => f"pixel $i: $g%06x, expected $e%06x" }.mkString(", "))
+  }
+
+  "every 8-bit value comes back from linear light as it was" in {
+    for (c <- 0 until 256) assert(PsxCrt.ToGamma(PsxCrt.ToLinear(c)) == c, s"value $c")
   }
 
   "off: the picture unchanged" in {
@@ -80,34 +87,48 @@ class PsxCrtSpec extends AnyFreeSpec {
     check(run((3, 0, 0), scanlinesAllowed = false, pixels.map(_._1)), pixels)((p, _) => p.color)
   }
 
-  "scanlines 50 %: each line's second row as it is, the first a quarter of each line around it" in {
+  "scanlines 50 %: each line's second row as it is, the first a quarter of the light of each line around it" in {
     val pixels = picture(Seq(100, 101), seed = 3)
     def expected(p: In, previous: Int): Int =
       if (!p.lineStart) p.color
-      else color(channels(p.color).zip(channels(previous)).map { case (c, q) => (c * 64 + q * 64) >> 8 })
+      else fromLight(light(p.color).zip(light(previous)).map { case (c, q) => (c * 64 + q * 64) >> 8 })
     check(run((2, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(expected)
   }
 
-  "scanlines 75 %: the dark rows an eighth of each line" in {
+  "scanlines 75 %: the dark rows an eighth of the light of each line" in {
     val pixels = picture(Seq(7), seed = 4)
     def expected(p: In, previous: Int): Int =
       if (!p.lineStart) p.color
-      else color(channels(p.color).zip(channels(previous)).map { case (c, q) => (c * 32 + q * 32) >> 8 })
+      else fromLight(light(p.color).zip(light(previous)).map { case (c, q) => (c * 32 + q * 32) >> 8 })
     check(run((3, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(expected)
   }
 
-  "mask 50 %, red / green / blue stripes: the other colors halved" in {
+  "mask 50 %, red / green / blue stripes: the other colors' light halved, the column's own doubled" in {
     val pixels = picture(Seq(300, 301, 302, 303), seed = 5)
     check(run((0, 2, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels) { (p, _) =>
-      color(channels(p.color).zipWithIndex.map { case (c, i) => if (p.column % 3 == i) c else (c * 128) >> 8 })
+      fromLight(light(p.color).zipWithIndex.map { case (l, i) => (l * (if (p.column % 3 == i) 512 else 128)) >> 8 })
     }
   }
 
-  "mask 25 %, magenta / green" in {
+  "mask 25 %, magenta / green: the other colors' light at 3/4, the column's own at 5/4" in {
     val pixels = picture(Seq(300, 301), seed = 6)
     check(run((0, 1, 1), scanlinesAllowed = true, pixels.map(_._1)), pixels) { (p, _) =>
       val lit = if (p.column % 2 == 0) Seq(true, false, true) else Seq(false, true, false)
-      color(channels(p.color).zip(lit).map { case (c, l) => if (l) c else (c * 192) >> 8 })
+      fromLight(light(p.color).zip(lit).map { case (l, on) => (l * (if (on) 320 else 192)) >> 8 })
+    }
+  }
+
+  "the mask keeps a gray's light, over its columns" in {
+    for ((setting, columns) <- Seq((2, 0) -> 3, (3, 0) -> 3, (1, 1) -> 2, (3, 1) -> 2); gray <- Seq(0x30, 0x60, 0x90)) {
+      val (mask, pattern) = setting
+      val g = (gray << 16) | (gray << 8) | gray
+      val pixels = (0 until columns).map(x => In(g, x, 0, lineStart = false))
+      val out = run((0, mask, pattern), scanlinesAllowed = true, pixels)
+      for (channel <- 0 until 3) {
+        val average = out.map(c => PsxCrt.ToLinear(channels(c)(channel))).sum.toDouble / columns
+        val original = PsxCrt.ToLinear(gray).toDouble
+        assert((average - original).abs <= original * 0.01 + 2, s"mask $mask pattern $pattern gray $gray%x channel $channel: $average, not $original")
+      }
     }
   }
 }
