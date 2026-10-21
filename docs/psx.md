@@ -58,8 +58,9 @@ so it only goes with that disc): "Final Fantasy IX (USA) (Disc 2).ss1" to
 `.ss4`, 4 MiB each. They are read when the core starts, and when the disc is
 changed (the old disc's are saved first); Save State writes its slot's file
 right away, says so ("State 1 saved") and closes the menu (the game goes on
-once the file is written); Load State closes the menu, and the game goes on
-from the state.
+once the file is written); Load State closes the menu, the game goes on from
+the state, and a notification says how it went ("State 1 loaded", "No state
+in slot 2").
 
 Controls: the PlayStation's face buttons are where the Game Bub's are (Cross
 = B, Circle = A, Square = Y, Triangle = X), L / R are L1 / R1, and Select + L /
@@ -245,7 +246,9 @@ Each slot is a file (6-9 in `files.json`) that the firmware loads into place
 while the core is held, header and all: the layout of a MiSTer `.ss` file.
 
 The glue takes requests in register 0x0014 (1 save, 2 load; the slot in
-0x0018), which the settings' actions and list write, and keeps, per slot,
+0x0018), which the settings' actions and list write, reports how the last
+one ended in 0x001C (0 in progress, 1 done, 2 a load of a slot holding no
+state, 3 a request the core did not take; a request clears it), and keeps, per slot,
 whether it holds a state (its file was loaded, 4 MiB, or the core has saved
 into it) and whether the core has saved into it since the firmware last
 wrote the file: `FILE_READ_START` answers 4 MiB for those and 0 for the
@@ -272,7 +275,10 @@ on a disc image named after the disc instead of the game; `save_after` on a
 settings action, which saves the `save_on_pause` files right after it and
 shows a notification ("State 1 saved", or what went wrong); `resume_after`
 on a settings action, which closes the pause menu after it (the state actions
-and Reset Core); and
+and Reset Core); `result` on a settings action, a register the firmware reads
+after it until it is not 0 (at most `timeout_ms`) and a notification text per
+value, "{8}" standing for the chosen item of list setting 8 (Load State: "No
+state in slot 2"); and
 `FILE_READ_START` may take up to 5 s. Saves overwrite their file in place
 (cut to size after) instead of truncating it first.
 
