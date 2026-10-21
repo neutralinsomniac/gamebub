@@ -67,8 +67,26 @@ fn get_location<'a>(info: &'a PanicHookInfo<'_>) -> &'a dyn Display {
     }
 }
 
+/// Notes a failed allocation in the crash report's message: running out of
+/// memory aborts without a panic message. (The last failure is kept, also
+/// one handled without a crash.)
+unsafe extern "C" fn alloc_failed(size: usize, caps: u32, _function_name: *const core::ffi::c_char) {
+    let report = REPORT.assume_init_mut();
+    let internal = esp_idf_svc::sys::MALLOC_CAP_INTERNAL;
+    report.message.clear();
+    let _ = write!(
+        report.message,
+        "allocation of {} B failed (caps {:#x}): {} B free, largest block {} B",
+        size,
+        caps,
+        esp_idf_svc::sys::heap_caps_get_free_size(internal),
+        esp_idf_svc::sys::heap_caps_get_largest_free_block(internal),
+    );
+}
+
 /// Setup crash and panic handlers.
 pub fn setup() {
+    unsafe { esp_idf_svc::sys::heap_caps_register_failed_alloc_callback(Some(alloc_failed)) };
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let report = unsafe { REPORT.assume_init_mut() };
