@@ -2,7 +2,7 @@ use std::{
     fs::File,
     io::BufReader,
     ops::DerefMut as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{LazyLock, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
@@ -64,6 +64,9 @@ pub struct CoreManager {
     focus_since: Option<Instant>,
     /// The CD images of the running core's `disc` files, by file ID.
     discs: Vec<(u16, disc::DiscImage)>,
+    /// The disc file whose new disc is being chosen while the core runs
+    /// (see `begin_disc_change`).
+    changing_disc: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -91,6 +94,7 @@ impl CoreManager {
             run_cartridge: false,
             focus_since: None,
             discs: Vec::new(),
+            changing_disc: None,
         }
     }
 
@@ -239,6 +243,7 @@ impl CoreManager {
         self.selected_files.clear();
         self.open_on_demand_file = None;
         self.discs.clear();
+        self.changing_disc = None;
 
         InputManager::lock().clear_core_input_caps();
 
@@ -422,6 +427,112 @@ impl CoreManager {
         }
     }
 
+    /// The running core's disc file that another disc can be put in (the
+    /// user-selected `disc`), if it has one.
+    fn changeable_disc(&self) -> Option<usize> {
+        let core = self.core_info.as_ref()?;
+        if self.run_cartridge {
+            return None;
+        }
+        core.files.iter().position(|f| f.disc && f.user_selected)
+    }
+
+    /// Start choosing another disc for the running core (the pause menu's
+    /// "Change Disc"): the file browser opens on the disc in the drive.
+    pub fn begin_disc_change(&mut self) {
+        let index = match (self.stage, self.changeable_disc()) {
+            (Stage::Running, Some(index)) => index,
+            _ => {
+                log::warn!("No disc to change");
+                return;
+            }
+        };
+        self.changing_disc = Some(index);
+        let label = self.core_info.as_ref().unwrap().files[index].label.to_string();
+        let current = self.selected_files[index].clone();
+        let (initial_path, initial_dir) = file_selection::browse_start(current.as_deref());
+        ui::send(ui::Message::CoreFileSelectBegin {
+            label,
+            path: initial_path.to_path_buf(),
+            in_game: true,
+        });
+        self.send_core_file_list(initial_dir);
+    }
+
+    /// Put the disc at `path` in the running core's drive, in place of the
+    /// one in `changing_disc`. The core gets the new table of contents while
+    /// it runs, and its drive sees the disc change. What goes with the disc
+    /// (the `per_disc` files, such as save states) is saved under the old
+    /// disc's name and loaded again under the new one's; what goes with the
+    /// game (a memory card) stays as it is.
+    fn change_disc(&mut self, path: PathBuf) {
+        let index = self.changing_disc.unwrap();
+        match self.change_disc_inner(index, &path) {
+            Ok(failed) => {
+                self.changing_disc = None;
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                log::info!("Disc changed to {}", path.display());
+                let mut text = format!("Inserted {name}");
+                if !failed.is_empty() {
+                    text += &format!("\n{} failed to load", failed.join(", "));
+                }
+                ui::send(ui::Message::CoreDiscChanged);
+                ui::send(ui::Message::Notification(ui::Notification::new_long(text)));
+            }
+            Err(e) => {
+                log::error!("Disc change to {} failed: {e}", path.display());
+                ui::send(ui::Message::CoreFileSelectError(e.to_string()));
+            }
+        }
+    }
+
+    /// Returns the labels of the disc's files that failed to load (the disc
+    /// has changed all the same; those slots are left empty).
+    fn change_disc_inner(&mut self, index: usize, path: &Path) -> Result<Vec<String>, CoreError> {
+        let core = self.core_info.as_ref().unwrap();
+        let disc_file = &core.files[index];
+        let image = disc::DiscImage::open(path)
+            .map_err(|e| CoreError::FailedLoadFile(disc_file.label.to_string(), e))?;
+        // The files named after the disc, if this is the file they depend on.
+        let goes_with_disc = |info: &CoreFile| info.dependent_on_0 && info.per_disc;
+        let dependents: Vec<usize> = if disc_file.id == 0 {
+            (0..core.files.len())
+                .filter(|&i| goes_with_disc(&core.files[i]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if !dependents.is_empty() {
+            self.persist_files(goes_with_disc)?;
+        }
+
+        self.send_disc(index, image)?;
+        self.selected_files[index] = Some(path.to_path_buf());
+        self.remember_path(index, path);
+
+        let mut failed = Vec::new();
+        let mut scratch = crate::bitstream::SCRATCH.take().expect("scratch buffer");
+        for i in dependents {
+            if let Err(e) = self.load_file(i, &mut scratch, None, true) {
+                let label = self.core_info.as_ref().unwrap().files[i].label.to_string();
+                log::error!("Loading {label} for the new disc failed: {e}");
+                failed.push(label);
+            }
+        }
+        Ok(failed)
+    }
+
+    /// Keep `path` as the file's last choice (the file browser starts there next time).
+    fn remember_path(&mut self, index: usize, path: &Path) {
+        let settings = self.core_settings.as_mut().unwrap();
+        let file_id = self.core_info.as_ref().unwrap().files[index].id;
+        settings.file_paths.retain(|x| x.0 != file_id);
+        settings.file_paths.push((file_id, path.to_path_buf()));
+    }
+
     fn finish_loading(&mut self) {
         if let Err(e) = self.finish_loading_inner() {
             self.exit_core();
@@ -493,6 +604,7 @@ impl CoreManager {
         log::info!("Core ready to run");
 
         // Clear loading bar
+        ui::send(ui::Message::GameCanChangeDisc(self.changeable_disc().is_some()));
         ui::send(ui::Message::EnterGame);
         self.stage = Stage::Running;
 
