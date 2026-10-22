@@ -107,8 +107,7 @@ roms/
   (off / 25 / 50 / 75 %, default 25 %), Mask Type (RGB stripes or magenta / green, default
   magenta / green) and Sharpness (sharp, or soft like a composite TV). High-resolution
   (480-line) screens get no scanlines.
-* Other settings: Disable Dithering, Fast Boot (skips the BIOS intro), Video (auto / NTSC /
-  PAL), Reset Core.
+* Other settings: Video (auto / NTSC / PAL), Reset Core.
 * Not supported yet: HDMI output (the picture stays black on HDMI).
 
 ## Going back
