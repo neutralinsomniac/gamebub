@@ -22,6 +22,8 @@
 --   core stays paused for about a second after each save while it copies
 --   them. Here the glue knows when a save is done (savestate_busy).
 -- * No EXE loading and no cheats.
+-- * Boot: always through the BIOS intro (no fast boot); the GPU always
+--   dithers, as a console's does.
 
 library ieee;
 use ieee.std_logic_1164.all;
@@ -38,8 +40,6 @@ entity psx_gamebub is
       isPaused              : out std_logic;
 
       -- settings
-      fastboot              : in  std_logic;
-      ditherOff             : in  std_logic;
       REPRODUCIBLEGPUTIMING : in  std_logic;
       LIMITREADSPEED        : in  std_logic;
       fixedVBlank           : in  std_logic;
@@ -227,7 +227,7 @@ begin
       exe_load_address      => (others => '0'),
       exe_file_size         => (others => '0'),
       exe_stackpointer      => (others => '0'),
-      fastboot              => fastboot,
+      fastboot              => '0',
       ram8mb                => '0',
       TURBO_MEM             => '0',
       TURBO_COMP            => '0',
@@ -238,7 +238,7 @@ begin
       FORCECDSPEED          => "000",
       LIMITREADSPEED        => LIMITREADSPEED,
       IGNORECDDMATIMING     => '0',
-      ditherOff             => ditherOff,
+      ditherOff             => '0',
       interlaced480pHack    => '0',
       showGunCrosshairs     => '0',
       enableNeGconRumble    => '0',
