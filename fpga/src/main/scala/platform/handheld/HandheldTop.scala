@@ -863,11 +863,28 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         dpiY < (videoOffsetY + (videoHeight * videoScale)).U
       videoPull.foreach { pull =>
         // The request runs `latency` pixels ahead along the driver's scan
-        // line, in the driver's own (wrapping) counter, so that the first
-        // pixels of a line are requested from its blanking. The display
-        // offset is applied to x, so that a picture centered on the screen
-        // lands where a centered framebuffer would.
-        val aheadX = dpiDriverIo.pixelX + pull.latency.U
+        // line, in a 10-bit (wrapping) counter, so that the first pixels of
+        // a line are requested from its blanking. The display offset is
+        // applied to x, so that a picture centered on the screen lands where
+        // a centered framebuffer would.
+        //
+        // The driver's counter is only as wide as its line's pixels need
+        // (9 bits for 480), so in the blanking before a line it wraps
+        // through values of the line's own pixels (451-511 on the rev 4
+        // LCD): from the end of a line (a value past its pixels) to the
+        // next one's first pixel (0), it counts as negative, so that
+        // requests in the blanking fall outside the screen.
+        val lineX = dpiDriverIo.pixelX
+        val lineLength = if (revision.displayRotate) screenHeight else screenWidth
+        val pastLine = RegInit(true.B)
+        when (lineX >= lineLength.U) {
+          pastLine := true.B
+        } .elsewhen (lineX === 0.U) {
+          pastLine := false.B
+        }
+        val blanking = lineX >= lineLength.U || (pastLine && lineX =/= 0.U)
+        val lineX10 = Mux(blanking, lineX.pad(10) + (1024 - (1 << lineX.getWidth)).U, lineX.pad(10))
+        val aheadX = lineX10 + pull.latency.U
         val pullX = if (revision.displayRotate) dpiDriverIo.pixelY else aheadX
         val pullY = if (revision.displayRotate) aheadX else dpiDriverIo.pixelY
         pull.x := pullX.pad(10) + ((-revision.displayOffsetX) & 0x3FF).U
