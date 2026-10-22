@@ -6,7 +6,7 @@ import lib.video.ColorRGB
 
 object PsxCrt {
   /** Cycles from a pixel in to its color out. */
-  val Latency = 6
+  val Latency = 8
   /** How much the mask's strengths 1-3 darken the other colors of a column. */
   val MaskStrengths = Seq(0.25, 0.5, 0.75)
   /**
@@ -35,15 +35,29 @@ object PsxCrt {
   /** Bits of a channel in linear light (see [[ToLinear]]). */
   val LinearBits = 12
   val LinearMax = (1 << LinearBits) - 1
+  /** The unit of `Pixel.columnPhase`: the scanout's horizontal DDA counts 640ths of a source column. */
+  val ColumnPhases = 640
+  /** The blur's weight of a pixel's own source column, in 256ths: `columnPhase * BlurScale >> 9`. */
+  val BlurScale = math.round(256.0 * 512 / ColumnPhases).toInt
+  /** Screen rows (the blur's buffer holds a pixel pair for each). */
+  val Rows = 480
 
   /** The user's settings (register 0x0020). N.B. the last field is bit 0. */
   class Settings extends Bundle {
+    /** Bit 5: the blur: 0 sharp (off), 1 soft. */
+    val blur = UInt(1.W)
     /** Bit 4: the mask's pattern: 0 red / green / blue stripes, 1 magenta / green. */
     val maskPattern = UInt(1.W)
     /** Bits 3-2: the mask's strength: 0 off, 1-3 [[MaskStrengths]]. */
     val mask = UInt(2.W)
     /** Bits 1-0: the scanlines' strength: 0 off, 1-3 [[ScanlineStrengths]]. */
     val scanlines = UInt(2.W)
+  }
+
+  /** A screen row's pixels in the blur's buffer: the source pixel of the last screen column, and of the source column before it. */
+  class RowPixels extends Bundle {
+    val previous = ColorRGB(8, 8, 8)
+    val current = ColorRGB(8, 8, 8)
   }
 
   /** A source line's pixel, in light (see [[ToLinear]]) and value. */
@@ -65,6 +79,12 @@ object PsxCrt {
     val phase = UInt(6.W)
     /** The first pixel of its source line in the column: the one before it showed the previous line (or none). */
     val lineStart = Bool()
+    /** The screen row (from [[Rows]] on, the blanking). */
+    val row = UInt(10.W)
+    /** The pixel's screen column starts a source column: the screen column before it showed the previous one (or none). */
+    val columnStart = Bool()
+    /** Where the screen column's left edge is in its source column, in 1/[[ColumnPhases]] columns. */
+    val columnPhase = UInt(10.W)
   }
 
   /**
@@ -160,6 +180,15 @@ object PsxCrt {
  * red, green and blue, or magenta and green; the other colors in a column
  * are darker by the strength, and its own colors brighter, keeping the
  * picture's light (see `MaskWeights`).
+ *
+ * Blur (soft): before the scanlines, each screen column blends its source
+ * column with the one to its left, by where its left edge is in its own (a
+ * linear blend, which moves the picture right by about a screen column),
+ * as a TV blurs its composite signal; source pixels of uneven width (256
+ * or 368 of them across the picture) come out even. As the LCD scans
+ * columns, the source column to the left was scanned a screen column or
+ * more ago: a buffer of the screen's rows keeps, for each, the last screen
+ * column's source pixel and the one of the source column before it.
  */
 class PsxCrt extends Module {
   import PsxCrt._
@@ -173,59 +202,93 @@ class PsxCrt extends Module {
     val out = Output(ColorRGB(8, 8, 8))
   })
 
-  // Stage 1: into linear light; the mask's weights.
   def channels(c: ColorRGB): Seq[UInt] = Seq(c.r, c.g, c.b)
-  val toLinear = VecInit(ToLinear.map(_.U(LinearBits.W)))
-  val pixel1 = Reg(new LinePixel)
-  pixel1.light := VecInit(channels(io.in.color).map(toLinear(_)))
-  pixel1.value := VecInit(channels(io.in.color))
-  val lineStart1 = RegNext(io.in.lineStart)
-  val phase1 = RegNext(io.in.phase)
-  val strength1 = RegNext(Mux(io.scanlinesAllowed, io.settings.scanlines, 0.U))
+  /** `x` from the input, delayed to stage `n`. */
+  def delayed[T <: Data](x: T, n: Int): T = ShiftRegister(x, n)
+  val strength = Mux(io.scanlinesAllowed, io.settings.scanlines, 0.U)
   val maskColumn = Mux(io.settings.maskPattern === 1.U, io.in.column(0), io.in.column % 3.U)
   val maskWeights = VecInit(MaskWeights.flatten.flatten.map(ws => VecInit(ws.map(_.U(10.W)))))
-  val maskWeight1 = RegNext(maskWeights(Cat(io.settings.maskPattern, maskColumn(1, 0), io.settings.mask)))
+  val maskWeight = maskWeights(Cat(io.settings.maskPattern, maskColumn(1, 0), io.settings.mask))
 
-  // Stage 2: the previous source line's pixel: the last one when a line
+  // Stage 1: the row's pixels from the buffer, and the source column to
+  // the left (the stored current one, if a source column starts here).
+  val rowPixels = SRAM(512, new RowPixels, numReadPorts = 1, numWritePorts = 1, numReadwritePorts = 0)
+  rowPixels.readPorts(0).enable := true.B
+  rowPixels.readPorts(0).address := io.in.row(8, 0)
+  val color1 = RegNext(io.in.color)
+  val row1 = RegNext(io.in.row)
+  val columnStart1 = RegNext(io.in.columnStart)
+  val blurWeight1 = RegNext(Mux(io.settings.blur === 1.U, (io.in.columnPhase * BlurScale.U) >> 9, 256.U(9.W)))
+  val stored = rowPixels.readPorts(0).data
+  // (Black in the blanking, as the pixels there are: the buffer's address
+  // is the row's low bits.)
+  val left1 = Mux(row1 >= Rows.U, 0.U.asTypeOf(stored.current), Mux(columnStart1, stored.current, stored.previous))
+  rowPixels.writePorts(0).enable := row1 < Rows.U
+  rowPixels.writePorts(0).address := row1(8, 0)
+  rowPixels.writePorts(0).data.previous := left1
+  rowPixels.writePorts(0).data.current := color1
+
+  // Stage 2: into linear light.
+  val toLinear = VecInit(ToLinear.map(_.U(LinearBits.W)))
+  def linePixel(c: ColorRGB): LinePixel = {
+    val p = Wire(new LinePixel)
+    p.light := VecInit(channels(c).map(toLinear(_)))
+    p.value := VecInit(channels(c))
+    p
+  }
+  val current2 = RegNext(linePixel(color1))
+  val left2 = RegNext(linePixel(left1))
+  val blurWeight2 = RegNext(blurWeight1)
+
+  // Stage 3: the two source columns blended, in light, and in value (for
+  // the beams' widths).
+  def blend(left: UInt, current: UInt, width: Int): UInt =
+    ((left * (256.U - blurWeight2) +& current * blurWeight2) >> 8)(width - 1, 0)
+  val pixel3 = Reg(new LinePixel)
+  for (i <- 0 until 3) {
+    pixel3.light(i) := blend(left2.light(i), current2.light(i), LinearBits)
+    pixel3.value(i) := blend(left2.value(i), current2.value(i), 8)
+  }
+  val lineStart3 = delayed(io.in.lineStart, 3)
+
+  // Stage 4: the previous source line's pixel: the last one when a line
   // starts, kept for the rest of it.
-  val last = RegNext(pixel1)
+  val last = RegNext(pixel3)
   val previousLine = Reg(new LinePixel)
-  when (lineStart1) {
+  when (lineStart3) {
     previousLine := last
   }
-  val current2 = RegNext(pixel1)
-  val previous2 = RegNext(Mux(lineStart1, last, previousLine))
-  val phase2 = RegNext(phase1)
-  val strength2 = RegNext(strength1)
-  val maskWeight2 = RegNext(maskWeight1)
+  val current4 = RegNext(pixel3)
+  val previous4 = RegNext(Mux(lineStart3, last, previousLine))
+  val phase4 = delayed(io.in.phase, 4)
+  val strength4 = delayed(strength, 4)
 
-  // Stage 3: the beams' weights, by their lines' brightness (ROMs, from the
+  // Stage 5: the beams' weights, by their lines' brightness (ROMs, from the
   // registers above).
   def brightness(value: UInt): UInt = value(7, 8 - BrightnessBits)
   val currentWeights = VecInit(CurrentWeights.flatten.flatten.map(_.U(9.W)))
   val previousWeights = VecInit(PreviousWeights.flatten.flatten.map(_.U(9.W)))
-  val currentWeight3 = current2.value.map(v => RegNext(currentWeights(Cat(strength2, phase2, brightness(v)))))
-  val previousWeight3 = previous2.value.map(v => RegNext(previousWeights(Cat(strength2, phase2, brightness(v)))))
-  val current3 = RegNext(current2.light)
-  val previous3 = RegNext(previous2.light)
-  val maskWeight3 = RegNext(maskWeight2)
+  val currentWeight5 = current4.value.map(v => RegNext(currentWeights(Cat(strength4, phase4, brightness(v)))))
+  val previousWeight5 = previous4.value.map(v => RegNext(previousWeights(Cat(strength4, phase4, brightness(v)))))
+  val current5 = RegNext(current4.light)
+  val previous5 = RegNext(previous4.light)
 
-  // Stage 4: the beams (a row's weights add up to 256 at most).
-  val beams4 = (0 until 3).map { i =>
-    RegNext(((current3(i) * currentWeight3(i) +& previous3(i) * previousWeight3(i)) >> 8)(LinearBits - 1, 0))
+  // Stage 6: the beams (a row's weights add up to 256 at most).
+  val beams6 = (0 until 3).map { i =>
+    RegNext(((current5(i) * currentWeight5(i) +& previous5(i) * previousWeight5(i)) >> 8)(LinearBits - 1, 0))
   }
-  val maskWeight4 = RegNext(maskWeight3)
+  val maskWeight6 = delayed(maskWeight, 6)
 
-  // Stage 5: the mask, clipped at full light.
-  val masked5 = beams4.zip(maskWeight4).map { case (l, w) =>
+  // Stage 7: the mask, clipped at full light.
+  val masked7 = beams6.zip(maskWeight6).map { case (l, w) =>
     val x = (l * w) >> 8
     RegNext(Mux(x > LinearMax.U, LinearMax.U, x(LinearBits - 1, 0)))
   }
 
-  // Stage 6: back to 8-bit values (a ROM, from the registers above).
+  // Stage 8: back to 8-bit values (a ROM, from the registers above).
   val toGamma = VecInit(ToGamma.map(_.U(8.W)))
-  val out6 = masked5.map(l => RegNext(toGamma(l)))
-  io.out.r := out6(0)
-  io.out.g := out6(1)
-  io.out.b := out6(2)
+  val out8 = masked7.map(l => RegNext(toGamma(l)))
+  io.out.r := out8(0)
+  io.out.g := out8(1)
+  io.out.b := out8(2)
 }

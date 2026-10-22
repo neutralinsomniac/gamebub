@@ -58,20 +58,27 @@ class PsxScanoutSpec extends AnyFreeSpec {
   /**
    * `height`: the TV window's lines; `top` black, then `picture` from VRAM
    * (all by default); `bob`: each pair of rows shows the one of parity `field`;
-   * `scanlines`: the CRT effect's scanlines, at 75 % (checked for 240 lines only).
+   * `scanlines`: the CRT effect's scanlines, at 75 % (checked for 240 lines only);
+   * `soft`: its blur (checked without scanlines only).
    */
   case class Mode(offsetX: Int, offsetY: Int, width: Int, height: Int, depth24: Boolean, top: Int = 0, picture: Int = -1,
-                  bob: Boolean = false, field: Int = 0, scanlines: Boolean = false) {
+                  bob: Boolean = false, field: Int = 0, scanlines: Boolean = false, soft: Boolean = false) {
     val pictureRows = if (picture < 0) height - top else picture
   }
 
-  def run(mode: Mode, lineCycles: Int, rows: Int, lines: Int, seed: Int): Unit = {
+  /**
+   * `lineCycles` display cycles per screen column, the first `before` of
+   * them blanking (the driver's row counter, `counterBits` wide, counts up
+   * to 0 through them).
+   */
+  def run(mode: Mode, lineCycles: Int, rows: Int, lines: Int, seed: Int, before: Int = 7, counterBits: Int = 9): Unit = {
     val rng = new Random(seed)
     val vram = Array.fill(512 * 2048)(rng.nextInt(256)) // bytes
     def byte(line: Int, b: Int): Int = vram((line & 511) * 2048 + (b & 2047))
     def expand(v: Int): Int = (v << 3) | (v >> 2)
-    def expected(x: Int, y: Int): Int = {
-      val c = ((x - 80) * mode.width) / 640
+    def expected(x: Int, y: Int): Int = source(((x - 80) * mode.width) / 640, y)
+    /** Source column `c` at screen row `y`. */
+    def source(c: Int, y: Int): Int = {
       val shown = (y * mode.height) / 480 - mode.top
       val r = if (mode.bob) (shown & ~1) | mode.field else shown
       val line = mode.offsetY + r
@@ -86,10 +93,23 @@ class PsxScanoutSpec extends AnyFreeSpec {
         (expand(p & 31) << 16) | (expand((p >> 5) & 31) << 8) | expand((p >> 10) & 31)
       }
     }
+    // Soft, each screen column blends the source column to its left (black
+    // left of the first) and its own, by where its left edge is in its own.
+    def soft(x: Int, y: Int): Int = {
+      val c = ((x - 80) * mode.width) / 640
+      val w = ((((x - 80) * mode.width) % 640) * PsxCrt.BlurScale) >> 9
+      val (left, current) = (if (c > 0) source(c - 1, y) else 0, source(c, y))
+      Seq(16, 8, 0).map { s =>
+        val l = PsxCrt.ToLinear((left >> s) & 255) * (256 - w) + PsxCrt.ToLinear((current >> s) & 255) * w
+        PsxCrt.ToGamma(l >> 8) << s
+      }.sum
+    }
     // With scanlines, the first row of each line (two rows each) blends
     // its light and the line above's, by their brightness.
     def onScreen(x: Int, y: Int): Int =
-      if (!mode.scanlines || y % 2 == 1) {
+      if (mode.soft) {
+        soft(x, y)
+      } else if (!mode.scanlines || y % 2 == 1) {
         expected(x, y)
       } else {
         val above = if (y > 0) expected(x, y - 1) else 0
@@ -118,6 +138,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
       dut.io.crt.scanlines.poke((if (mode.scanlines) 2 else 0).U)
       dut.io.crt.mask.poke(0.U)
       dut.io.crt.maskPattern.poke(0.U)
+      dut.io.crt.blur.poke(mode.soft.B.asUInt)
       dut.io.params.bob.poke(mode.bob.B)
       dut.io.params.field.poke(mode.field.U)
       dut.io.word.valid.poke(false.B)
@@ -134,11 +155,11 @@ class PsxScanoutSpec extends AnyFreeSpec {
       scan += ((0, 600, true))
       // The column where the frame's state is taken, then the first strips' fetches.
       for (_ <- 0 until 2500) scan += ((80 - PsxScanout.LatchColumns, 600, false))
-      scan += ((79, 600, false))
-      for (x <- 80 until 80 + lines) {
+      // A whole column before the picture (black, into the blur's buffer).
+      for (x <- 79 until 80 + lines) {
         for (i <- 0 until lineCycles) {
-          // As the driver: a 9-bit counter starting a few pixels before 0.
-          val y = (i - 7 + 512) % 512
+          // As the driver: a counter starting a few pixels before 0.
+          val y = (i - before + (1 << counterBits)) % (1 << counterBits)
           scan += ((x, y, false))
         }
       }
@@ -235,6 +256,19 @@ class PsxScanoutSpec extends AnyFreeSpec {
 
   "320 x 240 window, a 224-line display range, 75 % scanlines" in {
     run(Mode(offsetX = 0, offsetY = 16, width = 320, height = 240, depth24 = false, top = 8, picture = 224, scanlines = true), lineCycles = 500, rows = 480, lines = 20, seed = 10)
+  }
+
+  "320 x 240, 15-bit, soft" in {
+    run(Mode(offsetX = 3, offsetY = 20, width = 320, height = 240, depth24 = false, soft = true), lineCycles = 80, rows = 60, lines = 40, seed = 11)
+  }
+
+  "368 x 240, 24-bit, soft" in {
+    run(Mode(offsetX = 900, offsetY = 10, width = 368, height = 240, depth24 = true, soft = true), lineCycles = 80, rows = 60, lines = 40, seed = 12)
+  }
+
+  "640 x 480 bob, soft, a 464-row display, as the rev 4 LCD asks (rows 974-1023 in the blanking before 0)" in {
+    run(Mode(offsetX = 0, offsetY = 0, width = 640, height = 480, depth24 = false, picture = 464, bob = true, field = 1, soft = true),
+      lineCycles = 543, rows = 480, lines = 12, seed = 13, before = 50, counterBits = 10)
   }
 
   "640 x 480 bob, field 1, 15-bit, odd x offset" in {

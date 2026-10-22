@@ -101,7 +101,7 @@ object PsxScanout {
  * the lines of the game's vertical display range, black around them.
  *
  * The scaled picture goes through [[PsxCrt]] (scanlines and a mask, as
- * set), which is told where each pixel lies in its source line.
+ * set), which is told where each pixel lies in its source line and column.
  *
  * Not yet: HDMI (row-major scanning; black for now).
  */
@@ -173,6 +173,8 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   // Columns: the source column advances by width / 640 per screen column.
   val inPicture = RegInit(false.B)
   val columnAcc = Reg(UInt(10.W))
+  /** For the CRT effect's blur: the screen column starts a source column (every column outside the picture does). */
+  val columnStart = RegInit(true.B)
   val strip = RegInit(0.U(8.W))
   val stripColumn = Reg(UInt(5.W))
   /** Byte offset (in its VRAM line) of the current strip's first pixel. */
@@ -187,6 +189,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     when (io.x === x0) {
       inPicture := true.B
       columnAcc := 0.U
+      columnStart := true.B
       strip := 0.U
       stripColumn := 0.U
       stripStart := startByte
@@ -194,6 +197,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
       wanted := 1.U
     } .elsewhen (io.x > x0 && io.x < x0 + PictureWidth.U) {
       val acc = columnAcc +& frame.areaWidth
+      columnStart := acc >= PictureWidth.U
       when (acc >= PictureWidth.U) {
         columnAcc := acc - PictureWidth.U
         when (stripColumn === pixelsPerStrip - 1.U) {
@@ -212,6 +216,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
       }
     } .otherwise {
       inPicture := false.B
+      columnStart := true.B
     }
   }
 
@@ -288,6 +293,9 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   crt.io.in.column := ShiftRegister(io.x, 3)
   crt.io.in.phase := ShiftRegister((rowCenter >> 5)(5, 0), 3)
   crt.io.in.lineStart := ShiftRegister(lineStart, 3)
+  crt.io.in.row := ShiftRegister(io.y, 3)
+  crt.io.in.columnStart := ShiftRegister(columnStart, 3)
+  crt.io.in.columnPhase := ShiftRegister(Mux(inPicture, columnAcc, 0.U), 3)
   io.data := crt.io.out
 
   // Underruns: the fetcher's progress (its frame, strips fetched) against
