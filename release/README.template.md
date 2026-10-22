@@ -100,7 +100,7 @@ roms/
   SD card when the pause menu opens and when the core exits, if the game changed them.
 * Save states: pause menu > Settings > Save State / Load State, four slots (State Slot). Each
   is a file next to the `.cue`, named after the disc (`<disc>.ss1` to `.ss4`, 4 MiB each),
-  written right after Save State.
+  written right after Save State. They are not compatible with MiSTer's save states.
 * Games on several discs: pause menu > Change Disc, then choose the next disc. The game goes
   on; the memory cards stay, and the save states are the new disc's.
 * CRT look (pause menu > Settings): Scanlines (off / 50 / 75 / 100 %, default 75 %), CRT Mask

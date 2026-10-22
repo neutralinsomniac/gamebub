@@ -1,7 +1,7 @@
 """Render a PSX VRAM dump as a PNG.
 
 The dump is the PSX core's VRAM as the firmware saves it at a pause (a
-`dumps` entry in the core's core.json, see docs/psx.md): 1024 x 512
+`dumps` entry in the core's core.json): 1024 x 512
 halfwords, little-endian, 15-bit color (red in bits 4-0). 24-bit display
 areas show as noise; textures and CLUTs as what they are.
 
