@@ -1,7 +1,7 @@
 # Release package: the rev4 UF2 (firmware plus the built-in boot/gameboy/gba
 # bitstreams and free BIOS replacements of its system partition) and the
-# SNES and PSX external core packages for the SD card, zipped with a README
-# and checksums.
+# SNES and PSX external core packages for the SD card, zipped with
+# checksums.
 #
 #   make release             build/release/gamebub-handheld-<ver>-snes-psx-<hash>.zip
 #   make firmware            cargo build --release --features=rev4 (release does this)
@@ -41,7 +41,7 @@ endif
 
 .PHONY: release firmware bitstreams clean
 
-release: $(OUT)/README.md $(OUT)/SHA256SUMS
+release: $(OUT)/SHA256SUMS
 	cd $(RELEASE_DIR) && rm -f $(NAME).zip && zip -qr $(NAME).zip $(NAME)
 	@echo "RELEASE: $(RELEASE_DIR)/$(NAME).zip"
 
@@ -64,12 +64,8 @@ $(OUT)/sdcard: fpga/build/snes/snes.bit fpga/build/psx/psx.bit $(wildcard fpga/c
 	cd fpga && python3 scripts/package_core.py --name snes --build-root build/snes --out ../$@
 	cd fpga && python3 scripts/package_core.py --name psx --build-root build/psx --out ../$@
 
-$(OUT)/README.md: release/README.template.md
-	mkdir -p $(OUT)
-	sed -e 's/{VER}/$(VER)/g' -e 's/{HASH}/$(HASH)/g' $< > $@
-
 $(OUT)/SHA256SUMS: $(UF2) $(OUT)/sdcard
-	cd $(OUT) && find . -type f ! -name SHA256SUMS ! -name README.md | sort | xargs sha256sum > SHA256SUMS
+	cd $(OUT) && find . -type f ! -name SHA256SUMS | sort | xargs sha256sum > SHA256SUMS
 
 $(BITSTREAMS) fpga/build/snes/snes.bit fpga/build/psx/psx.bit:
 	@echo "$@ is missing: run 'make bitstreams' (or 'make -C fpga <core>') first" >&2; exit 1

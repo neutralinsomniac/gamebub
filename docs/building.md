@@ -218,8 +218,8 @@ The device should automatically reboot into the main menu.
 `make release` in the repository root assembles a flashable package for people who do not
 want to compile anything: `build/release/gamebub-handheld-<version>-snes-psx-<commit>.zip`,
 holding the UF2 (firmware plus the built-in boot/Game Boy/GBA bitstreams and free BIOS
-replacements of its system partition), the SNES and PSX core packages for `cores/`, a README
-from `release/README.template.md` and checksums. It builds the firmware itself but takes the
+replacements of its system partition), the SNES and PSX core packages for `cores/` and
+checksums. It builds the firmware itself but takes the
 bitstreams from `fpga/build/` as they are (`make bitstreams` rebuilds all five), and needs
 free BIOS replacements in `BIOS_DIR` (default `fpga/build/official-v1.0.1`); `HW=rev3` selects
 another board revision.
