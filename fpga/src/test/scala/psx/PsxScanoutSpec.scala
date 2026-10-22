@@ -58,7 +58,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
   /**
    * `height`: the TV window's lines; `top` black, then `picture` from VRAM
    * (all by default); `bob`: each pair of rows shows the one of parity `field`;
-   * `scanlines`: the CRT effect's 50 % scanlines (checked for 240 lines only).
+   * `scanlines`: the CRT effect's scanlines, at 75 % (checked for 240 lines only).
    */
   case class Mode(offsetX: Int, offsetY: Int, width: Int, height: Int, depth24: Boolean, top: Int = 0, picture: Int = -1,
                   bob: Boolean = false, field: Int = 0, scanlines: Boolean = false) {
@@ -233,7 +233,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
     run(Mode(offsetX = 0, offsetY = 16, width = 320, height = 240, depth24 = false, top = 8, picture = 224), lineCycles = 500, rows = 480, lines = 40, seed = 5)
   }
 
-  "320 x 240 window, a 224-line display range, 50 % scanlines" in {
+  "320 x 240 window, a 224-line display range, 75 % scanlines" in {
     run(Mode(offsetX = 0, offsetY = 16, width = 320, height = 240, depth24 = false, top = 8, picture = 224, scanlines = true), lineCycles = 500, rows = 480, lines = 20, seed = 10)
   }
 
