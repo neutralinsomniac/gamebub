@@ -1,11 +1,11 @@
 # Release package: the rev4 UF2 (firmware plus the built-in boot/gameboy/gba
 # bitstreams and free BIOS replacements of its system partition) and the
-# SNES external core package for the SD card, zipped with a README and
-# checksums.
+# SNES and PSX external core packages for the SD card, zipped with a README
+# and checksums.
 #
-#   make release             build/release/gamebub-handheld-<ver>-snes-<hash>.zip
+#   make release             build/release/gamebub-handheld-<ver>-snes-psx-<hash>.zip
 #   make firmware            cargo build --release --features=rev4 (release does this)
-#   make bitstreams          all four bitstreams (~40 minutes; release does NOT)
+#   make bitstreams          all five bitstreams (~50 minutes; release does NOT)
 #   make HW=rev3 release     another board revision
 #
 # The bitstreams under fpga/build/ must come from the same tree as the
@@ -21,7 +21,7 @@ BIOS_DIR ?= fpga/build/official-v1.0.1
 
 VER := $(shell sed -n 's/^version = "\(.*\)"/\1/p' firmware/handheld/Cargo.toml | head -1)
 HASH := $(shell git describe --always --dirty --exclude '*')
-NAME := gamebub-handheld-$(VER)-snes-$(HASH)
+NAME := gamebub-handheld-$(VER)-snes-psx-$(HASH)
 OUT := $(RELEASE_DIR)/$(NAME)
 
 FIRMWARE_ELF := firmware/handheld/target/xtensa-esp32s3-espidf/release/handheld
@@ -59,9 +59,10 @@ $(UF2): firmware $(BITSTREAMS) $(BIOS) firmware/handheld/generate_firmware_uf2.p
 	    --system-data ../../$(OUT)/system_data --hw-revision $(HW_REVISION) --output ../../$@'
 	rm -rf $(OUT)/system_data
 
-$(OUT)/sdcard: fpga/build/snes/snes.bit $(wildcard fpga/cores/snes/*)
+$(OUT)/sdcard: fpga/build/snes/snes.bit fpga/build/psx/psx.bit $(wildcard fpga/cores/snes/* fpga/cores/psx/*)
 	rm -rf $@
 	cd fpga && python3 scripts/package_core.py --name snes --build-root build/snes --out ../$@
+	cd fpga && python3 scripts/package_core.py --name psx --build-root build/psx --out ../$@
 
 $(OUT)/README.md: release/README.template.md
 	mkdir -p $(OUT)
@@ -70,7 +71,7 @@ $(OUT)/README.md: release/README.template.md
 $(OUT)/SHA256SUMS: $(UF2) $(OUT)/sdcard
 	cd $(OUT) && find . -type f ! -name SHA256SUMS ! -name README.md | sort | xargs sha256sum > SHA256SUMS
 
-$(BITSTREAMS) fpga/build/snes/snes.bit:
+$(BITSTREAMS) fpga/build/snes/snes.bit fpga/build/psx/psx.bit:
 	@echo "$@ is missing: run 'make bitstreams' (or 'make -C fpga <core>') first" >&2; exit 1
 
 $(BIOS):
