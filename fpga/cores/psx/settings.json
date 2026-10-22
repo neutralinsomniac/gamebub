@@ -188,6 +188,24 @@
       ]
     },
     {
+      "id": 12,
+      "label": "Sharpness",
+      "address": "0x20",
+      "mask": "0xFFFFFFDF",
+      "default": 0,
+      "type": "list",
+      "items": [
+        {
+          "label": "Sharp",
+          "value": 0
+        },
+        {
+          "label": "Soft",
+          "value": "0x20"
+        }
+      ]
+    },
+    {
       "id": 4,
       "label": "Fast Boot",
       "address": "0x0",
