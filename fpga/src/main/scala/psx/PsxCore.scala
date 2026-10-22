@@ -30,8 +30,6 @@ class PsxCore extends ExtModule {
     val isPaused = Output(Bool())
 
     // Settings
-    val fastboot = Input(Bool())
-    val ditherOff = Input(Bool())
     val REPRODUCIBLEGPUTIMING = Input(Bool())
     val LIMITREADSPEED = Input(Bool())
     val fixedVBlank = Input(Bool())
