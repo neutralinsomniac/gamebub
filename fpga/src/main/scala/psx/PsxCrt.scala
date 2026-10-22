@@ -7,12 +7,14 @@ import lib.video.ColorRGB
 object PsxCrt {
   /** Cycles from a pixel in to its color out. */
   val Latency = 6
+  /** How much the mask's strengths 1-3 darken the other colors of a column. */
+  val MaskStrengths = Seq(0.25, 0.5, 0.75)
   /**
-   * How much the settings' strengths 1-3 darken the darkest part: for the
-   * mask, the other colors of a column; for the scanlines, the middle
-   * between two black lines (see [[BrightFill]]).
+   * How much the scanlines' strengths 1-3 darken the middle between two
+   * black lines (brighter lines fill it, see [[BrightFill]], so that these
+   * go up to all of it).
    */
-  val Strengths = Seq(0.25, 0.5, 0.75)
+  val ScanlineStrengths = Seq(0.5, 0.75, 1.0)
   /**
    * How much less dark the middle between two lines gets as they get
    * brighter, up to this part of the darkening at full brightness: a TV's
@@ -38,9 +40,9 @@ object PsxCrt {
   class Settings extends Bundle {
     /** Bit 4: the mask's pattern: 0 red / green / blue stripes, 1 magenta / green. */
     val maskPattern = UInt(1.W)
-    /** Bits 3-2: the mask's strength: 0 off, 1-3 [[Strengths]]. */
+    /** Bits 3-2: the mask's strength: 0 off, 1-3 [[MaskStrengths]]. */
     val mask = UInt(2.W)
-    /** Bits 1-0: the scanlines' strength: 0 off, 1-3 [[Strengths]]. */
+    /** Bits 1-0: the scanlines' strength: 0 off, 1-3 [[ScanlineStrengths]]. */
     val scanlines = UInt(2.W)
   }
 
@@ -104,7 +106,7 @@ object PsxCrt {
         if (previous) 0 else 256
       } else {
         val b = (brightness + 0.5) / (1 << BrightnessBits)
-        val s = Strengths(strength - 1) * (1 - BrightFill * b)
+        val s = ScanlineStrengths(strength - 1) * (1 - BrightFill * b)
         val center = (phase + 0.5) / PhasesPerLine
         weight(beam(if (previous) center - (BeamCenter - 1) else (center - BeamCenter).abs, s))
       }
@@ -128,7 +130,7 @@ object PsxCrt {
     if (strength == 0) {
       Seq(256, 256, 256)
     } else {
-      val m = Strengths(strength - 1)
+      val m = MaskStrengths(strength - 1)
       lit.map(l => weight(if (l) 1 + (columns - 1) * m else 1 - m))
     }
   }

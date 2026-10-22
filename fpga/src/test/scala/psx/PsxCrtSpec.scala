@@ -102,12 +102,12 @@ class PsxCrtSpec extends AnyFreeSpec {
       fromLight(light(p.color).zip(light(previous)).zip(weights).map { case ((c, q), (wc, wq)) => (c * wc + q * wq) >> 8 })
     }
 
-  "scanlines 50 %: the dark rows, each line's light by its brightness" in {
+  "scanlines 75 %: the dark rows, each line's light by its brightness" in {
     val pixels = picture(Seq(100, 101), seed = 3)
     check(run((2, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(scanlines(2))
   }
 
-  "scanlines 75 %" in {
+  "scanlines 100 %" in {
     val pixels = picture(Seq(7), seed = 4)
     check(run((3, 0, 0), scanlinesAllowed = true, pixels.map(_._1)), pixels)(scanlines(3))
   }
@@ -119,7 +119,7 @@ class PsxCrtSpec extends AnyFreeSpec {
       val w = PsxCrt.CurrentWeights(strength)(phase)(gray >> 4) + PsxCrt.PreviousWeights(strength)(phase)(gray >> 4)
       w / 256.0
     }
-    for ((strength, s) <- Seq(1 -> 0.25, 2 -> 0.5, 3 -> 0.75)) {
+    for ((s, i) <- PsxCrt.ScanlineStrengths.zipWithIndex; strength = i + 1) {
       assert(gap(strength, 0x00) < 1 - 0.9 * s, s"strength $strength: black lines' gap ${gap(strength, 0)}")
       assert(gap(strength, 0xFF) > 1 - 0.2 * s, s"strength $strength: white lines' gap ${gap(strength, 0xFF)}")
       val gaps = (0 until 256 by 16).map(gap(strength, _))
