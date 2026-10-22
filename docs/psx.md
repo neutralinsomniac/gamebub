@@ -17,7 +17,6 @@ is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
 * Disc swapping from the pause menu
 * Digital, Analog and DualShock controllers, with rumble
 * CRT look: scanlines, mask, soft horizontal blur
-* Fast boot, dithering off
 
 ## Not supported
 

@@ -109,15 +109,6 @@
       ]
     },
     {
-      "id": 3,
-      "label": "Disable Dithering",
-      "address": "0x0",
-      "mask": "0xFFFFFFF7",
-      "default": 0,
-      "type": "checkbox",
-      "value": 8
-    },
-    {
       "id": 9,
       "label": "Scanlines",
       "address": "0x20",
@@ -204,15 +195,6 @@
           "value": "0x20"
         }
       ]
-    },
-    {
-      "id": 4,
-      "label": "Fast Boot",
-      "address": "0x0",
-      "mask": "0xFFFFFFEF",
-      "default": 0,
-      "type": "checkbox",
-      "value": 16
     },
     {
       "id": 5,
