@@ -585,8 +585,7 @@ object HandheldSnes {
  *           answers, bit 12 ROM eager issue (the two halves of the ROM miss
  *           path, separately switchable for A/B tests), bit 13 BSRAM cache
  *           off, bit 14 BSRAM cache way 0 only (debug), bit 15 region from
- *           the ROM header instead of bit 0, bit 16 APU clock in lockstep
- *           with the S-CPU's (A/B switch, see `configReg`). With `DebugAudio`:
+ *           the ROM header instead of bit 0. With `DebugAudio`:
  *           bit 3 1 kHz test tone instead of the core's audio, bit 4 tone at
  *           full scale, bit 5 play the capture buffer through the audio path,
  *           bit 6 capture sample periods (ungated clocks) instead of samples.
@@ -809,13 +808,7 @@ class HandheldSnes extends Module with Core {
   // N.B. the last field is bit 0 of the register. Reset value: both halves
   // of the ROM miss path on (bits 11 and 12), which the settings do not
   // touch.
-  val configReg = RegInit(0x1800.U(17.W).asTypeOf(new Bundle {
-    /**
-     * Bit 16: the APU's clock follows the S-CPU's exactly (stalls and PAL
-     * pacing included), as before the APU got its own clock. A/B switch:
-     * the free-running APU changes only what a game sees on the APU ports.
-     */
-    val apuLockstep = Bool()
+  val configReg = RegInit(0x1800.U(16.W).asTypeOf(new Bundle {
     /**
      * Bit 15: region from the ROM header (`headerPal`, set by the glue's
      * header analysis) instead of bit 0. Lets a settings descriptor offer
@@ -1261,9 +1254,8 @@ class HandheldSnes extends Module with Core {
   core.io.MCLK := coreClock
   core.io.ACLK := apuClock
   core.io.MCLK_EN := coreRun
-  // The APU's clock is at the NTSC rate in both regions, like a console's
-  // (in lockstep it is paced like the S-CPU's, so the DSP is told the region).
-  core.io.DSP_PAL := configReg.apuLockstep && core.io.PAL
+  // The APU's clock is at the NTSC rate in both regions, like a console's.
+  core.io.DSP_PAL := false.B
   // Like the MiSTer top level, release the core's reset only when the PPU's
   // H/V counters wrap (HVCNT_ATZERO): the counters run through reset, so
   // this starts the CPU at the top of a frame and gives stable video from
@@ -1532,7 +1524,7 @@ class HandheldSnes extends Module with Core {
   // And it runs, without focus, for a save-state request (`ssRunPending`)
   // and for the cycle that cancels one (`ssCancel`).
   val coreWant = (regCoreFocus || hostReset || ssRunPending || ssCancel) && !stall
-  apuRun := Mux(configReg.apuLockstep, coreRun, regCoreFocus || hostReset || ssRunPending)
+  apuRun := regCoreFocus || hostReset || ssRunPending
   // PAL master clock. A PAL SNES runs its master clock at 21.281 MHz, 0.9 %
   // below NTSC (the MiSTer retunes its PLL). Here the physical clock stays
   // at the NTSC rate and the core's clock enable withholds one edge in ~110,
