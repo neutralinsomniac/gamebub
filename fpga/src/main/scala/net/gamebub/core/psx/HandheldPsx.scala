@@ -233,10 +233,8 @@ class HandheldPsx extends Module with Core {
     val dualShock = Bool()
     /** Bit 5: the controller is an analog controller. */
     val analog = Bool()
-    /** Bit 4: skip the BIOS intro when booting a disc. */
-    val fastboot = Bool()
-    /** Bit 3: no dithering. */
-    val ditherOff = Bool()
+    /** Bits 4-3: unused (they were fast boot and no dithering). */
+    val unused = UInt(2.W)
     /** Bit 2: PAL video timing. */
     val pal = Bool()
     /** Bits 1-0: console region (0 US, 1 Japan, 2 Europe, 3 the disc's). */
@@ -429,8 +427,6 @@ class HandheldPsx extends Module with Core {
   // menu, it may have work in hand, which a pause holds there.)
   core.io.pause := !regCoreFocus && !stateActive
 
-  core.io.fastboot := configReg.fastboot
-  core.io.ditherOff := configReg.ditherOff
   core.io.REPRODUCIBLEGPUTIMING := false.B
   core.io.LIMITREADSPEED := false.B
   core.io.fixedVBlank := configReg.fixedVBlank
