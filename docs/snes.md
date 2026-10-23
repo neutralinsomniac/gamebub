@@ -347,14 +347,17 @@ PAL is untested on the LCD; if the panel dislikes 50 Hz, frame-rate
 conversion is the fallback.
 
 Audio is the DSP's 16-bit stereo output, which updates every 671.16 cycles
-(~32 kHz) of the APU clock and goes straight to the framework, which samples
-it at the DAC rate like the other cores' audio. Before the APU had its own
-clock, its samples shared the S-CPU's stalls, bursty within the frame, which
-frequency-modulated the audio at the frame rate (a fast warble on sustained
-notes, diagnosed on Chrono Trigger's flute); a rate-servo'd, interpolating
-FIFO re-timed them then, at the price of the pitch ramping up for ~200 ms
-after every pause while its servo recovered. The free-running APU leaves no
-jitter to remove, so it is gone.
+(~32 kHz) of the APU clock. The framework's filter chain
+(`lib.audio.AudioFilterChain`, as for the Game Boy and GBA) resamples it to
+the DAC's 48 kHz: CIC decimation from the system clock, a 20 kHz FIR
+low-pass, cubic interpolation and a DC blocker, so the 32 kHz steps' images
+no longer fold back into the audio band at the DAC rate. Before the APU had
+its own clock, its samples shared the S-CPU's stalls, bursty within the
+frame, which frequency-modulated the audio at the frame rate (a fast warble
+on sustained notes, diagnosed on Chrono Trigger's flute); a rate-servo'd,
+interpolating FIFO re-timed them then, at the price of the pitch ramping up
+for ~200 ms after every pause while its servo recovered. The free-running APU
+leaves no jitter to remove, so it is gone.
 
 Debug facilities, synthesized when `HandheldSnes.DebugAudio` is set (config
 register bits 3-6, registers 0x0020 / 0x0024 and a capture buffer at host
