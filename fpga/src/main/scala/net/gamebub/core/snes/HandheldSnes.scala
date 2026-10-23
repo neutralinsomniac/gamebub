@@ -3,6 +3,7 @@ package net.gamebub.core.snes
 import chisel3._
 import chisel3.util._
 import HandheldSnes.CommandState
+import lib.audio.AudioFilterChain
 import lib.mem.cache.{LineBuffer, LineReadCache}
 import lib.mem.{MemoryArbiter, MemoryInterface, MemoryMap, PipelineInterfaceBridge, PipelineMemoryArbiter, PipelineMemoryBurstCdc, PipelineMemoryInterface, PipelineMemoryLowPriorityMux, RegisterMap}
 import lib.mem.sdram.BurstSdramController
@@ -1874,24 +1875,36 @@ class HandheldSnes extends Module with Core {
   // The DSP emits a sample every 128 of its clock enables, i.e. every
   // 128 * 21477270 / 4096000 = 671.16 APU clocks (~32 kHz). The APU's clock
   // runs free (`apuRun`), so the output register updates at that rate
-  // whatever the S-CPU side is doing, and the framework samples it at the
-  // DAC rate like the other cores' audio (a zero-order hold). Before the
-  // APU had its own clock the samples shared the S-CPU's stalls, bursty
-  // within the frame, which frequency-modulated the audio at the frame rate
-  // (a fast warble on sustained notes); a rate-servo'd, interpolating FIFO
-  // re-timed them then, and its servo made the pitch ramp up for ~200 ms
-  // after every pause. With the APU free-running there is no jitter left to
-  // remove.
-  io.audio.left := core.io.AUDIO_L.asSInt
-  io.audio.right := core.io.AUDIO_R.asSInt
+  // whatever the S-CPU side is doing. Before the APU had its own clock the
+  // samples shared the S-CPU's stalls, bursty within the frame, which
+  // frequency-modulated the audio at the frame rate (a fast warble on
+  // sustained notes); a rate-servo'd, interpolating FIFO re-timed them then,
+  // and its servo made the pitch ramp up for ~200 ms after every pause. With
+  // the APU free-running there is no jitter left to remove.
+  //
+  // The filter chain resamples the held output to the DAC's 48 kHz, like
+  // the Game Boy and GBA cores' audio: it low-passes it at the system clock
+  // rate, so the images of the ~32 kHz steps are gone before the DAC rate
+  // could fold them back into the audio band.
+  val audioIn = Wire(Vec(2, SInt(16.W)))
+  audioIn(0) := core.io.AUDIO_L.asSInt
+  audioIn(1) := core.io.AUDIO_R.asSInt
+  val audioFilter = Module(new AudioFilterChain(
+    inputRateHz = ClockSystemHz,
+    cicR = (ClockSystemHz.toFloat / (4 * 48000)).ceil.toInt,
+    dataBits = 16,
+    outputRateHz = 48000,
+  ))
+  audioFilter.io.in := audioIn
+  io.audio.left := audioFilter.io.out(0)
+  io.audio.right := audioFilter.io.out(1)
 
   captureIndexWire := 0.U
   captureInterface.dataRead := 0.U
   captureInterface.done := true.B
   if (debugAudio) {
   // Debug: a synthetic 1 kHz sine (256-entry table, phase accumulator on the
-  // ungated clock) to test the framework's audio path independently of the
-  // core.
+  // ungated clock) to test the audio path independently of the core.
   val toneTable = VecInit((0 until 256).map(i => math.round(8191 * math.sin(2 * math.Pi * i / 256)).toInt.S(16.W)))
   val tonePhase = RegInit(0.U(32.W))
   // 1000 Hz * 256 entries / clockSystemHz = table entries per clock, in 24.8 fixed point.
@@ -1899,8 +1912,8 @@ class HandheldSnes extends Module with Core {
   val toneSample = toneTable(tonePhase(31, 24))
   val toneOut = Mux(configReg.loudTone, (toneSample * 4.S)(15, 0).asSInt, toneSample)
   when (configReg.testTone) {
-    io.audio.left := toneOut
-    io.audio.right := toneOut
+    audioIn(0) := toneOut
+    audioIn(1) := toneOut
   }
 
   // Sample boundaries for the capture come from a replica of the DSP's
@@ -1960,8 +1973,8 @@ class HandheldSnes extends Module with Core {
   when (playStrobe) { playIndex := playIndex + 1.U }
   when (RegNext(playStrobe, false.B)) { playSample := captureBuffer.readPorts(0).data }
   when (configReg.playCapture) {
-    io.audio.left := playSample(31, 16).asSInt
-    io.audio.right := playSample(15, 0).asSInt
+    audioIn(0) := playSample(31, 16).asSInt
+    audioIn(1) := playSample(15, 0).asSInt
   }
   captureBuffer.readPorts(0).enable := Mux(configReg.playCapture, playStrobe, captureInterface.enable && !captureInterface.write)
   captureBuffer.readPorts(0).address := Mux(configReg.playCapture, playIndex, captureInterface.address(CaptureIndexBits + 1, 2))
