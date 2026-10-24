@@ -1,10 +1,9 @@
-package psx
+package lib.video
 
 import chisel3._
 import chisel3.util._
-import lib.video.ColorRGB
 
-object PsxCrt {
+object Crt {
   /** Cycles from a pixel in to its color out. */
   val Latency = 8
   /** How much the mask's strengths 1-3 darken the other colors of a column. */
@@ -32,23 +31,13 @@ object PsxCrt {
   val BeamCenter = 0.75
   /** The unit of `Pixel.phase`: phases per source line. */
   val PhasesPerLine = 30
+  /** Every phase a 6-bit `Pixel.phase` can name (a row's center can be past its line's end, see there). */
+  val AllPhases = 0 until 64
   /** Bits of a channel in linear light (see [[ToLinear]]). */
   val LinearBits = 12
   val LinearMax = (1 << LinearBits) - 1
-  /**
-   * The unit of `Pixel.columnPhase`: the scanout's horizontal DDA counts in
-   * 1/(the picture's width) source columns: 640ths on the LCD (scanned
-   * column by column), 720ths on HDMI (row by row).
-   */
-  val ColumnPhases = PsxScanout.PictureWidth
-  val RowMajorColumnPhases = PsxScanout.HdmiPictureWidth
-  /** The blur's weight of a pixel's own source column, in 256ths: `columnPhase * BlurScale >> 9` (`RowMajorBlurScale` on HDMI). */
-  val BlurScale = math.round(256.0 * 512 / ColumnPhases).toInt
-  val RowMajorBlurScale = math.round(256.0 * 512 / RowMajorColumnPhases).toInt
   /** Screen rows (column-major, the blur's buffer holds a pixel pair for each). */
   val Rows = 480
-  /** Entries of the buffer across the scan: a pixel pair per screen row (column-major), or a pixel per screen column for each of two lines (row-major). */
-  val BufferEntries = 2048
 
   /** The user's settings (register 0x0020). N.B. the last field is bit 0. */
   class Settings extends Bundle {
@@ -84,16 +73,17 @@ object PsxCrt {
    * A pixel of the scaled picture, in the order the screen is scanned: down
    * each screen column (column-major: the LCD), or along each row (HDMI).
    */
-  class Pixel extends Bundle {
+  class Pixel(phaseBits: Int) extends Bundle {
     val color = ColorRGB(8, 8, 8)
     /** The screen column (for the mask). */
     val column = UInt(10.W)
     /**
      * Where the center of the pixel's screen row is in its source line, in
      * 1/[[PhasesPerLine]] lines from the line's top (rounded down; it can be
-     * past the line's end when the line is less than a row tall).
+     * past the line's end when the line is less than a row tall): its index
+     * in the module's `phases`.
      */
-    val phase = UInt(6.W)
+    val phase = UInt(phaseBits.W)
     /** Column-major: the first pixel of its source line in the column: the one before it showed the previous line (or none). */
     val lineStart = Bool()
     /** Row-major: the parity of its source line (the half of the line buffer the line goes to). */
@@ -102,8 +92,12 @@ object PsxCrt {
     val row = UInt(10.W)
     /** The pixel's screen column starts a source column: the screen column before it showed the previous one (or none). */
     val columnStart = Bool()
-    /** Where the screen column's left edge is in its source column, in 1/[[ColumnPhases]] (or [[RowMajorColumnPhases]]) columns. */
-    val columnPhase = UInt(10.W)
+    /**
+     * The blur's weight of the pixel's own source column, in 256ths (the
+     * rest is the source column to its left's), by where the screen column
+     * lies in its source column: 256 for its own alone.
+     */
+    val columnWeight = UInt(9.W)
   }
 
   /**
@@ -134,13 +128,15 @@ object PsxCrt {
 
   /**
    * The weight of a screen row's own source line (`previous` false) or the
-   * previous one, by scanline strength (0-3), phase and that line's
-   * brightness (its value's top [[BrightnessBits]] bits). A row's two
-   * weights add up to 256 at most, whatever the lines' brightness: each
-   * beam's cos^n with n >= 2 is at most cos^2, or sin^2 on the other side.
+   * previous one, by scanline strength (0-3), phase (an index in `phases`)
+   * and that line's brightness (its value's top [[BrightnessBits]] bits). A
+   * row's two weights add up to 256 at most, whatever the lines'
+   * brightness: each beam's cos^n with n >= 2 is at most cos^2, or sin^2 on
+   * the other side.
    */
-  def beamWeights(previous: Boolean): Seq[Seq[Seq[Int]]] = Seq.tabulate(4, 64, 1 << BrightnessBits) {
-    (strength, phase, brightness) =>
+  def beamWeights(previous: Boolean, phases: Seq[Int] = AllPhases): Seq[Seq[Seq[Int]]] =
+    Seq.tabulate(4, phases.length, 1 << BrightnessBits) { (strength, i, brightness) =>
+      val phase = phases(i)
       if (strength == 0) {
         if (previous) 0 else 256
       } else {
@@ -149,7 +145,7 @@ object PsxCrt {
         val center = (phase + 0.5) / PhasesPerLine
         weight(beam(if (previous) center - (BeamCenter - 1) else (center - BeamCenter).abs, s))
       }
-  }
+    }
   val CurrentWeights = beamWeights(previous = false)
   val PreviousWeights = beamWeights(previous = true)
   require((0 until 4).forall(s => (0 until 64).forall(p => CurrentWeights(s)(p).max + PreviousWeights(s)(p).max <= 256)))
@@ -176,17 +172,18 @@ object PsxCrt {
 }
 
 /**
- * A CRT look for the PSX's scaled picture ([[PsxScanout]]), one pixel per
- * cycle, in its (the display's) clock domain: scanlines and a mask, in
+ * A CRT look for a scaled picture (the PSX's, from [[psx.PsxScanout]]; the
+ * SNES's, from the framework's frame buffer), one pixel per cycle, in the
+ * display's clock domain: scanlines and a mask, in
  * linear light (as light adds up and dims: a darkened channel's 8-bit value
  * falls less than its light does). With both off, the picture comes out as
  * it went in.
  *
- * Scanlines: each source line is drawn as a beam [[PsxCrt.BeamCenter]]
+ * Scanlines: each source line is drawn as a beam [[Crt.BeamCenter]]
  * lines below its top, which gets darker away from its center (see
  * `beam`), and a screen row shows the beams of its own line and the
  * previous one. A beam is wider the brighter its line is, in each color
- * (see [[PsxCrt.BrightFill]]). In 240-line modes, the second row of each
+ * (see [[Crt.BrightFill]]). In 240-line modes, the second row of each
  * line is its beam, at full brightness, and the first lies halfway between
  * two: the two lines blended, darker by the strength for black lines, less
  * for bright ones. With 288 lines (PAL), the rows fall at other distances
@@ -200,10 +197,11 @@ object PsxCrt {
  * picture's light (see `MaskWeights`).
  *
  * Blur (soft): before the scanlines, each screen column blends its source
- * column with the one to its left, by where its left edge is in its own (a
- * linear blend, which moves the picture right by about a screen column),
- * as a TV blurs its composite signal; source pixels of uneven width (256
- * or 368 of them across the picture) come out even.
+ * column with the one to its left, by where it lies in its own
+ * (`Pixel.columnWeight`; the PSX's by its left edge, a linear blend, which
+ * moves the picture right by about a screen column), as a TV blurs its
+ * composite signal; source pixels of uneven width (256 or 368 of them
+ * across the picture) come out even.
  *
  * The neighbors these need come from the scan, or from a buffer across it.
  * Column-major (the LCD scans down each screen column), the previous line's
@@ -215,9 +213,22 @@ object PsxCrt {
  * pixels (blurred, as its beam needs them), for each screen column: it
  * holds two lines, one in each half by their parity, so that every row of
  * a line finds the line before it in the other half.
+ *
+ * @param phases the phases a screen row's center can have in its source
+ *   line (see `Pixel.phase`, which indexes these), for the beams' weight
+ *   tables: a picture scaled by a whole number has a few (7 and 22 at 2x).
+ * @param columns row-major: the screen columns (a power of two, from 0) the
+ *   buffer keeps the previous line for; the line above any other reads
+ *   black.
  */
-class PsxCrt extends Module {
-  import PsxCrt._
+class Crt(phases: Seq[Int] = Crt.AllPhases, columns: Int = 1024) extends Module {
+  import Crt._
+  require(isPow2(columns))
+  val phaseBits = log2Ceil(phases.length).max(1)
+  /** The weight tables' phases: `phases`, padded to a power of two (`in.phase` indexes them). */
+  val tablePhases = phases.padTo(1 << phaseBits, phases.last)
+  /** Entries of the buffer across the scan: a pixel pair per screen row (column-major), or a pixel per screen column for each of two lines (row-major). */
+  val bufferEntries = (2 * columns).max(512)
 
   val io = IO(new Bundle {
     val settings = Input(new Settings)
@@ -225,8 +236,8 @@ class PsxCrt extends Module {
     val scanlinesAllowed = Input(Bool())
     /** The scan order: down each screen column (the LCD), or (low) along each row (HDMI). */
     val columnMajor = Input(Bool())
-    val in = Input(new Pixel)
-    /** The pixel's color, [[PsxCrt.Latency]] cycles later. */
+    val in = Input(new Pixel(phaseBits))
+    /** The pixel's color, [[Crt.Latency]] cycles later. */
     val out = Output(ColorRGB(8, 8, 8))
   })
 
@@ -242,7 +253,7 @@ class PsxCrt extends Module {
   // and read in stage 1); row-major, a line's pixel in a column (stage 3,
   // read a stage before).
   val bufferBits = (new RowPixels).getWidth.max((new BeamPixel).getWidth)
-  val buffer = SRAM(BufferEntries, UInt(bufferBits.W), numReadPorts = 1, numWritePorts = 1, numReadwritePorts = 0)
+  val buffer = SRAM(bufferEntries, UInt(bufferBits.W), numReadPorts = 1, numWritePorts = 1, numReadwritePorts = 0)
   buffer.readPorts(0).enable := true.B
 
   // Stage 1: the source column to the left (the stored current one, if a
@@ -251,8 +262,7 @@ class PsxCrt extends Module {
   val color1 = RegNext(io.in.color)
   val row1 = RegNext(io.in.row)
   val columnStart1 = RegNext(io.in.columnStart)
-  val blurScale = Mux(io.columnMajor, BlurScale.U, RowMajorBlurScale.U)
-  val blurWeight1 = RegNext(Mux(io.settings.blur === 1.U, (io.in.columnPhase * blurScale) >> 9, 256.U(9.W)))
+  val blurWeight1 = RegNext(Mux(io.settings.blur === 1.U, io.in.columnWeight, 256.U(9.W)))
   val lastPixels = Reg(new RowPixels)
   val stored = Mux(io.columnMajor, buffer.readPorts(0).data.asTypeOf(new RowPixels), lastPixels)
   // (Black in the blanking, as the pixels there are: column-major, the
@@ -292,20 +302,22 @@ class PsxCrt extends Module {
   // Row-major: the previous line's pixel in this column, from the other
   // half of the buffer.
   val lineParity2 = delayed(io.in.lineParity, 2)
-  val above3 = buffer.readPorts(0).data.asTypeOf(new BeamPixel)
-
-  // The buffer's port, by scan order.
+  val column2 = delayed(io.in.column, 2)
   val lineParity3 = delayed(io.in.lineParity, 3)
   val column3 = delayed(io.in.column, 3)
+  val kept3 = column3 < columns.U
+  val above3 = Mux(kept3, buffer.readPorts(0).data, 0.U).asTypeOf(new BeamPixel)
+
+  // The buffer's port, by scan order.
   when (io.columnMajor) {
     buffer.readPorts(0).address := io.in.row(8, 0)
     buffer.writePorts(0).enable := row1 < Rows.U
     buffer.writePorts(0).address := row1(8, 0)
     buffer.writePorts(0).data := pixels1.asUInt
   } .otherwise {
-    buffer.readPorts(0).address := Cat(~lineParity2, delayed(io.in.column, 2))
-    buffer.writePorts(0).enable := true.B
-    buffer.writePorts(0).address := Cat(lineParity3, column3)
+    buffer.readPorts(0).address := Cat(~lineParity2, column2(log2Ceil(columns) - 1, 0))
+    buffer.writePorts(0).enable := kept3
+    buffer.writePorts(0).address := Cat(lineParity3, column3(log2Ceil(columns) - 1, 0))
     buffer.writePorts(0).data := beam3.asUInt
   }
 
@@ -324,8 +336,8 @@ class PsxCrt extends Module {
 
   // Stage 5: the beams' weights, by their lines' brightness (ROMs, from the
   // registers above).
-  val currentWeights = VecInit(CurrentWeights.flatten.flatten.map(_.U(9.W)))
-  val previousWeights = VecInit(PreviousWeights.flatten.flatten.map(_.U(9.W)))
+  val currentWeights = VecInit(beamWeights(previous = false, tablePhases).flatten.flatten.map(_.U(9.W)))
+  val previousWeights = VecInit(beamWeights(previous = true, tablePhases).flatten.flatten.map(_.U(9.W)))
   val currentWeight5 = current4.brightness.map(b => RegNext(currentWeights(Cat(strength4, phase4, b))))
   val previousWeight5 = previous4.brightness.map(b => RegNext(previousWeights(Cat(strength4, phase4, b))))
   val current5 = RegNext(current4.light)

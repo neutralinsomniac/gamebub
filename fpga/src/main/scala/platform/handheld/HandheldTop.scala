@@ -287,12 +287,23 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       videoFilterOut := videoFilter.dataOut
       videoFilter.latency
     }
+    case Some(videoFilter: VideoFilterSpatialV0) => {
+      // (Its position is driven by the scan, see the video section.)
+      videoFilter.clock := io.clock_av
+      videoFilter.reset := videoFilterReset
+      videoFilter.dataIn := videoFilterIn
+      videoFilterOut := videoFilter.dataOut
+      videoFilter.latency
+    }
     case Some(x) => throw new CoreException("Unknown 'videoFilter': " + x.getClass())
     case None => {
       videoFilterOut := videoFilterIn.convertTo(videoFilterOut)
       0
     }
   }
+  /** A filter told where each pixel lies ([[VideoFilterSpatialV0]]). */
+  val videoFilterSpatial: Option[VideoFilterSpatialV0] =
+    core.getInterface("videoFilter").collect { case filter: VideoFilterSpatialV0 => filter }
 
   // Audio
   val coreAudioData = Wire(new AudioV1.Sample)
@@ -704,6 +715,21 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       pull.columnMajor := DontCare
       pull.frameStart := false.B
     }
+    // A spatial filter's position: that of the frame pixel being requested
+    // (driven by the HDMI / LCD scan below), which reaches the filter with
+    // its read.
+    val filterRequest = Wire(new Bundle {
+      val x = UInt(10.W)
+      val y = UInt(10.W)
+      val columnMajor = Bool()
+    })
+    filterRequest := DontCare
+    videoFilterSpatial.foreach { filter =>
+      val position = ShiftRegister(filterRequest, 3)
+      filter.x := position.x
+      filter.y := position.y
+      filter.columnMajor := position.columnMajor
+    }
 
     // Similar for overlay framebuffer.
     overlayFramebuffer.readPorts(0).enable := true.B
@@ -804,6 +830,12 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         videoX < (videoOffsetX + (videoWidth * videoScale)).U &&
         videoY >= videoOffsetY.U &&
         videoY < (videoOffsetY + (videoHeight * videoScale)).U
+      videoFilterSpatial.foreach { filter =>
+        require(filter.scale == videoScale, s"the video filter is drawn at ${filter.scale}x, HDMI scales by $videoScale")
+        filterRequest.x := videoX - videoOffsetX.U + framebufferReadDelay.U
+        filterRequest.y := videoY - videoOffsetY.U
+        filterRequest.columnMajor := false.B
+      }
       videoPull.foreach { pull =>
         // Row by row; the request runs `latency` pixels ahead along the row.
         pull.x := videoX + pull.latency.U
@@ -861,19 +893,20 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         dpiX < (videoOffsetX + (videoWidth * videoScale)).U &&
         dpiY >= videoOffsetY.U &&
         dpiY < (videoOffsetY + (videoHeight * videoScale)).U
-      videoPull.foreach { pull =>
-        // The request runs `latency` pixels ahead along the driver's scan
-        // line, in a 10-bit (wrapping) counter, so that the first pixels of
-        // a line are requested from its blanking. The display offset is
-        // applied to x, so that a picture centered on the screen lands where
-        // a centered framebuffer would.
-        //
-        // The driver's counter is only as wide as its line's pixels need
-        // (9 bits for 480), so in the blanking before a line it wraps
-        // through values of the line's own pixels (451-511 on the rev 4
-        // LCD): from the end of a line (a value past its pixels) to the
-        // next one's first pixel (0), it counts as negative, so that
-        // requests in the blanking fall outside the screen.
+
+      /**
+       * The screen pixel `ahead` pixels ahead of the driver's along its scan
+       * line, in 10-bit (wrapping) coordinates (before the display offset),
+       * so that the first pixels of a line are asked for from its blanking.
+       *
+       * The driver's counter is only as wide as its line's pixels need (9
+       * bits for 480), so in the blanking before a line it wraps through
+       * values of the line's own pixels (451-511 on the rev 4 LCD): from the
+       * end of a line (a value past its pixels) to the next one's first
+       * pixel (0), it counts as negative, so that what is asked for in the
+       * blanking falls outside the screen.
+       */
+      def scanAhead(ahead: Int): (UInt, UInt) = {
         val lineX = dpiDriverIo.pixelX
         val lineLength = if (revision.displayRotate) screenHeight else screenWidth
         val pastLine = RegInit(true.B)
@@ -884,11 +917,26 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         }
         val blanking = lineX >= lineLength.U || (pastLine && lineX =/= 0.U)
         val lineX10 = Mux(blanking, lineX.pad(10) + (1024 - (1 << lineX.getWidth)).U, lineX.pad(10))
-        val aheadX = lineX10 + pull.latency.U
-        val pullX = if (revision.displayRotate) dpiDriverIo.pixelY else aheadX
-        val pullY = if (revision.displayRotate) aheadX else dpiDriverIo.pixelY
-        pull.x := pullX.pad(10) + ((-revision.displayOffsetX) & 0x3FF).U
-        pull.y := pullY.pad(10)
+        val aheadX = lineX10 + ahead.U
+        val x = if (revision.displayRotate) dpiDriverIo.pixelY else aheadX
+        val y = if (revision.displayRotate) aheadX else dpiDriverIo.pixelY
+        (x.pad(10), y.pad(10))
+      }
+      videoFilterSpatial.foreach { filter =>
+        require(filter.scale == videoScale, s"the video filter is drawn at ${filter.scale}x, the LCD scales by $videoScale")
+        val (x, y) = scanAhead(framebufferReadDelay)
+        filterRequest.x := x + ((-videoOffsetX) & 0x3FF).U
+        filterRequest.y := y + ((-videoOffsetY) & 0x3FF).U
+        filterRequest.columnMajor := revision.displayRotate.B
+      }
+      videoPull.foreach { pull =>
+        // The request runs `latency` pixels ahead along the driver's scan
+        // line (see `scanAhead`). The display offset is applied to x, so
+        // that a picture centered on the screen lands where a centered
+        // framebuffer would.
+        val (x, y) = scanAhead(pull.latency)
+        pull.x := x + ((-revision.displayOffsetX) & 0x3FF).U
+        pull.y := y
         pull.screenWidth := screenWidth.U
         pull.screenHeight := screenHeight.U
         pull.columnMajor := revision.displayRotate.B

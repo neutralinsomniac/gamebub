@@ -5,9 +5,10 @@ import chisel3.util._
 import lib.mem.{MemoryInterface, MemoryMap, RegisterMap}
 import lib.fifo.RelatedClockFifo
 import lib.mem.sram.AsyncSramController
+import lib.video.Crt
 import net.gamebub.framework.Core
 import net.gamebub.framework.interface._
-import psx.{PsxCore, PsxCrt, PsxDisc, PsxFrameGrab, PsxMemory, PsxScanout, SdramEngine}
+import psx.{PsxCore, PsxDisc, PsxFrameGrab, PsxMemory, PsxScanout, SdramEngine}
 import xilinx.{MMCM, ODDRWrapper, XpmCdcHandshake}
 
 object HandheldPsx {
@@ -240,8 +241,8 @@ class HandheldPsx extends Module with Core {
     /** Bits 1-0: console region (0 US, 1 Japan, 2 Europe, 3 the disc's). */
     val region = UInt(2.W)
   }))
-  /** The CRT effect's settings (register 0x0020; see [[PsxCrt]]): a 25 % magenta / green mask, 75 % scanlines, sharp. */
-  val crtReg = RegInit(0x16.U(6.W).asTypeOf(new PsxCrt.Settings))
+  /** The CRT effect's settings (register 0x0020; see [[Crt]]): a 25 % magenta / green mask, 75 % scanlines, sharp. */
+  val crtReg = RegInit(0x16.U(6.W).asTypeOf(new Crt.Settings))
   val statusWire = Wire(UInt(8.W))
   /**
    * Save states (see below): the slot (register 0x0018), a request (written

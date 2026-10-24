@@ -346,6 +346,21 @@ PAL; the rev1-3 drivers cannot and refresh unsynchronized).
 PAL is untested on the LCD; if the panel dislikes 50 Hz, frame-rate
 conversion is the fallback.
 
+The CRT look is the PSX core's (`lib.video.Crt`: scanlines whose beams widen
+with their lines' brightness, an aperture-grille mask, a soft horizontal
+blur, all in linear light), with the same pause-menu settings (Scanlines,
+CRT Mask, Mask Type, Sharpness; register 0x0028; default 75 % scanlines and a
+25 % magenta / green mask, sharp). It is drawn as the framework scans the
+framebuffer out: the core's video filter is a `VideoFilterSpatialV0`, which
+the framework tells, with each pixel, where it lies on the scaled frame, so
+`SnesVideoFilter` knows each pixel's frame pixel and which of its 2 x 2
+screen pixels it is. A frame row's two screen rows are the scanlines' two
+phases; with Soft, the left screen column of each source pixel is half the
+pixel to its left. (The PSX blends by where a screen column's left edge
+lies instead, which moves the picture right by a column; here the framework
+would cut that column off at the frame's edge.) The filter replaced the
+color correction, which the firmware never loaded for the external core.
+
 Audio is the DSP's 16-bit stereo output, which updates every 671.16 cycles
 (~32 kHz) of the APU clock. The framework's filter chain
 (`lib.audio.AudioFilterChain`, as for the Game Boy and GBA) resamples it to
@@ -444,8 +459,8 @@ firmware logs on a pause; `files.json`: the ROM as `.sfc` / `.smc`,
 the `.srm` save file and the `.ss` states file next to it, with their SDRAM /
 SRAM windows and transfer speeds; `settings.json`: "Reset Core", "Save State"
 / "Load State" / "State Slot", "Region" (from the header, or forced), "Pseudo
-Transparency" (the core's `BLEND`) and "Memory Latency Hiding", as register
-writes) and the uncompressed bitstream.
+Transparency" (the core's `BLEND`), "Memory Latency Hiding" and the CRT
+look's four, as register writes) and the uncompressed bitstream.
 `scripts/package_core.py --name snes --build-root build/snes --out <dir>`
 assembles that directory from a build. There is no SNES code in the
 firmware; the history of getting there, and the framework facts it relies
@@ -475,10 +490,10 @@ commands (four command words; the ROM and states file sizes are recorded):
   file are cleared, the states file's write-back size follows the last slot
   in use), a request can take its slot from register 0x0018, and a request
   the game never services times out after 5 s.
-* Config bit 2 selects the latency-hiding mode per cartridge type, colors
-  pass through the color correction until a table is loaded, and the host's
-  SRAM window takes 32-bit words (`SramHostAdapter`, two 16-bit accesses
-  each), since an external core's files are always transferred that way.
+* Config bit 2 selects the latency-hiding mode per cartridge type, and the
+  host's SRAM window takes 32-bit words (`SramHostAdapter`, two 16-bit
+  accesses each), since an external core's files are always transferred that
+  way.
 
 Lost with the driver: user-facing messages for unsupported cartridges and
 save-state failures (an unsupported cartridge shows as a generic core
