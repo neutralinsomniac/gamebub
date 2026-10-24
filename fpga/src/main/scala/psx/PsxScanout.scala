@@ -2,7 +2,7 @@ package psx
 
 import chisel3._
 import chisel3.util._
-import lib.video.ColorRGB
+import lib.video.{ColorRGB, Crt}
 import xilinx.XpmCdcHandshake
 
 object PsxScanout {
@@ -14,8 +14,16 @@ object PsxScanout {
   val PictureWidth = 640
   val HdmiPictureWidth = 720
   val PictureHeight = 480
+  /**
+   * The CRT effect's blur weighs a screen column's own source column by
+   * where its left edge is in it: the horizontal DDA's count (in 1/(the
+   * picture's width) source columns) `* BlurScale >> 9` (`RowMajorBlurScale`
+   * on HDMI), in 256ths.
+   */
+  val BlurScale = math.round(256.0 * 512 / PictureWidth).toInt
+  val RowMajorBlurScale = math.round(256.0 * 512 / HdmiPictureWidth).toInt
   /** Display clock cycles from a request to its color: reading the strip buffer, then the CRT effect. */
-  val Latency = 3 + PsxCrt.Latency
+  val Latency = 3 + Crt.Latency
   /**
    * Screen columns before the picture at which a frame's display state is
    * taken and its first two strips are fetched (a column is about 21 us on
@@ -130,7 +138,7 @@ object PsxScanout {
  * Vertically, the picture is what a TV shows (see `Params.areaHeight`):
  * the lines of the game's vertical display range, black around them.
  *
- * The scaled picture goes through [[PsxCrt]] (scanlines and a mask, as
+ * The scaled picture goes through [[lib.video.Crt]] (scanlines and a mask, as
  * set), which is told where each pixel lies in its source line and column.
  */
 class PsxScanout(simulation: Boolean = false) extends Module {
@@ -153,7 +161,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     /** The core's display state and the CRT effect's settings, in clk1x. */
     val clk1x = Input(Clock())
     val params = Input(new Params)
-    val crt = Input(new PsxCrt.Settings)
+    val crt = Input(new Crt.Settings)
 
     /** The fetcher, in clk3x. */
     val clk3x = Input(Clock())
@@ -293,7 +301,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   val inRows = sourceRowNow >= frame.topRows && pictureRow < frame.rows
   val bufferRow = Mux(frame.bob, pictureRow >> 1, pictureRow)
   // For the CRT effect: the center of the screen row in its source line
-  // (in 960ths of a line; 30ths, PsxCrt.PhasesPerLine, below), and whether
+  // (in 960ths of a line; 30ths, Crt.PhasesPerLine, below), and whether
   // the row above showed another line.
   val rowCenter = (rowAccNow << 1) +& frame.areaHeight
   val lineStart = firstRow || sourceRowNow =/= RegNext(sourceRowNow)
@@ -349,7 +357,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
     color.b := hi(15, 8)
   }
   // Stages 4-6: the CRT effect.
-  val crt = Module(new PsxCrt)
+  val crt = Module(new Crt)
   crt.io.settings := crtSettings
   crt.io.scanlinesAllowed := !frame.bob && frame.areaHeight < PictureHeight.U
   crt.io.columnMajor := io.columnMajor
@@ -360,7 +368,8 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   crt.io.in.lineParity := ShiftRegister(sourceRowNow(0), 3)
   crt.io.in.row := ShiftRegister(io.y, 3)
   crt.io.in.columnStart := ShiftRegister(column.start, 3)
-  crt.io.in.columnPhase := ShiftRegister(Mux(column.inPicture, column.acc, 0.U), 3)
+  val blurScale = Mux(io.columnMajor, BlurScale.U, RowMajorBlurScale.U)
+  crt.io.in.columnWeight := ShiftRegister(Mux(column.inPicture, (column.acc * blurScale) >> 9, 0.U), 3)
   io.data := crt.io.out
 
   // Underruns: the fetcher's progress (its frame, strips fetched) against
