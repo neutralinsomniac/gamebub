@@ -183,7 +183,7 @@
       "label": "Sharpness",
       "address": "0x20",
       "mask": "0xFFFFFFDF",
-      "default": 0,
+      "default": "0x20",
       "type": "list",
       "items": [
         {

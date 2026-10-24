@@ -126,7 +126,7 @@
       "label": "Sharpness",
       "address": "0x28",
       "mask": "0xFFFFFFDF",
-      "default": 0,
+      "default": "0x20",
       "type": "list",
       "items": [
         { "label": "Sharp", "value": 0 },
