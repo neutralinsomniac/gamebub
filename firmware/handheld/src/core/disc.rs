@@ -11,11 +11,20 @@
 //! the first two seconds are track 1's pregap. Sectors that are not in any
 //! file (that pregap, a `PREGAP` in the sheet, beyond the lead-out) read as
 //! zeros.
+//!
+//! The SD card has room for only a few open files (`max_files` where it is
+//! mounted), and a cue sheet can name a file per track, so the image's files
+//! are opened as the core reads them: the first stays open once opened (on a
+//! PlayStation disc it holds the data track, and as the largest file it is
+//! the slowest to open: fast seek maps all its clusters then), and the others
+//! take turns in one more. After a seek, the core asks for its first sector
+//! when the seek starts, so opening a file overlaps the drive's seek time.
 
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 pub const SECTOR_SIZE: usize = 2352;
@@ -39,7 +48,10 @@ struct Track {
 }
 
 pub struct DiscImage {
-    files: Vec<File>,
+    files: Vec<PathBuf>,
+    /// The first file, and one other (by index), once opened.
+    first: Option<File>,
+    other: Option<(usize, File)>,
     tracks: Vec<Track>,
     /// The first sector after the last track.
     lead_out: u32,
@@ -100,7 +112,7 @@ struct Pending {
 /// current file's first sector, `shift` the `PREGAP` sectors inserted so far.
 fn finish_track(
     pending: Option<Pending>,
-    files: &[File],
+    files: &[PathBuf],
     tracks: &mut Vec<Track>,
     file_base: u32,
     shift: &mut u32,
@@ -147,8 +159,7 @@ impl DiscImage {
         if is_cue {
             Self::open_cue(path)
         } else {
-            let file = File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let sectors = Self::sectors(&file, path)?;
+            let sectors = Self::sectors(path)?;
             let track = Track {
                 number: 1,
                 audio: false,
@@ -160,16 +171,17 @@ impl DiscImage {
                 file_sector: 0,
             };
             Ok(DiscImage {
-                files: vec![file],
+                files: vec![path.to_path_buf()],
+                first: None,
+                other: None,
                 tracks: vec![track],
                 lead_out: FIRST_LBA + sectors,
             })
         }
     }
 
-    fn sectors(file: &File, path: &Path) -> Result<u32, String> {
-        let size = file
-            .metadata()
+    fn sectors(path: &Path) -> Result<u32, String> {
+        let size = std::fs::metadata(path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .len();
         if size == 0 || size % SECTOR_SIZE as u64 != 0 {
@@ -191,7 +203,7 @@ impl DiscImage {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let dir = path.parent().unwrap_or(Path::new("/"));
 
-        let mut files: Vec<File> = Vec::new();
+        let mut files: Vec<PathBuf> = Vec::new();
         let mut tracks: Vec<Track> = Vec::new();
         // The absolute LBA of the current file's first sector, before any
         // PREGAP insertion (`shift` adds those).
@@ -221,13 +233,11 @@ impl DiscImage {
                         return Err(format!("{name}: unsupported file type {kind}"));
                     }
                     let file_path: PathBuf = dir.join(name);
-                    let file = File::open(&file_path)
-                        .map_err(|e| format!("{}: {e}", file_path.display()))?;
                     if !files.is_empty() {
                         file_base += file_sectors;
                     }
-                    file_sectors = Self::sectors(&file, &file_path)?;
-                    files.push(file);
+                    file_sectors = Self::sectors(&file_path)?;
+                    files.push(file_path);
                 }
                 "TRACK" => {
                     finish_track(pending.take(), &files, &mut tracks, file_base, &mut shift)?;
@@ -286,7 +296,7 @@ impl DiscImage {
         }
         last.end = lead_out - 1;
 
-        Ok(DiscImage { files, tracks, lead_out })
+        Ok(DiscImage { files, first: None, other: None, tracks, lead_out })
     }
 
     pub fn log(&self) {
@@ -344,8 +354,32 @@ impl DiscImage {
             return Ok(());
         };
         let sector = track.file_sector + (lba - track.data_start) as u64;
-        let file = &mut self.files[track.file];
+        let file = self.file(track.file)?;
         file.seek(SeekFrom::Start(sector * SECTOR_SIZE as u64))?;
         file.read_exact(buffer)
+    }
+
+    /// File `index`, opened if it is not open yet: the first file stays
+    /// open, and any other replaces the one opened before it.
+    fn file(&mut self, index: usize) -> std::io::Result<&mut File> {
+        let open = |path: &Path| {
+            let start = Instant::now();
+            let file = File::open(path)
+                .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
+            log::info!("Disc: opened file {index} in {} ms", start.elapsed().as_millis());
+            Ok::<_, std::io::Error>(file)
+        };
+        if index == 0 {
+            if self.first.is_none() {
+                self.first = Some(open(&self.files[0])?);
+            }
+            return Ok(self.first.as_mut().unwrap());
+        }
+        if self.other.as_ref().map(|(i, _)| *i) != Some(index) {
+            // Closed first, to free its handle for the next.
+            self.other = None;
+            self.other = Some((index, open(&self.files[index])?));
+        }
+        Ok(&mut self.other.as_mut().unwrap().1)
     }
 }
