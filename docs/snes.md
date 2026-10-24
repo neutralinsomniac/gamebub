@@ -350,7 +350,7 @@ The CRT look is the PSX core's (`lib.video.Crt`: scanlines whose beams widen
 with their lines' brightness, an aperture-grille mask, a soft horizontal
 blur, all in linear light), with the same pause-menu settings (Scanlines,
 CRT Mask, Mask Type, Sharpness; register 0x0028; default 75 % scanlines and a
-25 % magenta / green mask, sharp). It is drawn as the framework scans the
+25 % magenta / green mask, soft). It is drawn as the framework scans the
 framebuffer out: the core's video filter is a `VideoFilterSpatialV0`, which
 the framework tells, with each pixel, where it lies on the scaled frame, so
 `SnesVideoFilter` knows each pixel's frame pixel and which of its 2 x 2

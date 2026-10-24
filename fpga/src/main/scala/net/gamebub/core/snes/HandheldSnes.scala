@@ -965,8 +965,8 @@ class HandheldSnes extends Module with Core {
   val ssSlotReg = RegInit(0.U(2.W))
   /** How the last save / load request ended (register 0x001C, see `SaveStateResult`). */
   val ssResult = RegInit(0.U(3.W))
-  /** The CRT effect's settings (register 0x0028): a 25 % magenta / green mask, 75 % scanlines, sharp (as the PSX's). */
-  val crtReg = RegInit(0x16.U(6.W).asTypeOf(new Crt.Settings))
+  /** The CRT effect's settings (register 0x0028): a 25 % magenta / green mask, 75 % scanlines, soft (as the PSX's). */
+  val crtReg = RegInit(0x36.U(6.W).asTypeOf(new Crt.Settings))
   /** Debug: audio capture running (ring buffer of raw DSP samples). */
   val captureRunReg = RegInit(false.B)
   val captureIndexWire = Wire(UInt(CaptureIndexBits.W))
