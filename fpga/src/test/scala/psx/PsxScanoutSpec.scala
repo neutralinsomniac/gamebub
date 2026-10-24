@@ -3,6 +3,7 @@ package psx
 import chisel3._
 import chisel3.util.{Decoupled, Valid}
 import chisel3.simulator.EphemeralSimulator._
+import lib.video.Crt
 import org.scalatest.freespec.AnyFreeSpec
 
 import scala.collection.mutable
@@ -18,7 +19,7 @@ object PsxScanoutSpec {
       val frameStart = Input(Bool())
       val data = Output(UInt(24.W))
       val params = Input(new PsxScanout.Params)
-      val crt = Input(new PsxCrt.Settings)
+      val crt = Input(new Crt.Settings)
       val fetch = Decoupled(new PsxMemory.DisplayFetch)
       val word = Flipped(Valid(new PsxMemory.DisplayWord))
     })
@@ -82,7 +83,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
     def expand(v: Int): Int = (v << 3) | (v >> 2)
     // The picture: 640 wide from column 80 on the LCD, all of HDMI's 720.
     val (x0, pictureWidth, blurScale) =
-      if (hdmi) (0, PsxScanout.HdmiPictureWidth, PsxCrt.RowMajorBlurScale) else (80, PsxScanout.PictureWidth, PsxCrt.BlurScale)
+      if (hdmi) (0, PsxScanout.HdmiPictureWidth, PsxScanout.RowMajorBlurScale) else (80, PsxScanout.PictureWidth, PsxScanout.BlurScale)
     def checks(x: Int, y: Int): Boolean =
       if (hdmi) x < lineCycles - before && y < lines else x >= 80 && x < 80 + lines && y < rows
     def expected(x: Int, y: Int): Int = source(((x - x0) * mode.width) / pictureWidth, y)
@@ -109,8 +110,8 @@ class PsxScanoutSpec extends AnyFreeSpec {
       val w = ((((x - x0) * mode.width) % pictureWidth) * blurScale) >> 9
       val (left, current) = (if (c > 0) source(c - 1, y) else 0, source(c, y))
       Seq(16, 8, 0).map { s =>
-        val l = PsxCrt.ToLinear((left >> s) & 255) * (256 - w) + PsxCrt.ToLinear((current >> s) & 255) * w
-        PsxCrt.ToGamma(l >> 8) << s
+        val l = Crt.ToLinear((left >> s) & 255) * (256 - w) + Crt.ToLinear((current >> s) & 255) * w
+        Crt.ToGamma(l >> 8) << s
       }.sum
     }
     // With scanlines, the first row of each line (two rows each) blends
@@ -125,9 +126,9 @@ class PsxScanoutSpec extends AnyFreeSpec {
         val phase = 240 >> 5 // the first of a line's two rows
         Seq(16, 8, 0).map { s =>
           val (c, a) = ((expected(x, y) >> s) & 255, (above >> s) & 255)
-          val l = PsxCrt.ToLinear(c) * PsxCrt.CurrentWeights(2)(phase)(c >> 4) +
-            PsxCrt.ToLinear(a) * PsxCrt.PreviousWeights(2)(phase)(a >> 4)
-          PsxCrt.ToGamma(l >> 8) << s
+          val l = Crt.ToLinear(c) * Crt.CurrentWeights(2)(phase)(c >> 4) +
+            Crt.ToLinear(a) * Crt.PreviousWeights(2)(phase)(a >> 4)
+          Crt.ToGamma(l >> 8) << s
         }.sum
       }
 

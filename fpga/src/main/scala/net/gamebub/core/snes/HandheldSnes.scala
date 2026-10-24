@@ -9,11 +9,11 @@ import lib.mem.{MemoryArbiter, MemoryInterface, MemoryMap, PipelineInterfaceBrid
 import lib.mem.sdram.BurstSdramController
 import lib.mem.sram.AsyncSramController
 import lib.util.ButtonFilter
-import lib.video.ColorCorrection
+import lib.video.Crt
 import net.gamebub.framework.Core
 import net.gamebub.framework.interface._
 import snes.{SaveStateMemoryPort, SnesCore, SnesCoreConfig, SnesJoypad}
-import xilinx.{BUFG, BUFGCE, MMCM, PLL}
+import xilinx.{BUFG, BUFGCE, MMCM, PLL, XpmCdcHandshake}
 
 object HandheldSnes {
   /**
@@ -574,9 +574,8 @@ object HandheldSnes {
  *  - BRAM:  VRAM (2 x 32 KiB), ARAM (64 KiB)
  *
  * Host windows (from the MCU): the registers below at 0x0xxx_xxxx, the
- * SDRAM at 0x3xxx_xxxx, the SRAM at 0x4xxx_xxxx, the color correction at
- * 0x5xxx_xxxx and the framework's command interface at 0xF0xx_xxxx, like
- * the other cores. Registers:
+ * SDRAM at 0x3xxx_xxxx, the SRAM at 0x4xxx_xxxx and the framework's
+ * command interface at 0xF0xx_xxxx, like the other cores. Registers:
  *  - 0x0000 config: bit 0 PAL, bit 1 BLEND (hi-res pseudo-transparency),
  *           bit 2 latency hiding in the mode that is safe for the cartridge
  *           type in ROM_TYPE, bit 7 Super FX RAM latency hiding, bit 8
@@ -624,6 +623,9 @@ object HandheldSnes {
  *           progress (or none), 1 done, 2 a load of a slot holding no state,
  *           3 given up after 5 s, 4 save states unavailable; a request
  *           clears it (see `SaveStateResult`).
+ *  - 0x0028 the CRT effect (see `Crt.Settings`): bits 1:0 scanlines (off,
+ *           50 / 75 / 100 %), bits 3:2 the mask (off, 25 / 50 / 75 %), bit 4
+ *           its pattern (RGB stripes, magenta / green), bit 5 soft.
  *  - 0x0100 status (read-only): bit 0 HIGH_RES, bit 1 V224_MODE, bit 2 INTERLACE,
  *           bit 3 FIELD, bit 4 GSU_ACTIVE, bit 5 TURBO_ALLOW, bit 6 SS_AVAIL
  *           (the cartridge type supports save states), bit 7 SS_BUSY (the
@@ -685,11 +687,12 @@ class HandheldSnes extends Module with Core {
       colorDepthB = 5,
       framePeriod = FramePeriod,
     )
-    val videoFilter = new VideoFilterBasicV0(
+    val videoFilter = new VideoFilterSpatialV0(
       colorInDepthR = 5,
       colorInDepthG = 5,
       colorInDepthB = 5,
-      latency = 3,
+      latency = SnesVideoFilter.Latency,
+      scale = SnesVideoFilter.Scale,
     )
     val audio = new AudioV0()
     val host = new HostV0()
@@ -962,13 +965,14 @@ class HandheldSnes extends Module with Core {
   val ssSlotReg = RegInit(0.U(2.W))
   /** How the last save / load request ended (register 0x001C, see `SaveStateResult`). */
   val ssResult = RegInit(0.U(3.W))
+  /** The CRT effect's settings (register 0x0028): a 25 % magenta / green mask, 75 % scanlines, sharp (as the PSX's). */
+  val crtReg = RegInit(0x16.U(6.W).asTypeOf(new Crt.Settings))
   /** Debug: audio capture running (ring buffer of raw DSP samples). */
   val captureRunReg = RegInit(false.B)
   val captureIndexWire = Wire(UInt(CaptureIndexBits.W))
 
   val registerInterface = Wire(new MemoryInterface(addressWidth = 16, dataWidth = 32))
   val captureInterface = Wire(new MemoryInterface(addressWidth = 20, dataWidth = 32))
-  val colorCorrectInterface = Wire(new MemoryInterface(addressWidth = 16, dataWidth = 16))
   val commandInterface = Wire(new MemoryInterface(addressWidth = 16, dataWidth = 32))
   val memoryMap = MemoryMap(
     addressWidth = 32,
@@ -978,7 +982,6 @@ class HandheldSnes extends Module with Core {
     ) ++ (if (debugAudio) Seq(0x1.U(4.W) -> captureInterface) else Seq()) ++ Seq(
       0x3.U(4.W) -> sdramHost,
       0x4.U(4.W) -> sramHost,
-      0x5.U(4.W) -> colorCorrectInterface,
       0xF0.U(8.W) -> commandInterface,
     ))
   io.host.mem.unsafe :<>= memoryMap.unsafe
@@ -1008,6 +1011,7 @@ class HandheldSnes extends Module with Core {
         })),
       0x0018 -> RegisterMap.Entry.rw(ssSlotReg),
       0x001C -> RegisterMap.Entry.r(ssResult),
+      0x0028 -> RegisterMap.Entry.rw(crtReg),
       0x0030 -> RegisterMap.Entry.r(romInfoWire),
       0x0100 -> RegisterMap.Entry.r(statusWire),
     ) ++ (if (debugAudio) Seq(
@@ -2031,14 +2035,16 @@ class HandheldSnes extends Module with Core {
     io.sdram.dataDir := sdram.io.signals.dataDir
   }
 
-  // Video filter (color correction). The SNES outputs 15-bit RGB and wants
-  // none: colors pass through until a host loads a table (the firmware
-  // loads none for an external core).
-  ColorCorrection.setup(
-    clock = clock,
-    reset = reset,
-    videoFilter = io.videoFilter,
-    memInterface = colorCorrectInterface,
-    passThroughUntilLoaded = true,
-  )
+  // Video filter: the CRT effect (see `SnesVideoFilter`), in the display
+  // clock domain.
+  val systemClock = clock
+  withClockAndReset (io.videoFilter.clock, io.videoFilter.reset) {
+    val filter = Module(new SnesVideoFilter)
+    filter.io.settings := XpmCdcHandshake.continuous(systemClock, crtReg)
+    filter.io.dataIn := io.videoFilter.dataIn
+    filter.io.x := io.videoFilter.x
+    filter.io.y := io.videoFilter.y
+    filter.io.columnMajor := io.videoFilter.columnMajor
+    io.videoFilter.dataOut := filter.io.dataOut
+  }
 }
