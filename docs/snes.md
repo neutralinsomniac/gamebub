@@ -205,10 +205,10 @@ The memory path is built to keep those stalls rare:
 
 Which accesses may stall the core is chosen per cartridge through config
 register bits; the choice depends on which chips read ROM and BSRAM and
-whether the core exports their sampling instants. The "Memory Latency
-Hiding" setting writes bit 2 alone, which asks the glue for the mode that is
-safe for the cartridge type in `ROM_TYPE`; the mode bits can also be
-written explicitly (over SPI, for experiments).
+whether the core exports their sampling instants. Bit 2 alone, on from
+reset (no setting changes it), asks the glue for the mode that is safe for
+the cartridge type in `ROM_TYPE`; it and the mode bits can be written
+explicitly (over SPI, for experiments).
 
 * *Conservative* (all bits clear): stall while any ROM or BSRAM read is
   outstanding. Correct for every coprocessor; costs a cycle per BSRAM read and
@@ -459,8 +459,8 @@ firmware logs on a pause; `files.json`: the ROM as `.sfc` / `.smc`,
 the `.srm` save file and the `.ss` states file next to it, with their SDRAM /
 SRAM windows and transfer speeds; `settings.json`: "Reset Core", "Save State"
 / "Load State" / "State Slot", "Region" (from the header, or forced), "Pseudo
-Transparency" (the core's `BLEND`), "Memory Latency Hiding" and the CRT
-look's four, as register writes) and the uncompressed bitstream.
+Transparency" (the core's `BLEND`) and the CRT look's four, as register
+writes) and the uncompressed bitstream.
 `scripts/package_core.py --name snes --build-root build/snes --out <dir>`
 assembles that directory from a build. There is no SNES code in the
 firmware; the history of getting there, and the framework facts it relies
