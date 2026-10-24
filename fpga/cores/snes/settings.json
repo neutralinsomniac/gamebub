@@ -132,15 +132,6 @@
         { "label": "Sharp", "value": 0 },
         { "label": "Soft", "value": "0x20" }
       ]
-    },
-    {
-      "id": 3,
-      "label": "Memory Latency Hiding",
-      "address": "0x0",
-      "mask": "0xFFFFFFFB",
-      "default": 4,
-      "type": "checkbox",
-      "value": 4
     }
   ]
 }

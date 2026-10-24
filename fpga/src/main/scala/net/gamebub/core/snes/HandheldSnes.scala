@@ -578,7 +578,7 @@ object HandheldSnes {
  * command interface at 0xF0xx_xxxx, like the other cores. Registers:
  *  - 0x0000 config: bit 0 PAL, bit 1 BLEND (hi-res pseudo-transparency),
  *           bit 2 latency hiding in the mode that is safe for the cartridge
- *           type in ROM_TYPE, bit 7 Super FX RAM latency hiding, bit 8
+ *           type in ROM_TYPE (on from reset), bit 7 Super FX RAM latency hiding, bit 8
  *           Super FX ROM latency hiding (experimental, unsafe), bit 9 SA-1 ROM
  *           latency hiding, bit 10 SA-1 BW-RAM latency hiding (see the stall
  *           control below and the `configReg` fields), bit 11 ROM early
@@ -810,9 +810,9 @@ class HandheldSnes extends Module with Core {
   // Host registers
   //////////////////////////////////
   // N.B. the last field is bit 0 of the register. Reset value: both halves
-  // of the ROM miss path on (bits 11 and 12), which the settings do not
-  // touch.
-  val configReg = RegInit(0x1800.U(16.W).asTypeOf(new Bundle {
+  // of the ROM miss path on (bits 11 and 12) and latency hiding (bit 2),
+  // which the settings do not touch.
+  val configReg = RegInit(0x1804.U(16.W).asTypeOf(new Bundle {
     /**
      * Bit 15: region from the ROM header (`headerPal`, set by the glue's
      * header analysis) instead of bit 0. Lets a settings descriptor offer
@@ -1490,8 +1490,9 @@ class HandheldSnes extends Module with Core {
   // Config bit 2 asks for hiding in whatever mode is safe for the loaded
   // cartridge (ROM_TYPE bits 7:4 name the coprocessor: 0x7 Super FX, 0x6
   // SA-1, 0x4 CX4); bits 7, 9 and 10 select the coprocessor modes directly
-  // and bit 8 (unsafe) is only ever explicit. The "Memory Latency Hiding"
-  // setting writes bit 2; the explicit bits are for experiments over SPI.
+  // and bit 8 (unsafe) is only ever explicit. Bit 2 is on from reset (no
+  // setting changes it); it and the explicit bits are for experiments over
+  // SPI.
   val romChip = romTypeReg(7, 4)
   val chipGsu = romChip === 0x7.U
   val chipSa1 = romChip === 0x6.U
