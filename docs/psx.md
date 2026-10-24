@@ -17,10 +17,13 @@ is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
 * Disc swapping from the pause menu
 * Digital, Analog and DualShock controllers, with rumble
 * CRT look: scanlines, mask, soft horizontal blur
+* TV output through the Game Bub Dock (720 x 480 at 4:3, with the CRT look as set); the dock's gamepads work as
+  the handheld's buttons
 
 ## Not supported
 
-* HDMI output
+* The dock gamepads' analog sticks (the left one works as the D-pad), own L2 / R2 (Select + L / R work) and rumble
+* 50 Hz TV output: PAL games run on the dock's 60 Hz output, every fifth frame shown twice
 * `.iso`, CHD and libcrypt-protected discs (`.sbi`)
 * Board revisions before 4 (the core uses both SDRAM chips)
 

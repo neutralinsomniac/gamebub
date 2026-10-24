@@ -20,15 +20,16 @@ import lib.video.ColorRGB
  * counters). A core centering its picture on the `screenWidth` x
  * `screenHeight` screen gets the placement the framework gives a
  * [[VideoV0]] frame (the screen offset of the display revision is already
- * applied).
+ * applied). The LCD's pixels are square; HDMI's 720 x 480 is shown at 4:3
+ * (CEA-861 format 2), its pixels narrower.
  *
  * The scan order depends on the output: with `columnMajor` (the handheld's
  * LCD, which is mounted rotated) the screen is scanned column by column
  * (`y` counts up within a scan line, `x` advances from one line to the
  * next); without it (HDMI) row by row. A core that has to fetch its pixels
- * ahead of time uses it to know what comes next. `frameStart` pulses in
- * the first cycle of a frame's vertical blanking, before its first visible
- * line.
+ * ahead of time uses it to know what comes next. `frameStart` pulses once
+ * in a frame's vertical blanking, before its first visible line (on the
+ * LCD with its vertical sync, on HDMI a line before the picture).
  *
  * Frame pacing: `vblank` (in the core's system clock domain) is the core's
  * vertical blanking, as for [[VideoV0]]; its rising edge counts as a frame

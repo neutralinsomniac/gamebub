@@ -35,12 +35,20 @@ object PsxCrt {
   /** Bits of a channel in linear light (see [[ToLinear]]). */
   val LinearBits = 12
   val LinearMax = (1 << LinearBits) - 1
-  /** The unit of `Pixel.columnPhase`: the scanout's horizontal DDA counts 640ths of a source column. */
-  val ColumnPhases = 640
-  /** The blur's weight of a pixel's own source column, in 256ths: `columnPhase * BlurScale >> 9`. */
+  /**
+   * The unit of `Pixel.columnPhase`: the scanout's horizontal DDA counts in
+   * 1/(the picture's width) source columns: 640ths on the LCD (scanned
+   * column by column), 720ths on HDMI (row by row).
+   */
+  val ColumnPhases = PsxScanout.PictureWidth
+  val RowMajorColumnPhases = PsxScanout.HdmiPictureWidth
+  /** The blur's weight of a pixel's own source column, in 256ths: `columnPhase * BlurScale >> 9` (`RowMajorBlurScale` on HDMI). */
   val BlurScale = math.round(256.0 * 512 / ColumnPhases).toInt
-  /** Screen rows (the blur's buffer holds a pixel pair for each). */
+  val RowMajorBlurScale = math.round(256.0 * 512 / RowMajorColumnPhases).toInt
+  /** Screen rows (column-major, the blur's buffer holds a pixel pair for each). */
   val Rows = 480
+  /** Entries of the buffer across the scan: a pixel pair per screen row (column-major), or a pixel per screen column for each of two lines (row-major). */
+  val BufferEntries = 2048
 
   /** The user's settings (register 0x0020). N.B. the last field is bit 0. */
   class Settings extends Bundle {
@@ -66,7 +74,16 @@ object PsxCrt {
     val value = Vec(3, UInt(8.W))
   }
 
-  /** A pixel of the scaled picture, in the order the LCD scans them: down each screen column. */
+  /** A source line's pixel as its beam needs it: its light, and its brightness (for the beam's width, see `beamWeights`). */
+  class BeamPixel extends Bundle {
+    val light = Vec(3, UInt(LinearBits.W))
+    val brightness = Vec(3, UInt(BrightnessBits.W))
+  }
+
+  /**
+   * A pixel of the scaled picture, in the order the screen is scanned: down
+   * each screen column (column-major: the LCD), or along each row (HDMI).
+   */
   class Pixel extends Bundle {
     val color = ColorRGB(8, 8, 8)
     /** The screen column (for the mask). */
@@ -77,13 +94,15 @@ object PsxCrt {
      * past the line's end when the line is less than a row tall).
      */
     val phase = UInt(6.W)
-    /** The first pixel of its source line in the column: the one before it showed the previous line (or none). */
+    /** Column-major: the first pixel of its source line in the column: the one before it showed the previous line (or none). */
     val lineStart = Bool()
+    /** Row-major: the parity of its source line (the half of the line buffer the line goes to). */
+    val lineParity = UInt(1.W)
     /** The screen row (from [[Rows]] on, the blanking). */
     val row = UInt(10.W)
     /** The pixel's screen column starts a source column: the screen column before it showed the previous one (or none). */
     val columnStart = Bool()
-    /** Where the screen column's left edge is in its source column, in 1/[[ColumnPhases]] columns. */
+    /** Where the screen column's left edge is in its source column, in 1/[[ColumnPhases]] (or [[RowMajorColumnPhases]]) columns. */
     val columnPhase = UInt(10.W)
   }
 
@@ -166,15 +185,14 @@ object PsxCrt {
  * Scanlines: each source line is drawn as a beam [[PsxCrt.BeamCenter]]
  * lines below its top, which gets darker away from its center (see
  * `beam`), and a screen row shows the beams of its own line and the
- * previous one (the pixel before it in its column, as the LCD scans). A
- * beam is wider the brighter its line is, in each color (see
- * [[PsxCrt.BrightFill]]). In 240-line modes, the second row of each line is
- * its beam, at full brightness, and the first lies halfway between two:
- * the two lines blended, darker by the strength for black lines, less for
- * bright ones. With 288 lines (PAL), the rows fall at
- * other distances from the beams; the next line's beam is left out, which
- * makes the rows past a beam a little darker. Not in 480-line modes
- * (`scanlinesAllowed` low), where each line is a row of its own.
+ * previous one. A beam is wider the brighter its line is, in each color
+ * (see [[PsxCrt.BrightFill]]). In 240-line modes, the second row of each
+ * line is its beam, at full brightness, and the first lies halfway between
+ * two: the two lines blended, darker by the strength for black lines, less
+ * for bright ones. With 288 lines (PAL), the rows fall at other distances
+ * from the beams; the next line's beam is left out, which makes the rows
+ * past a beam a little darker. Not in 480-line modes (`scanlinesAllowed`
+ * low), where each line is a row of its own.
  *
  * Mask: the phosphor stripes of an aperture grille, by screen column:
  * red, green and blue, or magenta and green; the other colors in a column
@@ -185,10 +203,18 @@ object PsxCrt {
  * column with the one to its left, by where its left edge is in its own (a
  * linear blend, which moves the picture right by about a screen column),
  * as a TV blurs its composite signal; source pixels of uneven width (256
- * or 368 of them across the picture) come out even. As the LCD scans
- * columns, the source column to the left was scanned a screen column or
- * more ago: a buffer of the screen's rows keeps, for each, the last screen
- * column's source pixel and the one of the source column before it.
+ * or 368 of them across the picture) come out even.
+ *
+ * The neighbors these need come from the scan, or from a buffer across it.
+ * Column-major (the LCD scans down each screen column), the previous line's
+ * pixel is the one before in the scan, and the source column to the left
+ * was scanned a screen column or more ago: the buffer keeps, for each
+ * screen row, the last screen column's source pixel and the one of the
+ * source column before it. Row-major (HDMI), the source column to the left
+ * is the one before in the scan, and the buffer keeps the previous line's
+ * pixels (blurred, as its beam needs them), for each screen column: it
+ * holds two lines, one in each half by their parity, so that every row of
+ * a line finds the line before it in the other half.
  */
 class PsxCrt extends Module {
   import PsxCrt._
@@ -197,6 +223,8 @@ class PsxCrt extends Module {
     val settings = Input(new Settings)
     /** Scanlines may be drawn: a source line spans more than one screen row. */
     val scanlinesAllowed = Input(Bool())
+    /** The scan order: down each screen column (the LCD), or (low) along each row (HDMI). */
+    val columnMajor = Input(Bool())
     val in = Input(new Pixel)
     /** The pixel's color, [[PsxCrt.Latency]] cycles later. */
     val out = Output(ColorRGB(8, 8, 8))
@@ -210,23 +238,30 @@ class PsxCrt extends Module {
   val maskWeights = VecInit(MaskWeights.flatten.flatten.map(ws => VecInit(ws.map(_.U(10.W)))))
   val maskWeight = maskWeights(Cat(io.settings.maskPattern, maskColumn(1, 0), io.settings.mask))
 
-  // Stage 1: the row's pixels from the buffer, and the source column to
-  // the left (the stored current one, if a source column starts here).
-  val rowPixels = SRAM(512, new RowPixels, numReadPorts = 1, numWritePorts = 1, numReadwritePorts = 0)
-  rowPixels.readPorts(0).enable := true.B
-  rowPixels.readPorts(0).address := io.in.row(8, 0)
+  // The buffer across the scan: column-major, a row's pixel pair (written
+  // and read in stage 1); row-major, a line's pixel in a column (stage 3,
+  // read a stage before).
+  val bufferBits = (new RowPixels).getWidth.max((new BeamPixel).getWidth)
+  val buffer = SRAM(BufferEntries, UInt(bufferBits.W), numReadPorts = 1, numWritePorts = 1, numReadwritePorts = 0)
+  buffer.readPorts(0).enable := true.B
+
+  // Stage 1: the source column to the left (the stored current one, if a
+  // source column starts here): column-major, the row's pixels from the
+  // buffer; row-major, the last pixel's.
   val color1 = RegNext(io.in.color)
   val row1 = RegNext(io.in.row)
   val columnStart1 = RegNext(io.in.columnStart)
-  val blurWeight1 = RegNext(Mux(io.settings.blur === 1.U, (io.in.columnPhase * BlurScale.U) >> 9, 256.U(9.W)))
-  val stored = rowPixels.readPorts(0).data
-  // (Black in the blanking, as the pixels there are: the buffer's address
-  // is the row's low bits.)
+  val blurScale = Mux(io.columnMajor, BlurScale.U, RowMajorBlurScale.U)
+  val blurWeight1 = RegNext(Mux(io.settings.blur === 1.U, (io.in.columnPhase * blurScale) >> 9, 256.U(9.W)))
+  val lastPixels = Reg(new RowPixels)
+  val stored = Mux(io.columnMajor, buffer.readPorts(0).data.asTypeOf(new RowPixels), lastPixels)
+  // (Black in the blanking, as the pixels there are: column-major, the
+  // buffer's address is the row's low bits.)
   val left1 = Mux(row1 >= Rows.U, 0.U.asTypeOf(stored.current), Mux(columnStart1, stored.current, stored.previous))
-  rowPixels.writePorts(0).enable := row1 < Rows.U
-  rowPixels.writePorts(0).address := row1(8, 0)
-  rowPixels.writePorts(0).data.previous := left1
-  rowPixels.writePorts(0).data.current := color1
+  val pixels1 = Wire(new RowPixels)
+  pixels1.previous := left1
+  pixels1.current := color1
+  lastPixels := pixels1
 
   // Stage 2: into linear light.
   val toLinear = VecInit(ToLinear.map(_.U(LinearBits.W)))
@@ -249,27 +284,50 @@ class PsxCrt extends Module {
     pixel3.light(i) := blend(left2.light(i), current2.light(i), LinearBits)
     pixel3.value(i) := blend(left2.value(i), current2.value(i), 8)
   }
+  def brightness(value: UInt): UInt = value(7, 8 - BrightnessBits)
+  val beam3 = Wire(new BeamPixel)
+  beam3.light := pixel3.light
+  beam3.brightness := VecInit(pixel3.value.map(brightness))
   val lineStart3 = delayed(io.in.lineStart, 3)
+  // Row-major: the previous line's pixel in this column, from the other
+  // half of the buffer.
+  val lineParity2 = delayed(io.in.lineParity, 2)
+  val above3 = buffer.readPorts(0).data.asTypeOf(new BeamPixel)
 
-  // Stage 4: the previous source line's pixel: the last one when a line
-  // starts, kept for the rest of it.
-  val last = RegNext(pixel3)
-  val previousLine = Reg(new LinePixel)
+  // The buffer's port, by scan order.
+  val lineParity3 = delayed(io.in.lineParity, 3)
+  val column3 = delayed(io.in.column, 3)
+  when (io.columnMajor) {
+    buffer.readPorts(0).address := io.in.row(8, 0)
+    buffer.writePorts(0).enable := row1 < Rows.U
+    buffer.writePorts(0).address := row1(8, 0)
+    buffer.writePorts(0).data := pixels1.asUInt
+  } .otherwise {
+    buffer.readPorts(0).address := Cat(~lineParity2, delayed(io.in.column, 2))
+    buffer.writePorts(0).enable := true.B
+    buffer.writePorts(0).address := Cat(lineParity3, column3)
+    buffer.writePorts(0).data := beam3.asUInt
+  }
+
+  // Stage 4: the previous source line's pixel: column-major, the last one
+  // when a line starts, kept for the rest of it; row-major, from the
+  // buffer.
+  val last = RegNext(beam3)
+  val previousLine = Reg(new BeamPixel)
   when (lineStart3) {
     previousLine := last
   }
-  val current4 = RegNext(pixel3)
-  val previous4 = RegNext(Mux(lineStart3, last, previousLine))
+  val current4 = RegNext(beam3)
+  val previous4 = RegNext(Mux(io.columnMajor, Mux(lineStart3, last, previousLine), above3))
   val phase4 = delayed(io.in.phase, 4)
   val strength4 = delayed(strength, 4)
 
   // Stage 5: the beams' weights, by their lines' brightness (ROMs, from the
   // registers above).
-  def brightness(value: UInt): UInt = value(7, 8 - BrightnessBits)
   val currentWeights = VecInit(CurrentWeights.flatten.flatten.map(_.U(9.W)))
   val previousWeights = VecInit(PreviousWeights.flatten.flatten.map(_.U(9.W)))
-  val currentWeight5 = current4.value.map(v => RegNext(currentWeights(Cat(strength4, phase4, brightness(v)))))
-  val previousWeight5 = previous4.value.map(v => RegNext(previousWeights(Cat(strength4, phase4, brightness(v)))))
+  val currentWeight5 = current4.brightness.map(b => RegNext(currentWeights(Cat(strength4, phase4, b))))
+  val previousWeight5 = previous4.brightness.map(b => RegNext(previousWeights(Cat(strength4, phase4, b))))
   val current5 = RegNext(current4.light)
   val previous5 = RegNext(previous4.light)
 
