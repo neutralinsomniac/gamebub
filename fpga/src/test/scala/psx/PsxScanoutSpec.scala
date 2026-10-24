@@ -9,8 +9,8 @@ import scala.collection.mutable
 import scala.util.Random
 
 object PsxScanoutSpec {
-  /** The scanout with its fetcher on the test's clock and the display clock at a quarter of it. */
-  class Harness extends Module {
+  /** The scanout with its fetcher on the test's clock and the display clock at a quarter of it; the LCD's scan or (`hdmi`) HDMI's. */
+  class Harness(hdmi: Boolean) extends Module {
     val io = IO(new Bundle {
       val phase = Output(UInt(2.W))
       val x = Input(UInt(10.W))
@@ -31,8 +31,8 @@ object PsxScanoutSpec {
     val scanout = withClockAndReset(displayClock.asClock, reset) { Module(new PsxScanout(simulation = true)) }
     scanout.io.x := io.x
     scanout.io.y := io.y
-    scanout.io.screenWidth := 800.U
-    scanout.io.columnMajor := true.B
+    scanout.io.screenWidth := (if (hdmi) 720 else 800).U
+    scanout.io.columnMajor := (!hdmi).B
     scanout.io.frameStart := io.frameStart
     io.data := scanout.io.data.asUInt
     scanout.io.clk1x := clock
@@ -47,10 +47,11 @@ object PsxScanoutSpec {
 
 /**
  * Scans a frame out of a random VRAM (served by a model of the memory's
- * display port) as the LCD does, column by column, and compares every
- * pixel with the picture computed here: scaling, the strips and their
- * fetches, VRAM wrap-around, 15- and 24-bit color, and in 480-line modes
- * the field's rows shown twice (and only they fetched).
+ * display port) as the LCD does, column by column, or HDMI, row by row,
+ * and compares every pixel with the picture computed here: scaling, the
+ * strips (or lines) and their fetches, VRAM wrap-around, 15- and 24-bit
+ * color, and in 480-line modes the field's rows shown twice (and only they
+ * fetched).
  */
 class PsxScanoutSpec extends AnyFreeSpec {
   import PsxScanoutSpec._
@@ -67,16 +68,24 @@ class PsxScanoutSpec extends AnyFreeSpec {
   }
 
   /**
-   * `lineCycles` display cycles per screen column, the first `before` of
-   * them blanking (the driver's row counter, `counterBits` wide, counts up
-   * to 0 through them).
+   * `lines` scan lines of `lineCycles` display cycles, the first `before`
+   * of them blanking: for the LCD, screen columns from 79, the driver's row
+   * counter (`counterBits` wide) counting up to 0 through the blanking,
+   * rows up to `rows` checked; for HDMI (`hdmi`), screen rows from 0, the
+   * column counting up to 0 through the blanking (10 bits).
    */
-  def run(mode: Mode, lineCycles: Int, rows: Int, lines: Int, seed: Int, before: Int = 7, counterBits: Int = 9): Unit = {
+  def run(mode: Mode, lineCycles: Int, rows: Int, lines: Int, seed: Int, before: Int = 7, counterBits: Int = 9,
+          hdmi: Boolean = false): Unit = {
     val rng = new Random(seed)
     val vram = Array.fill(512 * 2048)(rng.nextInt(256)) // bytes
     def byte(line: Int, b: Int): Int = vram((line & 511) * 2048 + (b & 2047))
     def expand(v: Int): Int = (v << 3) | (v >> 2)
-    def expected(x: Int, y: Int): Int = source(((x - 80) * mode.width) / 640, y)
+    // The picture: 640 wide from column 80 on the LCD, all of HDMI's 720.
+    val (x0, pictureWidth, blurScale) =
+      if (hdmi) (0, PsxScanout.HdmiPictureWidth, PsxCrt.RowMajorBlurScale) else (80, PsxScanout.PictureWidth, PsxCrt.BlurScale)
+    def checks(x: Int, y: Int): Boolean =
+      if (hdmi) x < lineCycles - before && y < lines else x >= 80 && x < 80 + lines && y < rows
+    def expected(x: Int, y: Int): Int = source(((x - x0) * mode.width) / pictureWidth, y)
     /** Source column `c` at screen row `y`. */
     def source(c: Int, y: Int): Int = {
       val shown = (y * mode.height) / 480 - mode.top
@@ -96,8 +105,8 @@ class PsxScanoutSpec extends AnyFreeSpec {
     // Soft, each screen column blends the source column to its left (black
     // left of the first) and its own, by where its left edge is in its own.
     def soft(x: Int, y: Int): Int = {
-      val c = ((x - 80) * mode.width) / 640
-      val w = ((((x - 80) * mode.width) % 640) * PsxCrt.BlurScale) >> 9
+      val c = ((x - x0) * mode.width) / pictureWidth
+      val w = ((((x - x0) * mode.width) % pictureWidth) * blurScale) >> 9
       val (left, current) = (if (c > 0) source(c - 1, y) else 0, source(c, y))
       Seq(16, 8, 0).map { s =>
         val l = PsxCrt.ToLinear((left >> s) & 255) * (256 - w) + PsxCrt.ToLinear((current >> s) & 255) * w
@@ -122,7 +131,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
         }.sum
       }
 
-    simulate(new Harness) { dut =>
+    simulate(new Harness(hdmi)) { dut =>
       dut.reset.poke(true.B)
       dut.clock.step(8)
       dut.reset.poke(false.B)
@@ -152,16 +161,29 @@ class PsxScanoutSpec extends AnyFreeSpec {
 
       // The scan: (x, y, frameStart) per display cycle; requests checked `Latency` cycles later.
       val scan = mutable.ArrayBuffer[(Int, Int, Boolean)]()
-      scan += ((0, 600, true))
-      // The column where the frame's state is taken, then the first strips' fetches.
-      for (_ <- 0 until 2500) scan += ((80 - PsxScanout.LatchColumns, 600, false))
-      // A whole column before the picture (black, into the blur's buffer).
-      for (x <- 79 until 80 + lines) {
-        for (i <- 0 until lineCycles) {
-          // As the driver: a counter starting a few pixels before 0.
-          val y = (i - before + (1 << counterBits)) % (1 << counterBits)
-          scan += ((x, y, false))
+      if (!hdmi) {
+        scan += ((0, 600, true))
+        // The column where the frame's state is taken, then the first strips' fetches.
+        for (_ <- 0 until 2500) scan += ((80 - PsxScanout.LatchColumns, 600, false))
+        // A whole column before the picture (black, into the blur's buffer).
+        for (x <- 79 until 80 + lines) {
+          for (i <- 0 until lineCycles) {
+            // As the driver: a counter starting a few pixels before 0.
+            val y = (i - before + (1 << counterBits)) % (1 << counterBits)
+            scan += ((x, y, false))
+          }
         }
+      } else {
+        // As the framework: the row moves on at the start of the blanking,
+        // the column counts up to 0 through it.
+        def row(y: Int, frameStart: Boolean): Unit =
+          for (i <- 0 until lineCycles) scan += (((i - before + 1024) % 1024, y, frameStart && i == 0))
+        // A frame start, for the blanking rows after it (black, into the CRT
+        // effect's line buffer), then the picture's, a row before it.
+        row(519, frameStart = true)
+        for (y <- 520 until 524) row(y, frameStart = false)
+        row(524, frameStart = true)
+        for (y <- 0 until lines) row(y, frameStart = false)
       }
       for (_ <- 0 until 10) scan += ((800, 600, false))
 
@@ -176,7 +198,7 @@ class PsxScanoutSpec extends AnyFreeSpec {
           // Output of this display cycle: the request from `Latency` cycles ago.
           if (history.size == PsxScanout.Latency) {
             val (x, y) = history.dequeue()
-            if (x >= 80 && x < 80 + lines && y < rows) {
+            if (checks(x, y)) {
               val got = dut.io.data.peek().litValue.toInt
               val e = onScreen(x, y)
               checked += 1
@@ -285,5 +307,40 @@ class PsxScanoutSpec extends AnyFreeSpec {
 
   "PAL 576-line window, 512 rows from VRAM" in {
     run(Mode(offsetX = 10, offsetY = 0, width = 512, height = 576, depth24 = false, top = 32, picture = 512), lineCycles = 500, rows = 480, lines = 40, seed = 6)
+  }
+
+  "HDMI: 320 x 240, 15-bit, odd x offset, wrapping VRAM lines" in {
+    run(Mode(offsetX = 3, offsetY = 500, width = 320, height = 240, depth24 = false), lineCycles = 230, rows = 0, lines = 40,
+      seed = 21, before = 30, hdmi = true)
+  }
+
+  "HDMI: 368 x 240, 24-bit, wrapping at the end of the VRAM line" in {
+    run(Mode(offsetX = 900, offsetY = 10, width = 368, height = 240, depth24 = true), lineCycles = 230, rows = 0, lines = 40,
+      seed = 22, before = 30, hdmi = true)
+  }
+
+  "HDMI: 640 x 480, 24-bit, whole rows" in {
+    run(Mode(offsetX = 5, offsetY = 7, width = 640, height = 480, depth24 = true), lineCycles = 750, rows = 0, lines = 12,
+      seed = 23, before = 30, hdmi = true)
+  }
+
+  "HDMI: 320 x 240 window, a 224-line display range, 75 % scanlines" in {
+    run(Mode(offsetX = 0, offsetY = 16, width = 320, height = 240, depth24 = false, top = 8, picture = 224, scanlines = true),
+      lineCycles = 230, rows = 0, lines = 40, seed = 24, before = 30, hdmi = true)
+  }
+
+  "HDMI: 368 x 240, 24-bit, soft" in {
+    run(Mode(offsetX = 900, offsetY = 10, width = 368, height = 240, depth24 = true, soft = true), lineCycles = 230, rows = 0,
+      lines = 30, seed = 25, before = 30, hdmi = true)
+  }
+
+  "HDMI: 640 x 480 bob, field 1, 15-bit, odd x offset" in {
+    run(Mode(offsetX = 3, offsetY = 5, width = 640, height = 480, depth24 = false, bob = true, field = 1), lineCycles = 230,
+      rows = 0, lines = 40, seed = 26, before = 30, hdmi = true)
+  }
+
+  "HDMI: PAL 576-line window, 512 rows from VRAM" in {
+    run(Mode(offsetX = 10, offsetY = 0, width = 512, height = 576, depth24 = false, top = 32, picture = 512), lineCycles = 230,
+      rows = 0, lines = 60, seed = 27, before = 30, hdmi = true)
   }
 }
