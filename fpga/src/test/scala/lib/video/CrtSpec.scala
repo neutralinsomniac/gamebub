@@ -1,27 +1,28 @@
-package psx
+package lib.video
 
 import chisel3._
 import chisel3.simulator.EphemeralSimulator._
 import org.scalatest.freespec.AnyFreeSpec
+import psx.PsxScanout
 
 import scala.util.Random
 
 /**
- * Feeds [[PsxCrt]] screen columns of a 240-line picture as the scanout
+ * Feeds [[Crt]] screen columns of a 240-line picture as the PSX's scanout
  * does for the LCD (two rows per line, a little blanking before each
  * column) and checks the colors: unchanged with the effect off, the
  * scanlines' dark rows blending the two lines around them, the mask's
  * stripes, the blur's blend of each source column with the one to its
- * left. And rows of it, as for HDMI.
+ * left. And rows of it, as for HDMI. And the SNES's picture, scaled by 2.
  */
-class PsxCrtSpec extends AnyFreeSpec {
+class CrtSpec extends AnyFreeSpec {
   /**
    * A pixel in: color (0xRRGGBB), screen column, phase, first row of its
-   * line, screen row (from 480 on, the blanking), where the screen column
-   * is in its source column, and (row-major) its line's parity.
+   * line, screen row (from 480 on, the blanking), the blur's weight of its
+   * own source column, and (row-major) its line's parity.
    */
   case class In(color: Int, column: Int, phase: Int, lineStart: Boolean, row: Int = 0,
-                columnStart: Boolean = true, columnPhase: Int = 0, lineParity: Int = 0)
+                columnStart: Boolean = true, columnWeight: Int = 0, lineParity: Int = 0)
 
   /** Columns `columns` of a 240-line picture with random lines; each column's pixels and their source lines (-1: blanking). */
   def picture(columns: Seq[Int], seed: Int): Seq[(In, Int, Int)] = {
@@ -69,12 +70,12 @@ class PsxCrtSpec extends AnyFreeSpec {
         }
       }
       val picture = x >= 2
-      val phase = if (picture) acc else 0
+      val weight = if (picture) (acc * PsxScanout.BlurScale) >> 9 else 0
       val blanking = (0 until 5).map(i => Source(In(0, x, 0, lineStart = false, row = 480 + i), -1, 0, 0, 0, 0))
       blanking ++ (0 until rows).map { y =>
         val line = y / 2
         def at(l: Int, column: Int) = if (picture) pixel(l, column) else 0
-        Source(In(at(line, c), x, rowPhase(y), lineStart = y % 2 == 0, row = y, columnStart = start, columnPhase = phase),
+        Source(In(at(line, c), x, rowPhase(y), lineStart = y % 2 == 0, row = y, columnStart = start, columnWeight = weight),
           if (x == 0) -1 else line, at(line, c), at(line, c - 1), at(line - 1, c), at(line - 1, c - 1))
       }
     }
@@ -109,35 +110,36 @@ class PsxCrtSpec extends AnyFreeSpec {
           }
         }
         val picture = x >= 2 && y >= 0
-        val phase = if (x >= 2) acc else 0
+        val weight = if (x >= 2) (acc * PsxScanout.RowMajorBlurScale) >> 9 else 0
         def at(l: Int, column: Int) = if (picture) pixel(l, column) else 0
         Source(In(at(line, c), x, if (y < 0) 0 else rowPhase(y), lineStart = y % 2 == 0, row = row, columnStart = start,
-          columnPhase = phase, lineParity = line & 1),
+          columnWeight = weight, lineParity = line & 1),
           if (y < 0) -1 else line, at(line, c), at(line, c - 1), at(line - 1, c), at(line - 1, c - 1))
       }
     }
   }
 
   /** The whole effect on a pixel, computed here: blur, scanlines, mask (settings as for [[run]]). */
-  def model(settings: (Int, Int, Int), blur: Int, blurScale: Int = PsxCrt.BlurScale)(p: Source): Int = {
+  def model(settings: (Int, Int, Int), blur: Int)(p: Source): Int = {
     val (scanlines, mask, pattern) = settings
-    val w = if (blur == 1) (p.in.columnPhase * blurScale) >> 9 else 256
+    val w = if (blur == 1) p.in.columnWeight else 256
     def blurred(left: Int, current: Int): (Int, Int) =
-      ((PsxCrt.ToLinear(left) * (256 - w) + PsxCrt.ToLinear(current) * w) >> 8, (left * (256 - w) + current * w) >> 8)
+      ((Crt.ToLinear(left) * (256 - w) + Crt.ToLinear(current) * w) >> 8, (left * (256 - w) + current * w) >> 8)
     color((0 until 3).map { i =>
       val (light, value) = blurred(channels(p.left)(i), channels(p.current)(i))
       val (aboveLight, aboveValue) = blurred(channels(p.aboveLeft)(i), channels(p.above)(i))
-      val beams = (light * PsxCrt.CurrentWeights(scanlines)(p.in.phase)(value >> 4) +
-        aboveLight * PsxCrt.PreviousWeights(scanlines)(p.in.phase)(aboveValue >> 4)) >> 8
+      val beams = (light * Crt.CurrentWeights(scanlines)(p.in.phase)(value >> 4) +
+        aboveLight * Crt.PreviousWeights(scanlines)(p.in.phase)(aboveValue >> 4)) >> 8
       val column = if (pattern == 1) p.in.column % 2 else p.in.column % 3
-      val masked = (beams * PsxCrt.MaskWeights(pattern)(column)(mask)(i)) >> 8
-      PsxCrt.ToGamma(masked.min(PsxCrt.LinearMax))
+      val masked = (beams * Crt.MaskWeights(pattern)(column)(mask)(i)) >> 8
+      Crt.ToGamma(masked.min(Crt.LinearMax))
     })
   }
 
   /** Runs `frame` (or `frameRows`) pixels and compares the picture's (not the blanking's) with `expected`. */
-  def checkFrame(settings: (Int, Int, Int), blur: Int, pixels: Seq[Source], columnMajor: Boolean = true)(expected: Source => Int): Unit = {
-    val got = run(settings, scanlinesAllowed = true, pixels.map(_.in), blur, columnMajor)
+  def checkFrame(settings: (Int, Int, Int), blur: Int, pixels: Seq[Source], columnMajor: Boolean = true,
+                 phases: Seq[Int] = Crt.AllPhases, columns: Int = 1024)(expected: Source => Int): Unit = {
+    val got = run(settings, scanlinesAllowed = true, pixels.map(_.in), blur, columnMajor, phases, columns)
     val wrong = got.zip(pixels).zipWithIndex.collect {
       case ((g, p), i) if p.line >= 0 && g != expected(p) => (g, expected(p), p.in.column, p.in.row)
     }
@@ -145,9 +147,11 @@ class PsxCrtSpec extends AnyFreeSpec {
       wrong.take(5).map { case (g, e, x, y) => f"x $x y $y: $g%06x, expected $e%06x" }.mkString(", "))
   }
 
-  def run(settings: (Int, Int, Int), scanlinesAllowed: Boolean, pixels: Seq[In], blur: Int = 0, columnMajor: Boolean = true): Seq[Int] = {
+  /** Runs `pixels` through a [[Crt]] (whose `phases` the pixels' phases are among) and returns its colors. */
+  def run(settings: (Int, Int, Int), scanlinesAllowed: Boolean, pixels: Seq[In], blur: Int = 0, columnMajor: Boolean = true,
+          phases: Seq[Int] = Crt.AllPhases, columns: Int = 1024): Seq[Int] = {
     var out = Seq[Int]()
-    simulate(new PsxCrt) { dut =>
+    simulate(new Crt(phases, columns)) { dut =>
       val (scanlines, mask, pattern) = settings
       dut.io.settings.scanlines.poke(scanlines.U)
       dut.io.settings.mask.poke(mask.U)
@@ -156,18 +160,19 @@ class PsxCrtSpec extends AnyFreeSpec {
       dut.io.scanlinesAllowed.poke(scanlinesAllowed.B)
       dut.io.columnMajor.poke(columnMajor.B)
       val results = Seq.newBuilder[Int]
-      for ((p, i) <- (pixels ++ Seq.fill(PsxCrt.Latency)(In(0, 0, 0, lineStart = false, row = 500))).zipWithIndex) {
+      for ((p, i) <- (pixels ++ Seq.fill(Crt.Latency)(In(0, 0, phases.head, lineStart = false, row = 500))).zipWithIndex) {
         dut.io.in.color.r.poke((p.color >> 16).U)
         dut.io.in.color.g.poke(((p.color >> 8) & 255).U)
         dut.io.in.color.b.poke((p.color & 255).U)
         dut.io.in.column.poke(p.column.U)
-        dut.io.in.phase.poke(p.phase.U)
+        assert(phases.contains(p.phase), s"phase ${p.phase}")
+        dut.io.in.phase.poke(phases.indexOf(p.phase).U)
         dut.io.in.lineStart.poke(p.lineStart.B)
         dut.io.in.row.poke(p.row.U)
         dut.io.in.columnStart.poke(p.columnStart.B)
-        dut.io.in.columnPhase.poke(p.columnPhase.U)
+        dut.io.in.columnWeight.poke(p.columnWeight.U)
         dut.io.in.lineParity.poke(p.lineParity.U)
-        if (i >= PsxCrt.Latency) {
+        if (i >= Crt.Latency) {
           val c = dut.io.out
           results += (c.r.peek().litValue.toInt << 16) | (c.g.peek().litValue.toInt << 8) | c.b.peek().litValue.toInt
         }
@@ -181,8 +186,8 @@ class PsxCrtSpec extends AnyFreeSpec {
   def channels(c: Int): Seq[Int] = Seq(c >> 16, (c >> 8) & 255, c & 255)
   def color(cs: Seq[Int]): Int = (cs(0) << 16) | (cs(1) << 8) | cs(2)
   /** A color's light (linear, 12 bits per channel), and back (clipped at full light). */
-  def light(c: Int): Seq[Int] = channels(c).map(PsxCrt.ToLinear(_))
-  def fromLight(ls: Seq[Int]): Int = color(ls.map(l => PsxCrt.ToGamma(l.min(PsxCrt.LinearMax))))
+  def light(c: Int): Seq[Int] = channels(c).map(Crt.ToLinear(_))
+  def fromLight(ls: Seq[Int]): Int = color(ls.map(l => Crt.ToGamma(l.min(Crt.LinearMax))))
   /** Compares the picture's pixels (not the blanking's, where the last line's beam may still show). */
   def check(got: Seq[Int], pixels: Seq[(In, Int, Int)])(expected: (In, Int) => Int): Unit = {
     val wrong = got.zip(pixels).zipWithIndex.collect {
@@ -193,7 +198,7 @@ class PsxCrtSpec extends AnyFreeSpec {
   }
 
   "every 8-bit value comes back from linear light as it was" in {
-    for (c <- 0 until 256) assert(PsxCrt.ToGamma(PsxCrt.ToLinear(c)) == c, s"value $c")
+    for (c <- 0 until 256) assert(Crt.ToGamma(Crt.ToLinear(c)) == c, s"value $c")
   }
 
   "off: the picture unchanged" in {
@@ -216,7 +221,7 @@ class PsxCrtSpec extends AnyFreeSpec {
       p.color
     } else {
       val weights = channels(p.color).zip(channels(previous)).map { case (c, q) =>
-        (PsxCrt.CurrentWeights(strength)(p.phase)(c >> 4), PsxCrt.PreviousWeights(strength)(p.phase)(q >> 4))
+        (Crt.CurrentWeights(strength)(p.phase)(c >> 4), Crt.PreviousWeights(strength)(p.phase)(q >> 4))
       }
       fromLight(light(p.color).zip(light(previous)).zip(weights).map { case ((c, q), (wc, wq)) => (c * wc + q * wq) >> 8 })
     }
@@ -235,10 +240,10 @@ class PsxCrtSpec extends AnyFreeSpec {
     // The dark row's light against its lines' (both the same gray), for each strength and brightness.
     def gap(strength: Int, gray: Int): Double = {
       val phase = 240 >> 5 // the first of a line's two rows in 240-line modes
-      val w = PsxCrt.CurrentWeights(strength)(phase)(gray >> 4) + PsxCrt.PreviousWeights(strength)(phase)(gray >> 4)
+      val w = Crt.CurrentWeights(strength)(phase)(gray >> 4) + Crt.PreviousWeights(strength)(phase)(gray >> 4)
       w / 256.0
     }
-    for ((s, i) <- PsxCrt.ScanlineStrengths.zipWithIndex; strength = i + 1) {
+    for ((s, i) <- Crt.ScanlineStrengths.zipWithIndex; strength = i + 1) {
       assert(gap(strength, 0x00) < 1 - 0.9 * s, s"strength $strength: black lines' gap ${gap(strength, 0)}")
       assert(gap(strength, 0xFF) > 1 - 0.2 * s, s"strength $strength: white lines' gap ${gap(strength, 0xFF)}")
       val gaps = (0 until 256 by 16).map(gap(strength, _))
@@ -268,8 +273,8 @@ class PsxCrtSpec extends AnyFreeSpec {
       val pixels = (0 until columns).map(x => In(g, x, 0, lineStart = false))
       val out = run((0, mask, pattern), scanlinesAllowed = true, pixels)
       for (channel <- 0 until 3) {
-        val average = out.map(c => PsxCrt.ToLinear(channels(c)(channel))).sum.toDouble / columns
-        val original = PsxCrt.ToLinear(gray).toDouble
+        val average = out.map(c => Crt.ToLinear(channels(c)(channel))).sum.toDouble / columns
+        val original = Crt.ToLinear(gray).toDouble
         assert((average - original).abs <= original * 0.01 + 2, s"mask $mask pattern $pattern gray $gray%x channel $channel: $average, not $original")
       }
     }
@@ -283,9 +288,9 @@ class PsxCrtSpec extends AnyFreeSpec {
   "soft, 320 across: every other screen column the source column to its left, the others half of each" in {
     val pixels = frame(width = 320, columns = 14, rows = 40, seed = 21)
     checkFrame((0, 0, 0), blur = 1, pixels) { p =>
-      if (p.in.columnPhase == 0) p.left
+      if (p.in.columnWeight == 0) p.left
       else color(channels(p.left).zip(channels(p.current)).map { case (l, c) =>
-        PsxCrt.ToGamma((PsxCrt.ToLinear(l) * 128 + PsxCrt.ToLinear(c) * 128) >> 8)
+        Crt.ToGamma((Crt.ToLinear(l) * 128 + Crt.ToLinear(c) * 128) >> 8)
       })
     }
   }
@@ -315,12 +320,12 @@ class PsxCrtSpec extends AnyFreeSpec {
   "row-major: soft, 256, 320, 368 and 640 across, in 720ths of a source column" in {
     for ((width, seed) <- Seq(256 -> 32, 320 -> 33, 368 -> 34, 640 -> 35)) {
       val pixels = frameRows(width, columns = 24, rows = 6, seed)
-      checkFrame((0, 0, 0), blur = 1, pixels, columnMajor = false)(model((0, 0, 0), blur = 1, PsxCrt.RowMajorBlurScale))
+      checkFrame((0, 0, 0), blur = 1, pixels, columnMajor = false)(model((0, 0, 0), blur = 1))
     }
   }
 
   "row-major: soft with 75 % scanlines and a 25 % magenta / green mask" in {
     val pixels = frameRows(width = 368, columns = 24, rows = 12, seed = 36)
-    checkFrame((2, 1, 1), blur = 1, pixels, columnMajor = false)(model((2, 1, 1), blur = 1, PsxCrt.RowMajorBlurScale))
+    checkFrame((2, 1, 1), blur = 1, pixels, columnMajor = false)(model((2, 1, 1), blur = 1))
   }
 }

@@ -82,6 +82,58 @@
       "value": 2
     },
     {
+      "id": 9,
+      "label": "Scanlines",
+      "address": "0x28",
+      "mask": "0xFFFFFFFC",
+      "default": 2,
+      "type": "list",
+      "items": [
+        { "label": "Off", "value": 0 },
+        { "label": "50%", "value": 1 },
+        { "label": "75%", "value": 2 },
+        { "label": "100%", "value": 3 }
+      ]
+    },
+    {
+      "id": 10,
+      "label": "CRT Mask",
+      "address": "0x28",
+      "mask": "0xFFFFFFF3",
+      "default": 4,
+      "type": "list",
+      "items": [
+        { "label": "Off", "value": 0 },
+        { "label": "25%", "value": 4 },
+        { "label": "50%", "value": 8 },
+        { "label": "75%", "value": 12 }
+      ]
+    },
+    {
+      "id": 11,
+      "label": "Mask Type",
+      "address": "0x28",
+      "mask": "0xFFFFFFEF",
+      "default": "0x10",
+      "type": "list",
+      "items": [
+        { "label": "RGB Stripes", "value": 0 },
+        { "label": "Magenta/Green", "value": "0x10" }
+      ]
+    },
+    {
+      "id": 12,
+      "label": "Sharpness",
+      "address": "0x28",
+      "mask": "0xFFFFFFDF",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "Sharp", "value": 0 },
+        { "label": "Soft", "value": "0x20" }
+      ]
+    },
+    {
       "id": 3,
       "label": "Memory Latency Hiding",
       "address": "0x0",
