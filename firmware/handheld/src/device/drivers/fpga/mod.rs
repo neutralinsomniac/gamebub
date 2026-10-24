@@ -28,6 +28,10 @@ pub const REG_CTRL_BUTTON_FORCE: u32 = 0xF100_1008;
 pub const REG_CTRL_DOCK: u32 = 0xF100_100C;
 pub const REG_CTRL_FOCUS: u32 = 0xF100_1010;
 pub const REG_CTRL_VIBRATE: u32 = 0xF100_1014;
+/// The dock's gamepads, for a core taking them apart from the handheld's
+/// buttons: two registers each, from here (see `InputManager`).
+pub const REG_CTRL_GAMEPADS: u32 = 0xF100_1020;
+pub const REG_CTRL_GAMEPAD_COUNT: usize = 4;
 
 pub const REG_CTRL_CMD_HOST: u32 = 0xF100_1100;
 pub const REG_CTRL_CMD_CORE: u32 = 0xF100_1104;

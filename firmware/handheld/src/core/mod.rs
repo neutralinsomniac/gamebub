@@ -17,6 +17,7 @@ use crate::{
         drivers::fpga::{self, SpiCommand, MAX_SPI_READ_CLOCK},
         Device,
     },
+    input::InputManager,
     ui,
 };
 pub use info::*;
@@ -490,6 +491,10 @@ impl CoreManager {
             let _ = device
                 .fpga
                 .write_u32(fpga::REG_CTRL_FOCUS, has_focus as u32);
+        }
+        if has_focus {
+            // (The first time after loading the bitstream, they are cleared.)
+            InputManager::lock().resend_gamepad_registers();
         }
 
         let _ = self.run_core_command(

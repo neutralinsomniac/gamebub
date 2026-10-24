@@ -356,12 +356,18 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
 
   // Input
   val coreInput = Wire(new InputV0.Buttons)
-  core.getInterface("input") match {
+  /** The core takes the dock's gamepads apart from the handheld's buttons ([[InputV1]]). */
+  val coreGamepads: Option[Vec[InputV1.Gamepad]] = core.getInterface("input") match {
     case Some(input: InputV0) => {
       input.buttons := coreInput
+      None
+    }
+    case Some(input: InputV1) => {
+      input.buttons := coreInput
+      Some(input.gamepads)
     }
     case Some(x) => throw new CoreException("Unknown 'input': " + x.getClass())
-    case None => {}
+    case None => None
   }
   
   // Vibrate
@@ -495,6 +501,9 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
   val controlInterruptEnable = RegInit(0.U.asTypeOf(new HandheldInterrupts))
   val controlInterruptPending = RegInit(0.U.asTypeOf(new HandheldInterrupts))
   val controlButtonForce = RegInit(0.U.asTypeOf(new InputV0.Buttons))
+  /** The dock's gamepads, for a core taking them ([[InputV1]]). */
+  val controlGamepads = Seq.fill(coreGamepads.map(_.length).getOrElse(0))(
+    RegInit(0.U.asTypeOf(new InputV1.Gamepad)))
   val controlDock = RegInit(0.U.asTypeOf(new Bundle() {
     /** True if the device is docked */
     val docked = Bool()
@@ -570,6 +579,33 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         ),
       ),
     )
+    // 0x1020 to 0x103F: the gamepads (InputV1), two registers each: bit 16
+    // connected, 15-0 the buttons; the sticks (left x 31-24, left y 23-16,
+    // right x 15-8, right y 7-0).
+    ++ controlGamepads.zipWithIndex.flatMap { case (gamepad, i) => Seq(
+      (0x1020 + i * 8) -> RegisterMap.Entry(
+        17,
+        read = RegisterMap.ReadFn(),
+        write = RegisterMap.WriteFn((write: Bool, data: UInt) =>
+          when (write) {
+            gamepad.connected := data(16)
+            gamepad.buttons := data(15, 0).asTypeOf(gamepad.buttons)
+          }
+        ),
+      ),
+      (0x1024 + i * 8) -> RegisterMap.Entry(
+        32,
+        read = RegisterMap.ReadFn(),
+        write = RegisterMap.WriteFn((write: Bool, data: UInt) =>
+          when (write) {
+            gamepad.leftX := data(31, 24).asSInt
+            gamepad.leftY := data(23, 16).asSInt
+            gamepad.rightX := data(15, 8).asSInt
+            gamepad.rightY := data(7, 0).asSInt
+          }
+        ),
+      ),
+    )}
   )
 
   val overlayInterface = Wire(new MemoryInterface(addressWidth = 18, dataWidth = 16))
@@ -633,11 +669,26 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
     remappedVec.asUInt
   }
 
-  // Only pass input through when the core is focused
+  // Only pass input through when the core is focused. The firmware merges
+  // the gamepads into controlButtonForce, for a core not taking them apart.
   val buttonFilter = Module(new ButtonFilter(new InputV0.Buttons))
   buttonFilter.io.enable := controlCoreFocus
-  buttonFilter.io.input := (remappedButtons | controlButtonForce.asUInt).asTypeOf(new InputV0.Buttons)
+  val buttonForce = if (coreGamepads.isEmpty) controlButtonForce.asUInt else 0.U
+  buttonFilter.io.input := (remappedButtons | buttonForce).asTypeOf(new InputV0.Buttons)
   coreInput := buttonFilter.io.output
+  coreGamepads.foreach(_.zip(controlGamepads).foreach { case (out, gamepad) =>
+    val gamepadFilter = Module(new ButtonFilter(new InputV1.GamepadButtons))
+    gamepadFilter.io.enable := controlCoreFocus
+    gamepadFilter.io.input := gamepad.buttons
+    out := gamepad
+    out.buttons := gamepadFilter.io.output
+    when (!controlCoreFocus) {
+      out.leftX := 0.S
+      out.leftY := 0.S
+      out.rightX := 0.S
+      out.rightY := 0.S
+    }
+  })
 
   val vibrateEnabled = controlCoreFocus && controlVibrate.enable && !controlDock.docked
   io.vibrate := RegNext(coreVibrate === VibrateV0.Mode.On && vibrateEnabled)

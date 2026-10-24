@@ -17,12 +17,12 @@ is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
 * Disc swapping from the pause menu
 * Digital, Analog and DualShock controllers, with rumble
 * CRT look: scanlines, mask, soft horizontal blur
-* TV output through the Game Bub Dock (720 x 480 at 4:3, with the CRT look as set); the dock's gamepads work as
-  the handheld's buttons
+* TV output through the Game Bub Dock (720 x 480 at 4:3, with the CRT look as set)
+* The dock's gamepads as full controllers (both sticks, L2 / R2, L3 / R3), the second one as player 2
 
 ## Not supported
 
-* The dock gamepads' analog sticks (the left one works as the D-pad), own L2 / R2 (Select + L / R work) and rumble
+* Rumble on the dock's gamepads (the dock has no way to pass it on); it is the handheld's own, off while docked
 * 50 Hz TV output: PAL games run on the dock's 60 Hz output, every fifth frame shown twice
 * `.iso`, CHD and libcrypt-protected discs (`.sbi`)
 * Board revisions before 4 (the core uses both SDRAM chips)
@@ -40,3 +40,8 @@ is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
 
 * Face buttons as on a PlayStation: Cross = B, Circle = A, Square = Y, Triangle = X
 * L / R = L1 / R1; Select + L / Select + R = L2 / R2
+* Dock gamepads: the first one plays on port 1 (with the handheld's buttons), the second on port 2, buttons by
+  position as on the handheld; a pulled trigger counts as L2 / R2
+* The sticks need the Controller setting at Analog or DualShock. A DualShock starts in digital mode, with the left
+  stick as the D-pad, until the game switches it to analog, or L3 + R3 + Up does (L3 + R3 + Down switches back),
+  as the Analog button would; on a Digital controller the left stick is the D-pad

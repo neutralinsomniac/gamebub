@@ -86,6 +86,37 @@ impl InputState {
         Self::merge_axis(&mut self.axis_ry, other.axis_ry);
         Self::merge_axis(&mut self.axis_rz, other.axis_rz);
     }
+
+    /// A gamepad's state as the FPGA's gamepad registers take it
+    /// (`fpga::REG_CTRL_GAMEPADS`): bit 16 connected, 15-0 the buttons (L2
+    /// R2 L3 R3, then as `REG_CTRL_BUTTON_FORCE`); the sticks, -128 to 127
+    /// (left x 31-24, left y 23-16, right x 15-8, right y 7-0). A trigger
+    /// pulled more than half way (its Z axis) counts as L2 / R2.
+    fn gamepad_registers(&self) -> [u32; 2] {
+        let buttons = (1 << 16)
+            | (((self.btn_l2 || self.axis_lz > 16384) as u32) << 15)
+            | (((self.btn_r2 || self.axis_rz > 16384) as u32) << 14)
+            | ((self.btn_l3 as u32) << 13)
+            | ((self.btn_r3 as u32) << 12)
+            | ((self.btn_a as u32) << 11)
+            | ((self.btn_b as u32) << 10)
+            | ((self.btn_x as u32) << 9)
+            | ((self.btn_y as u32) << 8)
+            | ((self.btn_up as u32) << 7)
+            | ((self.btn_down as u32) << 6)
+            | ((self.btn_left as u32) << 5)
+            | ((self.btn_right as u32) << 4)
+            | ((self.btn_l1 as u32) << 3)
+            | ((self.btn_r1 as u32) << 2)
+            | ((self.btn_start as u32) << 1)
+            | (self.btn_select as u32);
+        let stick = |axis: i16| ((axis >> 8) as u8) as u32;
+        let sticks = (stick(self.axis_lx) << 24)
+            | (stick(self.axis_ly) << 16)
+            | (stick(self.axis_rx) << 8)
+            | stick(self.axis_ry);
+        [buttons, sticks]
+    }
 }
 
 static INPUT_MANAGER: LazyLock<Mutex<InputManager>> =
@@ -101,6 +132,9 @@ pub struct InputManager {
 
     /// Last button map sent to UI
     last_button_map: ButtonMap,
+
+    /// Last gamepad registers written to the FPGA (None: to be written).
+    last_gamepad_registers: [Option<[u32; 2]>; fpga::REG_CTRL_GAMEPAD_COUNT],
 }
 
 impl InputManager {
@@ -120,14 +154,16 @@ impl InputManager {
     }
 
     pub fn add_gamepad(&mut self, id: GamepadId) {
-        match self.find_gamepad(id) {
-            Some(_) => log::warn!("Ignoring duplicate gamepad"),
-            None => log::info!("Adding gamepad id={}", id.0),
+        if self.find_gamepad(id).is_some() {
+            log::warn!("Ignoring duplicate gamepad");
+            return;
         }
+        log::info!("Adding gamepad id={}", id.0);
         self.gamepads.push(Gamepad {
             id,
             state: InputState::default(),
         });
+        self.send_event();
     }
 
     pub fn remove_gamepad(&mut self, id: GamepadId) {
@@ -231,5 +267,33 @@ impl InputManager {
                 .write_u32(fpga::REG_CTRL_BUTTON_FORCE, fpga_buttons);
         }
         self.last_button_map = buttons;
+
+        self.send_gamepad_registers();
+    }
+
+    /// Write the gamepads, in the order they were connected, to the FPGA's
+    /// gamepad registers (for a core taking them apart from the handheld's
+    /// buttons; other bitstreams ignore the writes), where they changed.
+    fn send_gamepad_registers(&mut self) {
+        for (i, last) in self.last_gamepad_registers.iter_mut().enumerate() {
+            let registers = self
+                .gamepads
+                .get(i)
+                .map_or([0, 0], |gamepad| gamepad.state.gamepad_registers());
+            if *last != Some(registers) {
+                let address = fpga::REG_CTRL_GAMEPADS + 8 * i as u32;
+                let mut device = Device::lock();
+                let _ = device.fpga.write_u32(address, registers[0]);
+                let _ = device.fpga.write_u32(address + 4, registers[1]);
+                *last = Some(registers);
+            }
+        }
+    }
+
+    /// Write the gamepad registers again: a newly loaded bitstream starts
+    /// with them cleared.
+    pub fn resend_gamepad_registers(&mut self) {
+        self.last_gamepad_registers = Default::default();
+        self.send_gamepad_registers();
     }
 }
