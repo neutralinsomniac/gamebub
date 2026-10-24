@@ -15,8 +15,9 @@
 -- * Memory: 2 MB main RAM; SPU RAM on the external port (spuram_*, which the
 --   glue puts in the SRAM). No turbo modes (the turbo data cache is not
 --   synthesized).
--- * Input: one controller on port 1 (digital, analog or DualShock, chosen by
---   the glue); no multitap, mouse, light guns, wheels or SNAC.
+-- * Input: a controller on port 1 and, when the glue enables it, one on port
+--   2, both of the type the glue chooses (digital, analog or DualShock); no
+--   multitap, mouse, light guns, wheels or SNAC.
 -- * Save states: no rewind, and no header count (increaseSSHeaderCount
 --   off): the MiSTer's HPS watches that count to find new states, and the
 --   core stays paused for about a second after each save while it copies
@@ -154,9 +155,10 @@ entity psx_gamebub is
       hDisplayRange         : out std_logic_vector(23 downto 0);
       video_hResMode        : out std_logic_vector(2 downto 0);
 
-      -- controller on port 1, active high: 0 cross, 1 circle, 2 square,
-      -- 3 triangle, 4 L1, 5 R1, 6 L2, 7 R2, 8 select, 9 start, 10 up,
-      -- 11 down, 12 left, 13 right, 14 L3, 15 R3
+      -- controllers on ports 1 (pad_*) and 2 (pad2_*, when PadPortEnable2),
+      -- buttons active high: 0 cross, 1 circle, 2 square, 3 triangle, 4 L1,
+      -- 5 R1, 6 L2, 7 R2, 8 select, 9 start, 10 up, 11 down, 12 left,
+      -- 13 right, 14 L3, 15 R3; sticks two's complement, 0 centered
       PadPortAnalog         : in  std_logic;
       PadPortDS             : in  std_logic;
       pad_buttons           : in  std_logic_vector(15 downto 0);
@@ -165,6 +167,13 @@ entity psx_gamebub is
       pad_rx                : in  std_logic_vector(7 downto 0);
       pad_ry                : in  std_logic_vector(7 downto 0);
       pad_rumble            : out std_logic_vector(15 downto 0);
+      PadPortEnable2        : in  std_logic;
+      pad2_buttons          : in  std_logic_vector(15 downto 0);
+      pad2_lx               : in  std_logic_vector(7 downto 0);
+      pad2_ly               : in  std_logic_vector(7 downto 0);
+      pad2_rx               : in  std_logic_vector(7 downto 0);
+      pad2_ry               : in  std_logic_vector(7 downto 0);
+      -- the DualShocks' analog mode (bit 0 port 1, bit 1 port 2)
       padMode               : out std_logic_vector(1 downto 0);
 
       -- sound
@@ -192,10 +201,10 @@ end entity;
 
 architecture arch of psx_gamebub is
 
-   -- The core takes each button for players 4..1; only player 1 is used.
-   function player1(b : std_logic) return std_logic_vector is
+   -- The core takes each button for players 4..1; players 1 and 2 are used.
+   function players(b1, b2 : std_logic) return std_logic_vector is
    begin
-      return "000" & b;
+      return "00" & b2 & b1;
    end function;
 
    signal DisplayWidth_u   : unsigned(10 downto 0);
@@ -389,42 +398,42 @@ begin
       PadPortJustif1        => '0',
       PadPortStick1         => '0',
       PadPortPopn1          => '0',
-      PadPortEnable2        => '0',
-      PadPortDigital2       => '0',
-      PadPortAnalog2        => '0',
+      PadPortEnable2        => PadPortEnable2,
+      PadPortDigital2       => not (PadPortAnalog or PadPortDS),
+      PadPortAnalog2        => PadPortAnalog,
       PadPortMouse2         => '0',
       PadPortGunCon2        => '0',
       PadPortneGcon2        => '0',
       PadPortWheel2         => '0',
-      PadPortDS2            => '0',
+      PadPortDS2            => PadPortDS,
       PadPortJustif2        => '0',
       PadPortStick2         => '0',
       PadPortPopn2          => '0',
-      KeyTriangle           => player1(pad_buttons(3)),
-      KeyCircle             => player1(pad_buttons(1)),
-      KeyCross              => player1(pad_buttons(0)),
-      KeySquare             => player1(pad_buttons(2)),
-      KeySelect             => player1(pad_buttons(8)),
-      KeyStart              => player1(pad_buttons(9)),
-      KeyRight              => player1(pad_buttons(13)),
-      KeyLeft               => player1(pad_buttons(12)),
-      KeyUp                 => player1(pad_buttons(10)),
-      KeyDown               => player1(pad_buttons(11)),
-      KeyR1                 => player1(pad_buttons(5)),
-      KeyR2                 => player1(pad_buttons(7)),
-      KeyR3                 => player1(pad_buttons(15)),
-      KeyL1                 => player1(pad_buttons(4)),
-      KeyL2                 => player1(pad_buttons(6)),
-      KeyL3                 => player1(pad_buttons(14)),
+      KeyTriangle           => players(pad_buttons(3), pad2_buttons(3)),
+      KeyCircle             => players(pad_buttons(1), pad2_buttons(1)),
+      KeyCross              => players(pad_buttons(0), pad2_buttons(0)),
+      KeySquare             => players(pad_buttons(2), pad2_buttons(2)),
+      KeySelect             => players(pad_buttons(8), pad2_buttons(8)),
+      KeyStart              => players(pad_buttons(9), pad2_buttons(9)),
+      KeyRight              => players(pad_buttons(13), pad2_buttons(13)),
+      KeyLeft               => players(pad_buttons(12), pad2_buttons(12)),
+      KeyUp                 => players(pad_buttons(10), pad2_buttons(10)),
+      KeyDown               => players(pad_buttons(11), pad2_buttons(11)),
+      KeyR1                 => players(pad_buttons(5), pad2_buttons(5)),
+      KeyR2                 => players(pad_buttons(7), pad2_buttons(7)),
+      KeyR3                 => players(pad_buttons(15), pad2_buttons(15)),
+      KeyL1                 => players(pad_buttons(4), pad2_buttons(4)),
+      KeyL2                 => players(pad_buttons(6), pad2_buttons(6)),
+      KeyL3                 => players(pad_buttons(14), pad2_buttons(14)),
       ToggleDS              => "0000",
       Analog1XP1            => signed(pad_lx),
       Analog1YP1            => signed(pad_ly),
       Analog2XP1            => signed(pad_rx),
       Analog2YP1            => signed(pad_ry),
-      Analog1XP2            => (others => '0'),
-      Analog1YP2            => (others => '0'),
-      Analog2XP2            => (others => '0'),
-      Analog2YP2            => (others => '0'),
+      Analog1XP2            => signed(pad2_lx),
+      Analog1YP2            => signed(pad2_ly),
+      Analog2XP2            => signed(pad2_rx),
+      Analog2YP2            => signed(pad2_ry),
       Analog1XP3            => (others => '0'),
       Analog1YP3            => (others => '0'),
       Analog2XP3            => (others => '0'),
