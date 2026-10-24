@@ -164,7 +164,7 @@ class HandheldPsx extends Module with Core {
     val video = new VideoPullV0(framePeriod = FramePeriod, latency = PsxScanout.Latency)
     val audio = new AudioV1()
     val host = new HostV0()
-    val input = new InputBasicV0(hasRumble = true)
+    val input = new InputExtendedV0(numSlots = 2, hasRumble = true)
     val sram = new SramV0()
     val sdram = new SdramV0(chips = 2, dataDirPerBit = true)
   })
@@ -229,9 +229,9 @@ class HandheldPsx extends Module with Core {
     val videoAuto = Bool()
     /** Bit 7: fixed vertical blanking (upstream option). */
     val fixedVBlank = Bool()
-    /** Bit 6: the controller is a DualShock (analog sticks and rumble). */
+    /** Bit 6: the controllers are DualShocks (analog sticks and rumble). */
     val dualShock = Bool()
-    /** Bit 5: the controller is an analog controller. */
+    /** Bit 5: the controllers are analog controllers. */
     val analog = Bool()
     /** Bits 4-3: unused (they were fast boot and no dithering). */
     val unused = UInt(2.W)
@@ -716,40 +716,63 @@ class HandheldPsx extends Module with Core {
   //////////////////////////////////
   // Input
   //////////////////////////////////
-  // Select is a modifier for L2 / R2: Select + L is L2, Select + R is R2;
-  // Select alone is Select.
+  // The framework's input slots: port 1 is slot 0 (the handheld, or on the
+  // dock its first gamepad), port 2 slot 1 (the dock's second gamepad),
+  // plugged in while it is connected. On the handheld, Select is a modifier
+  // for L2 / R2: Select + L is L2, Select + R is R2; Select alone is Select.
+  // A gamepad's trigger pulled more than half way is L2 / R2 too. A
+  // DualShock in digital mode takes the left stick as the D-pad as well (the
+  // core does that for a digital controller).
   locally {
     import PsxCore.Button
-    val b = io.input.buttons
-    val shift = b.select
-    val buttons = Wire(Vec(16, Bool()))
-    buttons := DontCare
-    buttons(Button.Cross) := b.b
-    buttons(Button.Circle) := b.a
-    buttons(Button.Square) := b.y
-    buttons(Button.Triangle) := b.x
-    buttons(Button.L1) := b.l && !shift
-    buttons(Button.R1) := b.r && !shift
-    buttons(Button.L2) := b.l && shift
-    buttons(Button.R2) := b.r && shift
-    buttons(Button.Select) := shift && !b.l && !b.r
-    buttons(Button.Start) := b.start
-    buttons(Button.Up) := b.up
-    buttons(Button.Down) := b.down
-    buttons(Button.Left) := b.left
-    buttons(Button.Right) := b.right
-    buttons(Button.L3) := false.B
-    buttons(Button.R3) := false.B
-    core.io.pad_buttons := RegNext(buttons.asUInt, 0.U)
+    def portButtons(slot: InputExtendedV0.Slot, stickAsDpad: Bool): UInt = {
+      val b = slot.buttons
+      val analog = slot.analog
+      val shift = slot.deviceType === InputExtendedV0.DeviceType.Handheld && b.select
+      val buttons = Wire(Vec(16, Bool()))
+      buttons(Button.Cross) := b.b
+      buttons(Button.Circle) := b.a
+      buttons(Button.Square) := b.y
+      buttons(Button.Triangle) := b.x
+      buttons(Button.L1) := b.l1 && !shift
+      buttons(Button.R1) := b.r1 && !shift
+      buttons(Button.L2) := b.l2 || analog.leftTrigger > 128.U || b.l1 && shift
+      buttons(Button.R2) := b.r2 || analog.rightTrigger > 128.U || b.r1 && shift
+      buttons(Button.Select) := b.select && !(shift && (b.l1 || b.r1))
+      buttons(Button.Start) := b.start
+      buttons(Button.Up) := b.up || stickAsDpad && analog.leftY <= (-64).S
+      buttons(Button.Down) := b.down || stickAsDpad && analog.leftY >= 64.S
+      buttons(Button.Left) := b.left || stickAsDpad && analog.leftX <= (-64).S
+      buttons(Button.Right) := b.right || stickAsDpad && analog.leftX >= 64.S
+      buttons(Button.L3) := b.l3
+      buttons(Button.R3) := b.r3
+      buttons.asUInt
+    }
+    val Seq(port1, port2) = io.input.slots
+    val stickAsDpad = core.io.padMode.asBools.map(analogMode => configReg.dualShock && !analogMode)
+    core.io.pad_buttons := RegNext(portButtons(port1, stickAsDpad(0)), 0.U)
+    core.io.pad_lx := RegNext(port1.analog.leftX.asUInt, 0.U)
+    core.io.pad_ly := RegNext(port1.analog.leftY.asUInt, 0.U)
+    core.io.pad_rx := RegNext(port1.analog.rightX.asUInt, 0.U)
+    core.io.pad_ry := RegNext(port1.analog.rightY.asUInt, 0.U)
+    core.io.PadPortEnable2 := RegNext(port2.active, false.B)
+    core.io.pad2_buttons := RegNext(portButtons(port2, stickAsDpad(1)), 0.U)
+    core.io.pad2_lx := RegNext(port2.analog.leftX.asUInt, 0.U)
+    core.io.pad2_ly := RegNext(port2.analog.leftY.asUInt, 0.U)
+    core.io.pad2_rx := RegNext(port2.analog.rightX.asUInt, 0.U)
+    core.io.pad2_ry := RegNext(port2.analog.rightY.asUInt, 0.U)
   }
   core.io.PadPortAnalog := configReg.analog
   core.io.PadPortDS := configReg.dualShock
-  // Sticks centered (two's complement in the core).
-  core.io.pad_lx := 0.U
-  core.io.pad_ly := 0.U
-  core.io.pad_rx := 0.U
-  core.io.pad_ry := 0.U
-  io.input.rumble.get := RegNext(core.io.pad_rumble =/= 0.U, false.B)
+  locally {
+    val Seq(rumble1, rumble2) = io.input.rumble.get
+    val p1Rumble = RegNext(core.io.pad_rumble, 0.U)
+    val p2Rumble = RegNext(core.io.pad2_rumble, 0.U)
+    rumble1.strong := p1Rumble(15, 8)
+    rumble1.weak := p1Rumble(7, 0)
+    rumble2.strong := p2Rumble(15, 8)
+    rumble2.weak := p2Rumble(7, 0)
+  }
 
   //////////////////////////////////
   // Audio
