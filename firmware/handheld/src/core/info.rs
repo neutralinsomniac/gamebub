@@ -67,10 +67,10 @@ pub struct CoreFile {
     /// If true, if the file is not loaded, the region will still be initialized with 0xFFs.
     #[serde(default)]
     pub initialize: bool,
-    /// If set, and the file cannot be opened, this file (relative to the
-    /// core's directory) is loaded in its place: an empty save in the core's
-    /// format, such as a formatted memory card. Saving still goes to the
-    /// file's own path.
+    /// If set, and the file cannot be opened or is empty, this file (relative
+    /// to the core's directory) is loaded in its place: an empty save in the
+    /// core's format, such as a formatted memory card. Saving still goes to
+    /// the file's own path.
     #[serde(default)]
     pub blank: Option<ArrayString<32>>,
     /// If true, the file is also saved when the core is paused (the core
