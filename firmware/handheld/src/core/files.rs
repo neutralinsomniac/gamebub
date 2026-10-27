@@ -131,9 +131,17 @@ impl CoreManager {
 
         log::info!("Load file {} from {}", info.label, path.display());
 
-        let file = File::open(&path).or_else(|e| match info.blank.as_ref() {
+        // An empty file holds no save (the stock firmware leaves one when the
+        // core has nothing to save), so a file with a blank loads the blank.
+        let file = File::open(&path).and_then(|file| {
+            if info.blank.is_some() && file.metadata()?.len() == 0 {
+                return Err(std::io::Error::other("file is empty"));
+            }
+            Ok(file)
+        });
+        let file = file.or_else(|e| match info.blank.as_ref() {
             Some(blank) => {
-                log::info!("Failed to open file, loading {blank}");
+                log::info!("Failed to open file ({e}), loading {blank}");
                 File::open(core.core_dir.join(blank.as_str()))
             }
             None => Err(e),
