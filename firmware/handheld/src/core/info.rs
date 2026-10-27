@@ -84,10 +84,10 @@ pub struct CoreFile {
     /// If true, the file is not automatically loaded at startup.
     #[serde(default)]
     pub on_demand: bool,
-    /// If set, and the file cannot be opened, this file (relative to the
-    /// core's directory) is loaded in its place: an empty save in the core's
-    /// format, such as a formatted memory card. Saving still goes to the
-    /// file's own path.
+    /// If set, and the file cannot be opened or is empty, this file (relative
+    /// to the core's directory) is loaded in its place: an empty save in the
+    /// core's format, such as a formatted memory card. Saving still goes to
+    /// the file's own path.
     #[serde(default)]
     pub blank: Option<ArrayString<32>>,
     /// If true, the file is also saved when the core is paused (the core
