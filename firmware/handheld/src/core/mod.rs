@@ -535,6 +535,7 @@ impl CoreManager {
 
     fn finish_loading(&mut self) {
         if let Err(e) = self.finish_loading_inner() {
+            log::error!("Loading the core failed: {e}");
             self.exit_core();
             ui::send(ui::Message::CoreLoadError(e.to_string()));
         }
