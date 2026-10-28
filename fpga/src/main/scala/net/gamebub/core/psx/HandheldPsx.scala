@@ -721,11 +721,46 @@ class HandheldPsx extends Module with Core {
   // second, while connected. On the handheld, Select is a modifier for L2 /
   // R2: Select + L is L2, Select + R is R2; Select alone is Select. A
   // DualShock in digital mode takes the left stick as the D-pad too (the
-  // core does that for a digital controller).
+  // core does that for a digital controller). On a DualShock, Select + Start
+  // is the Analog button: it toggles the controller's analog mode, and the
+  // game sees neither button until both are let go. With a shoulder button
+  // already held, the game gets Select + Start instead (a common soft reset).
   locally {
     import PsxCore.Button
+    // Whether a controller's Select + Start is down as its Analog button, and
+    // whether to hide Select and Start from the game.
+    def analogButton(select: Bool, start: Bool, shoulders: Bool): (Bool, Bool) = {
+      val down = configReg.dualShock && select && start && !shoulders
+      val hiding = RegInit(false.B)
+      when (down) {
+        hiding := true.B
+      } .elsewhen (!select && !start) {
+        hiding := false.B
+      }
+      (down, down || hiding)
+    }
+    // A pulse at each press. The handheld's buttons are not debounced, so it
+    // only re-arms once released for 2^20 cycles (31 ms).
+    def press(down: Bool): Bool = {
+      val upFor = RegInit(~0.U(20.W))
+      when (down) {
+        upFor := 0.U
+      } .elsewhen (!upFor.andR) {
+        upFor := upFor + 1.U
+      }
+      val armed = RegInit(true.B)
+      val pulse = down && armed
+      when (pulse) {
+        armed := false.B
+      } .elsewhen (upFor.andR) {
+        armed := true.B
+      }
+      pulse
+    }
+
     val b = io.input.buttons
     val shift = b.select
+    val (handheldAnalog, handheldHide) = analogButton(shift, b.start, b.l || b.r)
     val handheld = Wire(Vec(16, Bool()))
     handheld := DontCare
     handheld(Button.Cross) := b.b
@@ -736,8 +771,8 @@ class HandheldPsx extends Module with Core {
     handheld(Button.R1) := b.r && !shift
     handheld(Button.L2) := b.l && shift
     handheld(Button.R2) := b.r && shift
-    handheld(Button.Select) := shift && !b.l && !b.r
-    handheld(Button.Start) := b.start
+    handheld(Button.Select) := shift && !b.l && !b.r && !handheldHide
+    handheld(Button.Start) := b.start && !handheldHide
     handheld(Button.Up) := b.up
     handheld(Button.Down) := b.down
     handheld(Button.Left) := b.left
@@ -745,7 +780,7 @@ class HandheldPsx extends Module with Core {
     handheld(Button.L3) := false.B
     handheld(Button.R3) := false.B
 
-    def gamepad(pad: InputV1.Gamepad, stickAsDpad: Bool): UInt = {
+    def gamepad(pad: InputV1.Gamepad, stickAsDpad: Bool, hide: Bool): UInt = {
       val b = pad.buttons
       val buttons = Wire(Vec(16, Bool()))
       buttons(Button.Cross) := b.b
@@ -756,8 +791,8 @@ class HandheldPsx extends Module with Core {
       buttons(Button.R1) := b.r1
       buttons(Button.L2) := b.l2
       buttons(Button.R2) := b.r2
-      buttons(Button.Select) := b.select
-      buttons(Button.Start) := b.start
+      buttons(Button.Select) := b.select && !hide
+      buttons(Button.Start) := b.start && !hide
       buttons(Button.Up) := b.up || stickAsDpad && pad.leftY <= (-64).S
       buttons(Button.Down) := b.down || stickAsDpad && pad.leftY >= 64.S
       buttons(Button.Left) := b.left || stickAsDpad && pad.leftX <= (-64).S
@@ -767,14 +802,19 @@ class HandheldPsx extends Module with Core {
       buttons.asUInt
     }
     val Seq(pad1, pad2) = io.input.gamepads
+    val Seq((pad1Analog, pad1Hide), (pad2Analog, pad2Hide)) = io.input.gamepads.map { pad =>
+      val b = pad.buttons
+      analogButton(b.select, b.start, b.l1 || b.r1 || b.l2 || b.r2)
+    }
+    core.io.ToggleDS := RegNext(Cat(press(pad2Analog), press(handheldAnalog || pad1Analog)), 0.U)
     val stickAsDpad = core.io.padMode.asBools.map(analogMode => configReg.dualShock && !analogMode)
-    core.io.pad_buttons := RegNext(handheld.asUInt | gamepad(pad1, stickAsDpad(0)), 0.U)
+    core.io.pad_buttons := RegNext(handheld.asUInt | gamepad(pad1, stickAsDpad(0), pad1Hide), 0.U)
     core.io.pad_lx := RegNext(pad1.leftX.asUInt, 0.U)
     core.io.pad_ly := RegNext(pad1.leftY.asUInt, 0.U)
     core.io.pad_rx := RegNext(pad1.rightX.asUInt, 0.U)
     core.io.pad_ry := RegNext(pad1.rightY.asUInt, 0.U)
     core.io.PadPortEnable2 := RegNext(pad2.connected, false.B)
-    core.io.pad2_buttons := RegNext(gamepad(pad2, stickAsDpad(1)), 0.U)
+    core.io.pad2_buttons := RegNext(gamepad(pad2, stickAsDpad(1), pad2Hide), 0.U)
     core.io.pad2_lx := RegNext(pad2.leftX.asUInt, 0.U)
     core.io.pad2_ly := RegNext(pad2.leftY.asUInt, 0.U)
     core.io.pad2_rx := RegNext(pad2.rightX.asUInt, 0.U)
