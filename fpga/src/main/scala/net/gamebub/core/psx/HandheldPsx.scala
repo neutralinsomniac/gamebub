@@ -722,10 +722,44 @@ class HandheldPsx extends Module with Core {
   // for L2 / R2: Select + L is L2, Select + R is R2; Select alone is Select.
   // A gamepad's trigger pulled more than half way is L2 / R2 too. A
   // DualShock in digital mode takes the left stick as the D-pad as well (the
-  // core does that for a digital controller).
+  // core does that for a digital controller). On a DualShock, Select + Start
+  // is the Analog button: it toggles the controller's analog mode, and the
+  // game sees neither button until both are let go. With a shoulder button
+  // already held, the game gets Select + Start instead (a common soft reset).
   locally {
     import PsxCore.Button
-    def portButtons(slot: InputExtendedV0.Slot, stickAsDpad: Bool): UInt = {
+    // Whether a controller's Select + Start is down as its Analog button, and
+    // whether to hide Select and Start from the game.
+    def analogButton(select: Bool, start: Bool, shoulders: Bool): (Bool, Bool) = {
+      val down = configReg.dualShock && select && start && !shoulders
+      val hiding = RegInit(false.B)
+      when (down) {
+        hiding := true.B
+      } .elsewhen (!select && !start) {
+        hiding := false.B
+      }
+      (down, down || hiding)
+    }
+    // A pulse at each press. The handheld's buttons are not debounced, so it
+    // only re-arms once released for 2^20 cycles (31 ms).
+    def press(down: Bool): Bool = {
+      val upFor = RegInit(~0.U(20.W))
+      when (down) {
+        upFor := 0.U
+      } .elsewhen (!upFor.andR) {
+        upFor := upFor + 1.U
+      }
+      val armed = RegInit(true.B)
+      val pulse = down && armed
+      when (pulse) {
+        armed := false.B
+      } .elsewhen (upFor.andR) {
+        armed := true.B
+      }
+      pulse
+    }
+
+    def portButtons(slot: InputExtendedV0.Slot, stickAsDpad: Bool, hide: Bool): UInt = {
       val b = slot.buttons
       val analog = slot.analog
       val shift = slot.deviceType === InputExtendedV0.DeviceType.Handheld && b.select
@@ -738,8 +772,8 @@ class HandheldPsx extends Module with Core {
       buttons(Button.R1) := b.r1 && !shift
       buttons(Button.L2) := b.l2 || analog.leftTrigger > 128.U || b.l1 && shift
       buttons(Button.R2) := b.r2 || analog.rightTrigger > 128.U || b.r1 && shift
-      buttons(Button.Select) := b.select && !(shift && (b.l1 || b.r1))
-      buttons(Button.Start) := b.start
+      buttons(Button.Select) := b.select && !(shift && (b.l1 || b.r1)) && !hide
+      buttons(Button.Start) := b.start && !hide
       buttons(Button.Up) := b.up || stickAsDpad && analog.leftY <= (-64).S
       buttons(Button.Down) := b.down || stickAsDpad && analog.leftY >= 64.S
       buttons(Button.Left) := b.left || stickAsDpad && analog.leftX <= (-64).S
@@ -749,14 +783,19 @@ class HandheldPsx extends Module with Core {
       buttons.asUInt
     }
     val Seq(port1, port2) = io.input.slots
+    val Seq((port1Analog, port1Hide), (port2Analog, port2Hide)) = io.input.slots.map { slot =>
+      val b = slot.buttons
+      analogButton(b.select, b.start, b.l1 || b.r1 || b.l2 || b.r2)
+    }
+    core.io.ToggleDS := RegNext(Cat(press(port2Analog), press(port1Analog)), 0.U)
     val stickAsDpad = core.io.padMode.asBools.map(analogMode => configReg.dualShock && !analogMode)
-    core.io.pad_buttons := RegNext(portButtons(port1, stickAsDpad(0)), 0.U)
+    core.io.pad_buttons := RegNext(portButtons(port1, stickAsDpad(0), port1Hide), 0.U)
     core.io.pad_lx := RegNext(port1.analog.leftX.asUInt, 0.U)
     core.io.pad_ly := RegNext(port1.analog.leftY.asUInt, 0.U)
     core.io.pad_rx := RegNext(port1.analog.rightX.asUInt, 0.U)
     core.io.pad_ry := RegNext(port1.analog.rightY.asUInt, 0.U)
     core.io.PadPortEnable2 := RegNext(port2.active, false.B)
-    core.io.pad2_buttons := RegNext(portButtons(port2, stickAsDpad(1)), 0.U)
+    core.io.pad2_buttons := RegNext(portButtons(port2, stickAsDpad(1), port2Hide), 0.U)
     core.io.pad2_lx := RegNext(port2.analog.leftX.asUInt, 0.U)
     core.io.pad2_ly := RegNext(port2.analog.leftY.asUInt, 0.U)
     core.io.pad2_rx := RegNext(port2.analog.rightX.asUInt, 0.U)

@@ -350,11 +350,6 @@ begin
                switchmode <= '1';
             end if;
             
-            if (joypad1.ToggleDS = '1') then ToggleDSsave(0) <= '1'; end if;
-            if (joypad2.ToggleDS = '1') then ToggleDSsave(1) <= '1'; end if;
-            -- if (joypad3.ToggleDS = '1') then ToggleDSsave(2) <= '1'; end if; -- not yet usuable
-            -- if (joypad4.ToggleDS = '1') then ToggleDSsave(3) <= '1'; end if; -- not yet usuable
-
             prevMouseEvent  <= MouseEvent;
             if (prevMouseEvent /= MouseEvent) then
                mouseIncX := resize(MouseX, mouseIncX'length);
@@ -1328,6 +1323,13 @@ begin
             end if; -- transmit
             
          end if; -- ce
+         
+         -- Game Bub: taken while ce is low too (a one-cycle pulse would be lost)
+         if (joypad1.ToggleDS = '1') then ToggleDSsave(0) <= '1'; end if;
+         if (joypad2.ToggleDS = '1') then ToggleDSsave(1) <= '1'; end if;
+         -- if (joypad3.ToggleDS = '1') then ToggleDSsave(2) <= '1'; end if; -- not yet usuable
+         -- if (joypad4.ToggleDS = '1') then ToggleDSsave(3) <= '1'; end if; -- not yet usuable
+         
       end if; -- clock
    end process;
    
