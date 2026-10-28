@@ -146,7 +146,8 @@ class PsxCore extends ExtModule {
 
     // Controllers on ports 1 (pad_*) and 2 (pad2_*, if enabled), both of the
     // same type (see [[PsxCore.Button]]; sticks two's complement); padMode:
-    // the DualShocks' analog mode (bit 0 port 1, bit 1 port 2)
+    // the DualShocks' analog mode (bit 0 port 1, bit 1 port 2), toggled by a
+    // one-cycle pulse on ToggleDS (their Analog buttons)
     val PadPortAnalog = Input(Bool())
     val PadPortDS = Input(Bool())
     val pad_buttons = Input(UInt(16.W))
@@ -162,6 +163,7 @@ class PsxCore extends ExtModule {
     val pad2_rx = Input(UInt(8.W))
     val pad2_ry = Input(UInt(8.W))
     val padMode = Output(UInt(2.W))
+    val ToggleDS = Input(UInt(2.W))
 
     // Sound
     val sound_out_left = Output(UInt(16.W))

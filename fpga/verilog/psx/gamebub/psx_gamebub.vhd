@@ -173,8 +173,10 @@ entity psx_gamebub is
       pad2_ly               : in  std_logic_vector(7 downto 0);
       pad2_rx               : in  std_logic_vector(7 downto 0);
       pad2_ry               : in  std_logic_vector(7 downto 0);
-      -- the DualShocks' analog mode (bit 0 port 1, bit 1 port 2)
+      -- the DualShocks' analog mode (bit 0 port 1, bit 1 port 2); a pulse on
+      -- ToggleDS toggles it, as the Analog button does
       padMode               : out std_logic_vector(1 downto 0);
+      ToggleDS              : in  std_logic_vector(1 downto 0);
 
       -- sound
       sound_out_left        : out std_logic_vector(15 downto 0);
@@ -425,7 +427,7 @@ begin
       KeyL1                 => players(pad_buttons(4), pad2_buttons(4)),
       KeyL2                 => players(pad_buttons(6), pad2_buttons(6)),
       KeyL3                 => players(pad_buttons(14), pad2_buttons(14)),
-      ToggleDS              => "0000",
+      ToggleDS              => "00" & ToggleDS,
       Analog1XP1            => signed(pad_lx),
       Analog1YP1            => signed(pad_ly),
       Analog2XP1            => signed(pad_rx),
