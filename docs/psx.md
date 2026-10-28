@@ -45,3 +45,6 @@ is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
 * The sticks need the Controller setting at Analog or DualShock. A DualShock starts in digital mode, with the left
   stick as the D-pad, until the game switches it to analog, or L3 + R3 + Up does (L3 + R3 + Down switches back),
   as the Analog button would; on a Digital controller the left stick is the D-pad
+* Select + Start is a DualShock's Analog button, on the handheld and on each dock gamepad: it toggles that controller
+  between digital and analog mode (unless the game has locked the mode), and the game sees neither button. With L1 / R1
+  / L2 / R2 already held, the game gets Select + Start instead (the soft reset many games have)
