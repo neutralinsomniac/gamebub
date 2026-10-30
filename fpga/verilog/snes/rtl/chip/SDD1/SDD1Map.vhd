@@ -45,6 +45,7 @@ entity SDD1Map is
 		BSRAM_WE_N	: out std_logic;
 
 		MAP_ACTIVE  : out std_logic;
+		ROM_SAMPLE	: out std_logic;
 		MAP_CTRL		: in std_logic_vector(7 downto 0);
 		ROM_MASK		: in std_logic_vector(23 downto 0);
 		BSRAM_MASK	: in std_logic_vector(23 downto 0)
@@ -81,7 +82,8 @@ begin
 
 		ROM_A			=> SDD1_ROM_A,
 		ROM_DO		=> ROM_Q,
-		ROM_RD_N		=> ROM_OE_N
+		ROM_RD_N		=> ROM_OE_N,
+		ROM_SAMPLE	=> ROM_SAMPLE
 	);
 
 	ROM_ADDR <= SDD1_ROM_A(22 downto 0) and ROM_MASK(22 downto 0);
