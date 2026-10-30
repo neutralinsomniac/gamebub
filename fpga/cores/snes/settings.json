@@ -82,6 +82,31 @@
       "value": 2
     },
     {
+      "id": 13,
+      "label": "Aspect Ratio",
+      "address": "0x2C",
+      "mask": "0xFFFFFFFC",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "4:3", "value": 0 },
+        { "label": "8:7", "value": 1 },
+        { "label": "8:7 Integer", "value": 2 }
+      ]
+    },
+    {
+      "id": 12,
+      "label": "Interpolation",
+      "address": "0x28",
+      "mask": "0xFFFFFFDF",
+      "default": "0x20",
+      "type": "list",
+      "items": [
+        { "label": "Nearest", "value": 0 },
+        { "label": "Bilinear", "value": "0x20" }
+      ]
+    },
+    {
       "id": 9,
       "label": "Scanlines",
       "address": "0x28",
@@ -119,18 +144,6 @@
       "items": [
         { "label": "RGB Stripes", "value": 0 },
         { "label": "Magenta/Green", "value": "0x10" }
-      ]
-    },
-    {
-      "id": 12,
-      "label": "Sharpness",
-      "address": "0x28",
-      "mask": "0xFFFFFFDF",
-      "default": "0x20",
-      "type": "list",
-      "items": [
-        { "label": "Sharp", "value": 0 },
-        { "label": "Soft", "value": "0x20" }
       ]
     }
   ]
