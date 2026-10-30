@@ -19,10 +19,11 @@ class CrtSpec extends AnyFreeSpec {
   /**
    * A pixel in: color (0xRRGGBB), screen column, phase, first row of its
    * line, screen row (from 480 on, the blanking), the blur's weight of its
-   * own source column, and (row-major) its line's parity.
+   * own source column, (row-major) its line's parity, and the weight of its
+   * own line without scanlines.
    */
   case class In(color: Int, column: Int, phase: Int, lineStart: Boolean, row: Int = 0,
-                columnStart: Boolean = true, columnWeight: Int = 0, lineParity: Int = 0)
+                columnStart: Boolean = true, columnWeight: Int = 0, lineParity: Int = 0, lineWeight: Int = 256)
 
   /** Columns `columns` of a 240-line picture with random lines; each column's pixels and their source lines (-1: blanking). */
   def picture(columns: Seq[Int], seed: Int): Seq[(In, Int, Int)] = {
@@ -172,6 +173,7 @@ class CrtSpec extends AnyFreeSpec {
         dut.io.in.columnStart.poke(p.columnStart.B)
         dut.io.in.columnWeight.poke(p.columnWeight.U)
         dut.io.in.lineParity.poke(p.lineParity.U)
+        dut.io.in.lineWeight.poke(p.lineWeight.U)
         if (i >= Crt.Latency) {
           val c = dut.io.out
           results += (c.r.peek().litValue.toInt << 16) | (c.g.peek().litValue.toInt << 8) | c.b.peek().litValue.toInt
