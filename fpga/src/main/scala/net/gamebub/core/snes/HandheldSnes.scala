@@ -625,7 +625,10 @@ object HandheldSnes {
  *           clears it (see `SaveStateResult`).
  *  - 0x0028 the CRT effect (see `Crt.Settings`): bits 1:0 scanlines (off,
  *           50 / 75 / 100 %), bits 3:2 the mask (off, 25 / 50 / 75 %), bit 4
- *           its pattern (RGB stripes, magenta / green), bit 5 soft.
+ *           its pattern (RGB stripes, magenta / green), bit 5 soft (the
+ *           picture interpolated bilinearly, see `SnesVideoFilter`).
+ *  - 0x002C the picture (see `SnesVideoFilter.Settings`): bits 1:0 the
+ *           aspect ratio (4:3, 8:7, 8:7 at twice the frame's size).
  *  - 0x0100 status (read-only): bit 0 HIGH_RES, bit 1 V224_MODE, bit 2 INTERLACE,
  *           bit 3 FIELD, bit 4 GSU_ACTIVE, bit 5 TURBO_ALLOW, bit 6 SS_AVAIL
  *           (the cartridge type supports save states), bit 7 SS_BUSY (the
@@ -687,12 +690,11 @@ class HandheldSnes extends Module with Core {
       colorDepthB = 5,
       framePeriod = FramePeriod,
     )
-    val videoFilter = new VideoFilterSpatialV0(
+    val videoFilter = new VideoScalerV0(
       colorInDepthR = 5,
       colorInDepthG = 5,
       colorInDepthB = 5,
       latency = SnesVideoFilter.Latency,
-      scale = SnesVideoFilter.Scale,
     )
     val audio = new AudioV0()
     val host = new HostV0()
@@ -967,6 +969,8 @@ class HandheldSnes extends Module with Core {
   val ssResult = RegInit(0.U(3.W))
   /** The CRT effect's settings (register 0x0028): a 25 % magenta / green mask, 75 % scanlines, soft (as the PSX's). */
   val crtReg = RegInit(0x36.U(6.W).asTypeOf(new Crt.Settings))
+  /** The picture's settings (register 0x002C): 4:3. */
+  val videoReg = RegInit(0.U.asTypeOf(new SnesVideoFilter.Settings))
   /** Debug: audio capture running (ring buffer of raw DSP samples). */
   val captureRunReg = RegInit(false.B)
   val captureIndexWire = Wire(UInt(CaptureIndexBits.W))
@@ -1012,6 +1016,7 @@ class HandheldSnes extends Module with Core {
       0x0018 -> RegisterMap.Entry.rw(ssSlotReg),
       0x001C -> RegisterMap.Entry.r(ssResult),
       0x0028 -> RegisterMap.Entry.rw(crtReg),
+      0x002C -> RegisterMap.Entry.rw(videoReg),
       0x0030 -> RegisterMap.Entry.r(romInfoWire),
       0x0100 -> RegisterMap.Entry.r(statusWire),
     ) ++ (if (debugAudio) Seq(
@@ -1808,6 +1813,9 @@ class HandheldSnes extends Module with Core {
   val padRowsLeft = RegInit(0.U(4.W))
   val outVblank = RegInit(false.B)
   val vsyncTimer = RegInit(0.U(6.W))
+  /** The frame being written has 224 lines (it was padded for them), and the last one completed, which is shown. */
+  val writingV224 = RegInit(true.B)
+  val shownV224 = RegInit(true.B)
   padHblank := false.B
 
   /** Emit one black row: 256 pixels then an hblank edge; true in the cycle the row completes. */
@@ -1843,6 +1851,7 @@ class HandheldSnes extends Module with Core {
         padState := PadState.vsync
         outVblank := true.B
         vsyncTimer := 63.U
+        shownV224 := writingV224
       } .otherwise {
         padRow()
       }
@@ -1854,6 +1863,7 @@ class HandheldSnes extends Module with Core {
         outRow := 0.U
         padX := 0.U
         padRowsLeft := Mux(core.io.V224_MODE, 8.U, 0.U)
+        writingV224 := core.io.V224_MODE
         padState := PadState.top
       }
     }
@@ -2036,16 +2046,32 @@ class HandheldSnes extends Module with Core {
     io.sdram.dataDir := sdram.io.signals.dataDir
   }
 
-  // Video filter: the CRT effect (see `SnesVideoFilter`), in the display
-  // clock domain.
+  // Video filter: the scaling and the CRT effect (see `SnesVideoFilter`),
+  // in the display clock domain.
   val systemClock = clock
+  val filterSettings = Wire(new Bundle {
+    val crt = new Crt.Settings
+    val video = new SnesVideoFilter.Settings
+    val v224 = Bool()
+  })
+  filterSettings.crt := crtReg
+  filterSettings.video := videoReg
+  filterSettings.v224 := shownV224
   withClockAndReset (io.videoFilter.clock, io.videoFilter.reset) {
     val filter = Module(new SnesVideoFilter)
-    filter.io.settings := XpmCdcHandshake.continuous(systemClock, crtReg)
-    filter.io.dataIn := io.videoFilter.dataIn
+    val settings = XpmCdcHandshake.continuous(systemClock, filterSettings)
+    filter.io.crt := settings.crt
+    filter.io.settings := settings.video
+    filter.io.v224 := settings.v224
     filter.io.x := io.videoFilter.x
     filter.io.y := io.videoFilter.y
+    filter.io.screenWidth := io.videoFilter.screenWidth
+    filter.io.screenHeight := io.videoFilter.screenHeight
     filter.io.columnMajor := io.videoFilter.columnMajor
+    filter.io.hdmi := io.videoFilter.hdmi
+    io.videoFilter.frameX := filter.io.frameX
+    io.videoFilter.frameY := filter.io.frameY
+    filter.io.dataIn := io.videoFilter.dataIn
     io.videoFilter.dataOut := filter.io.dataOut
   }
 }

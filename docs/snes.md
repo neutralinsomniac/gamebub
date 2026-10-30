@@ -330,7 +330,7 @@ it is the core's clock rate when nothing wrapped.
 The PPU outputs one pixel per `DOTCLK` rising edge (DOTCLK is a 50 % clock at
 the pixel rate). The glue latches R/G/B and blanking on each rising edge,
 counts pixels per line, and drops odd pixels in 512-pixel (hi-res) modes. The
-framebuffer is 256 x 240 (scaled 2x to 512 x 480 on the rev4 LCD): the PPU's
+framebuffer is 256 x 240 (scaled to the screen's height, see below): the PPU's
 224 visible lines go to rows 8-231 and its 239 lines (overscan mode, `$2133`
 bit 2) to rows 0-238, matching where a TV would show them, with black padding
 rows written by the glue during the vertical blank so a mode switch leaves no
@@ -346,20 +346,42 @@ PAL; the rev1-3 drivers cannot and refresh unsynchronized).
 PAL is untested on the LCD; if the panel dislikes 50 Hz, frame-rate
 conversion is the fallback.
 
+The picture fills the screen's height at 4:3 or 8:7 (square pixels; the
+Aspect Ratio setting, register 0x002C, default 4:3): the 224 lines are
+scaled to the 480 rows, 640 or 549 pixels across on the LCD (all of HDMI's
+720 x 480, which a TV shows at 4:3, or 617 of it), and the 239 lines of
+overscan mode by 2 (640 or 512 across), centered. 8:7 Integer scales by 2
+both ways (512 x 448 with black bars on the LCD, like the framework's
+whole-number scaling; on HDMI 2 down but 576 across, which its narrower
+pixels need for 8:7). The framework keeps the
+frame and scans the screen; the core's video filter is a `VideoScalerV0`,
+which names the frame pixel to read for each screen pixel and makes its
+color, so `SnesVideoFilter` does the scaling itself: each screen pixel's
+middle in the frame, in 16-bit fixed point, from the screen's middle
+(the frame shown is the last one completed, whose line count the glue
+keeps for it). With Interpolation at Bilinear (the CRT effect's soft blur,
+register 0x0028 bit 5, the default), a screen pixel interpolates the frame
+pixels whose middles are around its own: across, through the `Crt`'s blur
+(each screen column blends its source column with the one to its left; the
+own column is the one right of the middle); down, without scanlines,
+through the `Crt`'s previous-line path (`Pixel.lineWeight`). With
+scanlines, the lines' beams are the vertical filter instead. At Nearest,
+each screen pixel is the frame pixel its middle is in. Past the frame's
+edges the neighbors are black.
+
 The CRT look is the PSX core's (`lib.video.Crt`: scanlines whose beams widen
 with their lines' brightness, an aperture-grille mask, a soft horizontal
 blur, all in linear light), with the same pause-menu settings (Scanlines,
-CRT Mask, Mask Type, Sharpness; register 0x0028; default 75 % scanlines and a
-25 % magenta / green mask, soft). It is drawn as the framework scans the
-framebuffer out: the core's video filter is a `VideoFilterSpatialV0`, which
-the framework tells, with each pixel, where it lies on the scaled frame, so
-`SnesVideoFilter` knows each pixel's frame pixel and which of its 2 x 2
-screen pixels it is. A frame row's two screen rows are the scanlines' two
-phases; with Soft, the left screen column of each source pixel is half the
-pixel to its left. (The PSX blends by where a screen column's left edge
-lies instead, which moves the picture right by a column; here the framework
-would cut that column off at the frame's edge.) The filter replaced the
-color correction, which the firmware never loaded for the external core.
+CRT Mask, Mask Type, and Interpolation for the PSX's Sharpness; register
+0x0028; default 75 % scanlines and a 25 % magenta / green mask, bilinear).
+With 224 lines filling the screen, 15 screen rows show 7 lines, so the rows
+fall at 15 distances from the beams (2 at two rows to a line); the picture is half a phase
+(1/60 line) lower than centered so that each row lands in the middle of
+one of the `Crt`'s phases (1/30 line) rather than on their edges. Rows past a
+line's beam miss the next line's beam, as on the PSX in PAL. HDMI and the
+rev 3 LCD scan row by row: the `Crt`'s line buffer then holds 1024
+columns. The filter replaced the color correction, which the firmware
+never loaded for the external core.
 
 Audio is the DSP's 16-bit stereo output, which updates every 671.16 cycles
 (~32 kHz) of the APU clock. The framework's filter chain
