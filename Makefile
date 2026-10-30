@@ -3,7 +3,7 @@
 # SNES and PSX external core packages for the SD card, zipped with
 # checksums.
 #
-#   make release             build/release/gamebub-handheld-<ver>-snes-psx-<hash>.zip
+#   make release             build/release/gamebub-handheld-<tag>-snes-psx-<hash>.zip
 #   make firmware            cargo build --release --features=rev4 (release does this)
 #   make bitstreams          all five bitstreams (~50 minutes; release does NOT)
 #   make HW=rev3 release     another board revision
@@ -11,7 +11,9 @@
 # The bitstreams under fpga/build/ must come from the same tree as the
 # firmware, or the menu never appears. Free BIOS replacements are taken from
 # BIOS_DIR (the system partition of an official release works). Commands run
-# through `nix develop` unless espflash is already on PATH.
+# through `nix develop` unless espflash is already on PATH. <tag> is the
+# newest release tag (0.1.2 and so on; rebases leave old tags off the current
+# history, so it is not git describe): tag the commit first, or pass VER=.
 
 HW ?= rev4
 HW_REVISION := $(patsubst rev%,%,$(HW))
@@ -19,13 +21,14 @@ BUILD ?= build
 RELEASE_DIR ?= $(BUILD)/release
 BIOS_DIR ?= fpga/build/official-v1.0.1
 
-VER := $(shell sed -n 's/^version = "\(.*\)"/\1/p' firmware/handheld/Cargo.toml | head -1)
+VER := $(shell git tag -l '[0-9]*' --sort=-v:refname | head -1)
+FW_VER := $(shell sed -n 's/^version = "\(.*\)"/\1/p' firmware/handheld/Cargo.toml | head -1)
 HASH := $(shell git describe --always --dirty --exclude '*')
 NAME := gamebub-handheld-$(VER)-snes-psx-$(HASH)
 OUT := $(RELEASE_DIR)/$(NAME)
 
 FIRMWARE_ELF := firmware/handheld/target/xtensa-esp32s3-espidf/release/handheld
-UF2 := $(OUT)/gamebub-handheld-$(HW)-$(VER).uf2
+UF2 := $(OUT)/gamebub-handheld-$(HW)-$(FW_VER).uf2
 BITSTREAMS := $(foreach c,boot gameboy gba,fpga/build/$(c)/$(c).bit.hs)
 BIOS := $(addprefix $(BIOS_DIR)/,gameboy.bios-dmg.bin gameboy.bios-cgb.bin gba.bios.bin)
 
