@@ -370,6 +370,7 @@ class PsxScanout(simulation: Boolean = false) extends Module {
   crt.io.in.columnStart := ShiftRegister(column.start, 3)
   val blurScale = Mux(io.columnMajor, BlurScale.U, RowMajorBlurScale.U)
   crt.io.in.columnWeight := ShiftRegister(Mux(column.inPicture, (column.acc * blurScale) >> 9, 0.U), 3)
+  crt.io.in.lineWeight := 256.U
   io.data := crt.io.out
 
   // Underruns: the fetcher's progress (its frame, strips fetched) against

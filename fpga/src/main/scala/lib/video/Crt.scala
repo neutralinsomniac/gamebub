@@ -98,6 +98,12 @@ object Crt {
      * lies in its source column: 256 for its own alone.
      */
     val columnWeight = UInt(9.W)
+    /**
+     * Without scanlines: the weight of the pixel's own source line, in
+     * 256ths (the rest is the previous line's), for a picture interpolated
+     * between its lines; 256 for its own alone.
+     */
+    val lineWeight = UInt(9.W)
   }
 
   /**
@@ -173,7 +179,7 @@ object Crt {
 
 /**
  * A CRT look for a scaled picture (the PSX's, from [[psx.PsxScanout]]; the
- * SNES's, from the framework's frame buffer), one pixel per cycle, in the
+ * SNES's, from [[net.gamebub.core.snes.SnesVideoFilter]]), one pixel per cycle, in the
  * display's clock domain: scanlines and a mask, in
  * linear light (as light adds up and dims: a darkened channel's 8-bit value
  * falls less than its light does). With both off, the picture comes out as
@@ -189,7 +195,10 @@ object Crt {
  * for bright ones. With 288 lines (PAL), the rows fall at other distances
  * from the beams; the next line's beam is left out, which makes the rows
  * past a beam a little darker. Not in 480-line modes (`scanlinesAllowed`
- * low), where each line is a row of its own.
+ * low), where each line is a row of its own. Without scanlines, a row
+ * blends its line with the previous one by `Pixel.lineWeight` instead (for
+ * a picture interpolated between its lines; the PSX's rows are their own
+ * line's alone).
  *
  * Mask: the phosphor stripes of an aperture grille, by screen column:
  * red, green and blue, or magenta and green; the other colors in a column
@@ -201,7 +210,8 @@ object Crt {
  * (`Pixel.columnWeight`; the PSX's by its left edge, a linear blend, which
  * moves the picture right by about a screen column), as a TV blurs its
  * composite signal; source pixels of uneven width (256 or 368 of them
- * across the picture) come out even.
+ * across the picture) come out even. (The SNES's weights make it a linear
+ * interpolation between the source columns' centers.)
  *
  * The neighbors these need come from the scan, or from a buffer across it.
  * Column-major (the LCD scans down each screen column), the previous line's
@@ -334,12 +344,17 @@ class Crt(phases: Seq[Int] = Crt.AllPhases, columns: Int = 1024) extends Module 
   val phase4 = delayed(io.in.phase, 4)
   val strength4 = delayed(strength, 4)
 
+  val lineWeight4 = delayed(io.in.lineWeight, 4)
+
   // Stage 5: the beams' weights, by their lines' brightness (ROMs, from the
-  // registers above).
+  // registers above); without scanlines, the lines' own weights.
   val currentWeights = VecInit(beamWeights(previous = false, tablePhases).flatten.flatten.map(_.U(9.W)))
   val previousWeights = VecInit(beamWeights(previous = true, tablePhases).flatten.flatten.map(_.U(9.W)))
-  val currentWeight5 = current4.brightness.map(b => RegNext(currentWeights(Cat(strength4, phase4, b))))
-  val previousWeight5 = previous4.brightness.map(b => RegNext(previousWeights(Cat(strength4, phase4, b))))
+  val noBeams4 = strength4 === 0.U
+  val currentWeight5 = current4.brightness.map(b =>
+    RegNext(Mux(noBeams4, lineWeight4, currentWeights(Cat(strength4, phase4, b)))))
+  val previousWeight5 = previous4.brightness.map(b =>
+    RegNext(Mux(noBeams4, 256.U - lineWeight4, previousWeights(Cat(strength4, phase4, b)))))
   val current5 = RegNext(current4.light)
   val previous5 = RegNext(previous4.light)
 

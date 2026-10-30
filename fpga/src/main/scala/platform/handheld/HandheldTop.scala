@@ -287,13 +287,13 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       videoFilterOut := videoFilter.dataOut
       videoFilter.latency
     }
-    case Some(videoFilter: VideoFilterSpatialV0) => {
-      // (Its position is driven by the scan, see the video section.)
-      videoFilter.clock := io.clock_av
-      videoFilter.reset := videoFilterReset
-      videoFilter.dataIn := videoFilterIn
-      videoFilterOut := videoFilter.dataOut
-      videoFilter.latency
+    case Some(scaler: VideoScalerV0) => {
+      // (The scan and the frame read are wired in the video section.)
+      scaler.clock := io.clock_av
+      scaler.reset := videoFilterReset
+      scaler.dataIn := videoFilterIn
+      videoFilterOut := scaler.dataOut
+      scaler.latency
     }
     case Some(x) => throw new CoreException("Unknown 'videoFilter': " + x.getClass())
     case None => {
@@ -301,9 +301,9 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       0
     }
   }
-  /** A filter told where each pixel lies ([[VideoFilterSpatialV0]]). */
-  val videoFilterSpatial: Option[VideoFilterSpatialV0] =
-    core.getInterface("videoFilter").collect { case filter: VideoFilterSpatialV0 => filter }
+  /** A filter that scales the frame itself ([[VideoScalerV0]]). */
+  val videoScaler: Option[VideoScalerV0] =
+    core.getInterface("videoFilter").collect { case scaler: VideoScalerV0 => scaler }
 
   // Audio
   val coreAudioData = Wire(new AudioV1.Sample)
@@ -766,20 +766,14 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
       pull.columnMajor := DontCare
       pull.frameStart := false.B
     }
-    // A spatial filter's position: that of the frame pixel being requested
-    // (driven by the HDMI / LCD scan below), which reaches the filter with
-    // its read.
-    val filterRequest = Wire(new Bundle {
-      val x = UInt(10.W)
-      val y = UInt(10.W)
-      val columnMajor = Bool()
-    })
-    filterRequest := DontCare
-    videoFilterSpatial.foreach { filter =>
-      val position = ShiftRegister(filterRequest, 3)
-      filter.x := position.x
-      filter.y := position.y
-      filter.columnMajor := position.columnMajor
+    videoScaler.foreach { scaler =>
+      // Driven by the HDMI / LCD scan below (see `scalerRead`).
+      scaler.x := DontCare
+      scaler.y := DontCare
+      scaler.screenWidth := DontCare
+      scaler.screenHeight := DontCare
+      scaler.columnMajor := DontCare
+      scaler.hdmi := DontCare
     }
 
     // Similar for overlay framebuffer.
@@ -800,6 +794,11 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
 
     val framebufferInBounds = Wire(Bool())
     val overlayInBounds = Wire(Bool())
+    /** A scaler's frame read: the framebuffer pixel it names (it draws the border too: it is always "in bounds"). */
+    def scalerRead(scaler: VideoScalerV0): Unit = {
+      framebufferReadAddress := (scaler.frameY * videoWidth.U + scaler.frameX)(framebufferReadAddress.getWidth - 1, 0)
+      framebufferInBounds := true.B
+    }
     val videoOutput = ColorRGB(8, 8, 8).make(r = 0, g = 0, b = 0)
     val darkenVideo = XpmCdcSingle(clock, controlVideoFilter.darken)
     when (framebufferInBounds) {
@@ -881,11 +880,15 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         videoX < (videoOffsetX + (videoWidth * videoScale)).U &&
         videoY >= videoOffsetY.U &&
         videoY < (videoOffsetY + (videoHeight * videoScale)).U
-      videoFilterSpatial.foreach { filter =>
-        require(filter.scale == videoScale, s"the video filter is drawn at ${filter.scale}x, HDMI scales by $videoScale")
-        filterRequest.x := videoX - videoOffsetX.U + framebufferReadDelay.U
-        filterRequest.y := videoY - videoOffsetY.U
-        filterRequest.columnMajor := false.B
+      videoScaler.foreach { scaler =>
+        // Row by row; the position runs `latency` pixels ahead along the row.
+        scaler.x := videoX + scaler.latency.U
+        scaler.y := videoY
+        scaler.screenWidth := screenWidth.U
+        scaler.screenHeight := screenHeight.U
+        scaler.columnMajor := false.B
+        scaler.hdmi := true.B
+        scalerRead(scaler)
       }
       videoPull.foreach { pull =>
         // Row by row; the request runs `latency` pixels ahead along the row.
@@ -973,12 +976,16 @@ class HandheldTop[T <: Core](coreFactory: () => T, revision: Revision) extends M
         val y = if (revision.displayRotate) aheadX else dpiDriverIo.pixelY
         (x.pad(10), y.pad(10))
       }
-      videoFilterSpatial.foreach { filter =>
-        require(filter.scale == videoScale, s"the video filter is drawn at ${filter.scale}x, the LCD scales by $videoScale")
-        val (x, y) = scanAhead(framebufferReadDelay)
-        filterRequest.x := x + ((-videoOffsetX) & 0x3FF).U
-        filterRequest.y := y + ((-videoOffsetY) & 0x3FF).U
-        filterRequest.columnMajor := revision.displayRotate.B
+      videoScaler.foreach { scaler =>
+        // As for a core's on-demand pixels below.
+        val (x, y) = scanAhead(scaler.latency)
+        scaler.x := x + ((-revision.displayOffsetX) & 0x3FF).U
+        scaler.y := y
+        scaler.screenWidth := screenWidth.U
+        scaler.screenHeight := screenHeight.U
+        scaler.columnMajor := revision.displayRotate.B
+        scaler.hdmi := false.B
+        scalerRead(scaler)
       }
       videoPull.foreach { pull =>
         // The request runs `latency` pixels ahead along the driver's scan
