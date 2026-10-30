@@ -877,10 +877,11 @@ class HandheldSnes extends Module with Core {
      * cartridge (from ROM_TYPE, see `hidingBase` and friends below): for a
      * base cartridge the core is only stalled if a memory access is still
      * outstanding when the CPU is about to latch data (SYSCLKF_CE), which
-     * hides the memory latency completely for the CPU; a Super FX cartridge
-     * gets the RAM hiding of bit 7, an SA-1 cartridge the ROM and BW-RAM
-     * hiding of bits 9 and 10, and a CX4 cartridge none (it accesses ROM on
-     * its own schedule and exports no sampling instants).
+     * hides the memory latency completely for the CPU (an S-DD1 cartridge
+     * also stalls when its decompressor is about to latch ROM data); a Super
+     * FX cartridge gets the RAM hiding of bit 7, an SA-1 cartridge the ROM
+     * and BW-RAM hiding of bits 9 and 10, and a CX4 cartridge none (it
+     * accesses ROM on its own schedule and exports no sampling instants).
      */
     val latencyHiding = Bool()
     /** Bit 1: pseudo-transparency blending in hi-res modes */
@@ -1486,21 +1487,29 @@ class HandheldSnes extends Module with Core {
   // SYSCLKF_CE, so its reads are always latency-hidden. ROM and BSRAM are
   // also read by coprocessors on their own schedule, so their reads are only
   // hidden when the firmware says it is safe: at the S-CPU latch alone for
-  // base cartridges, DSP-n and S-DD1 (bit 2); also at the GSU's RAM sampling
+  // base cartridges and DSP-n (bit 2); also at the decompressor's ROM
+  // sampling instant for S-DD1 (bit 2); also at the GSU's RAM sampling
   // instants for Super FX (bit 7, BSRAM only; see the config bits for why not
   // ROM); also at the SA-1 side's sampling instants for SA-1 (bits 9 and 10).
   // Otherwise the core stalls for as long as a read is outstanding. A nearly
   // full write queue stalls the core in every mode.
   //
+  // The S-DD1's decompressor strobes a read the cycle after SYSCLKR_CE or
+  // SYSCLKF_CE and latches ROM_Q two cycles later (MiSTer's fixed SDRAM
+  // latency), with the address held in between. The next strobe is at least
+  // three cycles after the last, so the read is never superseded before the
+  // decompressor samples it.
+  //
   // Config bit 2 asks for hiding in whatever mode is safe for the loaded
   // cartridge (ROM_TYPE bits 7:4 name the coprocessor: 0x7 Super FX, 0x6
-  // SA-1, 0x4 CX4); bits 7, 9 and 10 select the coprocessor modes directly
-  // and bit 8 (unsafe) is only ever explicit. Bit 2 is on from reset (no
-  // setting changes it); it and the explicit bits are for experiments over
-  // SPI.
+  // SA-1, 0x5 S-DD1, 0x4 CX4); bits 7, 9 and 10 select the coprocessor modes
+  // directly and bit 8 (unsafe) is only ever explicit. Bit 2 is on from reset
+  // (no setting changes it); it and the explicit bits are for experiments
+  // over SPI.
   val romChip = romTypeReg(7, 4)
   val chipGsu = romChip === 0x7.U
   val chipSa1 = romChip === 0x6.U
+  val chipSdd1 = romChip === 0x5.U
   val chipCx4 = romChip === 0x4.U
   val hidingBase = configReg.latencyHiding && !chipGsu && !chipSa1 && !chipCx4
   val hidingGsuRam = configReg.gsuRamLatencyHiding || (configReg.latencyHiding && chipGsu)
@@ -1509,8 +1518,8 @@ class HandheldSnes extends Module with Core {
   val hidingSa1Bwram = configReg.sa1BwramLatencyHiding || (configReg.latencyHiding && chipSa1)
   val romHidden = hidingBase || hidingGsuRom || hidingSa1Rom
   val bsramHidden = hidingBase || hidingGsuRam || hidingSa1Bwram
-  val romLatch = core.io.SYSCLKF_CE || (hidingGsuRom && core.io.GSU_ROM_SAMPLE) ||
-    (hidingSa1Rom && core.io.SA1_ROM_SAMPLE)
+  val romLatch = core.io.SYSCLKF_CE || (chipSdd1 && core.io.SDD1_ROM_SAMPLE) ||
+    (hidingGsuRom && core.io.GSU_ROM_SAMPLE) || (hidingSa1Rom && core.io.SA1_ROM_SAMPLE)
   // The S-CPU's clock enable fires every S-CPU cycle whether or not it reads
   // BSRAM; while the GSU / SA-1 owns the RAM bus the S-CPU cannot be reading
   // it, so only the coprocessor's own sampling instants count then.

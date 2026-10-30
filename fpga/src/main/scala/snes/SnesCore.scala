@@ -126,6 +126,8 @@ class SnesCore(config: SnesCoreConfig) extends ExtModule(Map(
     /** Game Bub addition: the SA-1 side samples BSRAM_Q this cycle / owns the BW-RAM bus (see SA1.vhd). */
     val SA1_BWRAM_SAMPLE = Output(Bool())
     val SA1_BWRAM_OWNED = Output(Bool())
+    /** Game Bub addition: the S-DD1's decompressor samples ROM_Q this cycle (see InputMgr.vhd). */
+    val SDD1_ROM_SAMPLE = Output(Bool())
     val GSU_TURBO = Input(Bool())
     val GSU_FASTROM = Input(Bool())
     val SUFAMI_SWAP = Input(Bool())
