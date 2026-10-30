@@ -66,6 +66,7 @@ module main (
 	output            SA1_ROM_SAMPLE,
 	output            SA1_BWRAM_SAMPLE,
 	output            SA1_BWRAM_OWNED,
+	output            SDD1_ROM_SAMPLE,
 	input             GSU_TURBO,
 	input             GSU_FASTROM,
 	input             SUFAMI_SWAP,
@@ -602,12 +603,15 @@ SDD1Map SDD1Map
 	.BSRAM_WE_N(SDD_BSRAM_WE_N),
 
 	.MAP_ACTIVE(MAP_ACTIVE[1]),
+	.ROM_SAMPLE(SDD1_ROM_SAMPLE),
 	.MAP_CTRL(ROM_TYPE),
 	.ROM_MASK(ROM_MASK),
 	.BSRAM_MASK(RAM_MASK)
 );
-end else
+end else begin
 assign MAP_ACTIVE[1] = 0;
+assign SDD1_ROM_SAMPLE = 0;
+end
 endgenerate
 
 wire [7:0]  GSU_DO;
