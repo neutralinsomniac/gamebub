@@ -22,7 +22,9 @@ entity InputMgr is
 		OUT_DATA    : out std_logic_vector(15 downto 0);
 		HEADER      : out std_logic_vector(3 downto 0);
 		
-		INIT_DONE	: out std_logic
+		INIT_DONE	: out std_logic;
+		-- Game Bub: the cycle in which ROM_DATA is sampled (for latency hiding)
+		ROM_SAMPLE	: out std_logic
 	);
 end InputMgr;
 
@@ -143,5 +145,7 @@ begin
 	ROM_ADDR <= LOAD_ADDR;
 	OUT_DATA <= CURR_DATA;
 	INIT_DONE <= TINIT_DONE;
+	-- WRITE_REQ: ROM_DATA is latched two cycles after ROM_RD (MiSTer's fixed SDRAM latency)
+	ROM_SAMPLE <= '1' when WAIT_ACCESS = 1 else '0';
 
 end rtl;

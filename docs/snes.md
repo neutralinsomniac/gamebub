@@ -216,9 +216,15 @@ explicitly (over SPI, for experiments).
 * *Latency hiding* (bit 2): only stall if a read is still outstanding when the
   S-CPU is about to latch data (`SYSCLKF_CE`). Hides all memory latency for
   the S-CPU; safe only when nothing else reads ROM or BSRAM. Used for base
-  cartridges, DSP-n and S-DD1. For a Super FX, SA-1 or CX4 cartridge (per
-  `ROM_TYPE`) the glue turns bit 2 into the modes below (bit 7; bits 9 and
-  10; none) instead.
+  cartridges and DSP-n. For an S-DD1 cartridge the glue also stalls at the
+  decompressor's sampling instant (`SDD1_ROM_SAMPLE`, a Game Bub addition to
+  `InputMgr.vhd`): it strobes a read the cycle after `SYSCLKR_CE` or
+  `SYSCLKF_CE` and latches `ROM_Q` two cycles later, MiSTer's fixed SDRAM
+  latency, so with the S-CPU latch alone a miss handed it stale data and
+  every decompressed graphic came out as noise. The next strobe is at least
+  three cycles away, so a request is never superseded before it is sampled.
+  For a Super FX, SA-1 or CX4 cartridge (per `ROM_TYPE`) the glue turns bit
+  2 into the modes below (bit 7; bits 9 and 10; none) instead.
 * *Super FX RAM latency hiding* (bit 7): BSRAM reads stall at `SYSCLKF_CE` or
   at the GSU's own sampling instant. `GSU.vhd` gained three outputs for this:
   `RAM_SAMPLE` (the cycle in which `RAM_ACCESS_CNT` reaches zero in a fetching

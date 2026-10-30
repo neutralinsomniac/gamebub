@@ -22,7 +22,9 @@ entity SDD1 is
 
 		ROM_A       : out std_logic_vector(23 downto 0);
 		ROM_DO		: in  std_logic_vector(15 downto 0);
-		ROM_RD_N		: out std_logic
+		ROM_RD_N		: out std_logic;
+		-- Game Bub: the cycle in which the decompressor samples ROM_DO (for latency hiding)
+		ROM_SAMPLE	: out std_logic
 	);
 end SDD1;
 
@@ -268,7 +270,8 @@ begin
 		
 		OUT_DATA   	=> DEC_IN_DATA,
 		HEADER		=> HEADER,
-		
+		ROM_SAMPLE	=> ROM_SAMPLE,
+
 		INIT_DONE	=> DEC_INIT_DONE
 	); 
 	
