@@ -359,7 +359,9 @@ scaled to the 480 rows, 640 or 549 pixels across on the LCD (all of HDMI's
 overscan mode by 2 (640 or 512 across), centered. 8:7 Integer scales by 2
 both ways (512 x 448 with black bars on the LCD, like the framework's
 whole-number scaling; on HDMI 2 down but 576 across, which its narrower
-pixels need for 8:7). The framework keeps the
+pixels need for 8:7); 4:3 Integer by 2 down and 7/3 across (597 x 448;
+672 on HDMI), so the scanlines fall on every line alike, as at 8:7 Integer,
+rather than beating against the 15/7 rows of the full-height scalings. The framework keeps the
 frame and scans the screen; the core's video filter is a `VideoScalerV0`,
 which names the frame pixel to read for each screen pixel and makes its
 color, so `SnesVideoFilter` does the scaling itself: each screen pixel's
@@ -370,7 +372,8 @@ register 0x0028 bit 5, the default), a screen pixel interpolates the frame
 pixels whose middles are around its own: across, through the `Crt`'s blur
 (each screen column blends its source column with the one to its left; the
 own column is the one right of the middle); down, without scanlines,
-through the `Crt`'s previous-line path (`Pixel.lineWeight`). With
+through the `Crt`'s previous-line path (`Pixel.lineWeight`), except in the
+Integer scalings, whose rows each show their own line, sharp. With
 scanlines, the lines' beams are the vertical filter instead. At Nearest,
 each screen pixel is the frame pixel its middle is in. Past the frame's
 edges the neighbors are black.
