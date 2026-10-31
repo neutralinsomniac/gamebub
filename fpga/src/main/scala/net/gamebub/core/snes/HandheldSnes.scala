@@ -628,7 +628,8 @@ object HandheldSnes {
  *           its pattern (RGB stripes, magenta / green), bit 5 soft (the
  *           picture interpolated bilinearly, see `SnesVideoFilter`).
  *  - 0x002C the picture (see `SnesVideoFilter.Settings`): bits 1:0 the
- *           aspect ratio (4:3, 8:7, 8:7 at twice the frame's size).
+ *           aspect ratio (4:3, 8:7, 8:7 at twice the frame's size, 4:3 at
+ *           two rows to a line).
  *  - 0x0100 status (read-only): bit 0 HIGH_RES, bit 1 V224_MODE, bit 2 INTERLACE,
  *           bit 3 FIELD, bit 4 GSU_ACTIVE, bit 5 TURBO_ALLOW, bit 6 SS_AVAIL
  *           (the cartridge type supports save states), bit 7 SS_BUSY (the
