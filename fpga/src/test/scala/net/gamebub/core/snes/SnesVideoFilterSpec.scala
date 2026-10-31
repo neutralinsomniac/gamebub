@@ -51,7 +51,7 @@ class SnesVideoFilterSpec extends AnyFreeSpec {
     if (u < 0 || u >= Width.toLong * One) return 0
     val inRows = v >= s.top.toLong * One && v < s.bottom.toLong * One
     val interpolateX = mode.blur == 1
-    val interpolateY = interpolateX && mode.scanlines == 0
+    val interpolateY = interpolateX && mode.scanlines == 0 && !s.integer
     val ownX = u + (if (interpolateX) One / 2 else 0)
     val ownY = v + (if (interpolateY) One / 2 else 0)
     val (column, line) = (Math.floorDiv(ownX, One.toLong).toInt, Math.floorDiv(ownY, One.toLong).toInt)
@@ -176,14 +176,18 @@ class SnesVideoFilterSpec extends AnyFreeSpec {
       assert((first - (screen.width - 1 - last)).abs <= 1, s"$s: columns $first-$last")
       val lines = s.bottom - s.top
       val (top, bottom) = pictureRows(mode)
-      val rows = if (s.aspect == Aspect87Integer) 2 * lines else ScreenRows
+      val rows = if (s.integer) 2 * lines else ScreenRows
       assert(bottom - top + 1 == rows && top == ScreenRows - 1 - bottom, s"$s: rows $top-$bottom")
       val aspect = square(s) / rows
-      assert((aspect - (if (s.aspect == Aspect43) 4.0 / 3 else Width.toDouble / lines)).abs < 0.001, s"$s: $aspect")
+      val expected = if (s.aspect == Aspect43 || s.aspect == Aspect43Integer) 4.0 / 3 else Width.toDouble / lines
+      assert((aspect - expected).abs < 0.001, s"$s: $aspect")
     }
     assert(Seq(false, true).map(v224 => pictureColumns(Mode(0, 0, 0, 0, Aspect43, v224), Lcd)) == Seq((80, 719), (80, 719)))
     assert(pictureColumns(Mode(0, 0, 0, 0, Aspect87Integer, true), Lcd) == (144, 655))
     assert(pictureRows(Mode(0, 0, 0, 0, Aspect87Integer, true)) == (16, 463))
+    assert(pictureColumns(Mode(0, 0, 0, 0, Aspect43Integer, true), Lcd) == (101, 698))
+    assert(pictureColumns(Mode(0, 0, 0, 0, Aspect43Integer, true), Hdmi) == (24, 695))
+    assert(pictureRows(Mode(0, 0, 0, 0, Aspect43Integer, true)) == (16, 463))
   }
 
   "phases: the rows' middles mid-phase, 15 with 224 lines to the screen's rows, 2 at two rows to a line" in {
@@ -257,5 +261,28 @@ class SnesVideoFilterSpec extends AnyFreeSpec {
 
   "HDMI, 8:7 Integer, 224 lines, bilinear, no scanlines or mask: 576 across" in {
     check(Mode(0, 0, 0, 1, aspect = Aspect87Integer, v224 = true), Hdmi, seed = 11)
+  }
+
+  "LCD, 4:3 Integer, 224 lines, bilinear, no scanlines or mask: blended across, two sharp rows to a line" in {
+    val mode = Mode(0, 0, 0, 1, aspect = Aspect43Integer, v224 = true)
+    check(mode, Lcd, seed = 12)
+    // (The model, for once without it.)
+    val image = frame(12)
+    val shown = model(image, mode, Lcd) _
+    for (y <- 16 until 464 by 2; x <- Seq(101, 300, 400, 698)) assert(shown(x, y) == shown(x, y + 1), s"x $x y $y")
+    assert(Seq(15, 464).forall(shown(400, _) == 0))
+    // (Screen column 400's middle is 3/14 of a frame pixel right of the
+    // frame's middle: 182/256 of column 128 and the rest of 127.)
+    val Seq(left, right) = Seq(127, 128).map(column => channels(image(8)(column)))
+    val blended = left.zip(right).map { case (l, r) => Crt.ToGamma((Crt.ToLinear(l) * 74 + Crt.ToLinear(r) * 182) >> 8) }
+    assert(shown(400, 16) == ((blended(0) << 16) | (blended(1) << 8) | blended(2)))
+  }
+
+  "LCD, 4:3 Integer, 224 lines: 75 % scanlines, a 25 % magenta / green mask, bilinear" in {
+    check(Mode(2, 1, 1, 1, aspect = Aspect43Integer, v224 = true), Lcd, seed = 13)
+  }
+
+  "HDMI, 4:3 Integer, 224 lines: 100 % scanlines, a 50 % RGB mask, nearest: 672 across" in {
+    check(Mode(3, 2, 0, 0, aspect = Aspect43Integer, v224 = true), Hdmi, seed = 14)
   }
 }

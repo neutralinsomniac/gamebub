@@ -15,25 +15,33 @@ object SnesVideoFilter {
   val FractionBits = 16
   val One = 1 << FractionBits
 
-  /** The aspect ratio setting's values: 4:3, 8:7 (square pixels), 8:7 at twice the frame's size. */
+  /**
+   * The aspect ratio setting's values: 4:3, 8:7 (square pixels), and
+   * either at two screen rows to a line (Integer, bit 1 set).
+   */
   val Aspect43 = 0
   val Aspect87 = 1
   val Aspect87Integer = 2
+  val Aspect43Integer = 3
 
   /** The scaling's settings (register 0x002C). */
   class Settings extends Bundle {
-    /** Bits 1:0: the aspect ratio: `Aspect43`, `Aspect87`, `Aspect87Integer` (3: as 0). */
+    /** Bits 1:0: the aspect ratio: `Aspect43`, `Aspect87`, `Aspect87Integer`, `Aspect43Integer`. */
     val aspect = UInt(2.W)
+
+    /** The picture is two screen rows to a line. */
+    def integer: Bool = aspect(1)
   }
 
   /**
    * How the frame is scaled: with 224 lines (`v224`, else 239), by
    * `aspect`, on the LCD (square pixels) or HDMI. The picture is the
    * frame's rows `top` until `bottom` (the PPU's lines), as tall as the
-   * screen (8:7 Integer: two screen rows to a line), and as wide as its
-   * aspect ratio makes it, centered: on the LCD with 224 lines, 640 x 480
-   * (4:3), 549 x 480 (8:7), 512 x 448 (8:7 Integer); with 239, 640 or 512
-   * across, all twice the lines tall (8:7 is the rows' scale both ways).
+   * screen (Integer: two screen rows to a line), and as wide as its aspect
+   * ratio makes it, centered: on the LCD with 224 lines, 640 x 480 (4:3),
+   * 549 x 480 (8:7), 597 x 448 (4:3 Integer), 512 x 448 (8:7 Integer); with
+   * 239, 640 or 512 across, all twice the lines tall (8:7 is the rows' scale
+   * both ways).
    *
    * A screen pixel's position in the frame (`u`, `v`, in frame pixels and
    * rows, `FractionBits` fixed point) is that of its middle: `step` frame
@@ -45,10 +53,11 @@ object SnesVideoFilter {
    * line) lower, so that they fall in the phases' middles.
    */
   case class Scaling(v224: Boolean, aspect: Int, hdmi: Boolean) {
+    val integer = aspect == Aspect87Integer || aspect == Aspect43Integer
     val (top, bottom) = if (v224) (8, 232) else (0, 240)
-    val stepY = if (aspect == Aspect87Integer) 0.5 else (bottom - top).toDouble / ScreenRows
+    val stepY = if (integer) 0.5 else (bottom - top).toDouble / ScreenRows
     /** The picture's width in square pixels. */
-    val squareWidth = if (aspect == Aspect43) (bottom - top) / stepY * 4 / 3 else Width / stepY
+    val squareWidth = if (aspect == Aspect43 || aspect == Aspect43Integer) (bottom - top) / stepY * 4 / 3 else Width / stepY
     /** And in screen pixels: HDMI's are 8/9 as wide as they are tall. */
     val width = if (hdmi) squareWidth * 9 / 8 else squareWidth
     val stepX = Width / width
@@ -58,15 +67,14 @@ object SnesVideoFilter {
     /** The frame position at the screen's middle. */
     val middleX = Width / 2 * One
     val middleY = (top + bottom) / 2 * One +
-      (if (v224 && aspect != Aspect87Integer) math.round(One / (2.0 * Crt.PhasesPerLine)).toInt else 0)
+      (if (v224 && !integer) math.round(One / (2.0 * Crt.PhasesPerLine)).toInt else 0)
     /** The position of the middle of screen column `x` of a screen `screenWidth` across, and of screen row `y`. */
     def u(x: Int, screenWidth: Int): Long = middleX + (2L * x + 1 - screenWidth) * halfStepX
     def v(y: Int): Long = middleY + (2L * y + 1 - ScreenRows) * halfStepY
   }
   /** Every scaling, by `Cat(hdmi, aspect, v224)`. */
   val Scalings: Seq[Scaling] = (0 until 16).map { i =>
-    val aspect = (i >> 1) & 3
-    Scaling(v224 = (i & 1) != 0, aspect = if (aspect == 3) Aspect43 else aspect, hdmi = (i & 8) != 0)
+    Scaling(v224 = (i & 1) != 0, aspect = (i >> 1) & 3, hdmi = (i & 8) != 0)
   }
 
   /** The phase of a screen row at frame position `v`: where its middle is in its line (rounded down, see [[Crt.Pixel]]). */
@@ -82,15 +90,17 @@ object SnesVideoFilter {
 
 /**
  * The SNES's video ([[net.gamebub.framework.interface.VideoScalerV0]]):
- * scales the frame to the screen's height at 4:3 or 8:7, or by 2 at 8:7
- * (see [[SnesVideoFilter.Scaling]]), and draws the CRT effect ([[Crt]]) on
- * it, in the display clock domain.
+ * scales the frame to the screen's height at 4:3 or 8:7, or by 2 down at
+ * 4:3 or 8:7 (see [[SnesVideoFilter.Scaling]]), and draws the CRT effect
+ * ([[Crt]]) on it, in the display clock domain.
  *
  * Interpolation: with the effect's blur (Bilinear in the menu, its Soft),
  * each screen pixel is a linear interpolation of the frame pixels around
  * its middle: across, the source columns whose middles are on either side
- * of it (the Crt's blur, by `columnWeight`); down, without scanlines, the
- * two lines likewise (by `lineWeight`). With scanlines, the lines' beams
+ * of it (the Crt's blur, by `columnWeight`); down, without scanlines and
+ * unless Integer, the two lines likewise (by `lineWeight`): at two rows to
+ * a line, each row is its own line's, the lines as sharp as the framework's
+ * whole-number scaling made them. With scanlines, the lines' beams
  * are the vertical filter instead: a row shows its own line's and the
  * previous one's, by where its middle is in its line (`phase`). Without the
  * blur, each screen pixel is the frame pixel its middle is in (nearest
@@ -134,7 +144,7 @@ class SnesVideoFilter extends Module {
   val top = byMode(_.top, 8)
   val bottom = byMode(_.bottom, 9)
   val interpolateX = io.crt.blur === 1.U
-  val interpolateY = interpolateX && io.crt.scanlines === 0.U
+  val interpolateY = interpolateX && io.crt.scanlines === 0.U && !io.settings.integer
 
   // Stage 1: the position in the frame.
   def offset(z: UInt, size: UInt): SInt = Cat(z, 1.U(1.W)).zext - size.zext
