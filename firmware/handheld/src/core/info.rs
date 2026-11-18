@@ -39,6 +39,9 @@ pub struct CoreInfo {
     pub files: Vec<CoreFile>,
     pub settings: Vec<CoreSetting>,
     pub statistics: Vec<CoreStatistic>,
+    /// The core register that gets [`FIRMWARE_FEATURES`] before its files
+    /// are loaded, if it has one (`firmware_features` in core.json).
+    pub firmware_features: Option<u32>,
     pub dumps: Vec<CoreDump>,
     pub bitstream: PathBuf,
     pub uses_cartridge: CoreCartridgeMode,
@@ -384,6 +387,9 @@ pub fn get_core(id: &str) -> Result<CoreInfo, String> {
         statistics: Vec<CoreStatistic>,
         #[serde(default)]
         dumps: Vec<CoreDump>,
+        #[serde(default)]
+        #[serde(deserialize_with = "deserialize_hex_u32_option")]
+        firmware_features: Option<u32>,
     }
 
     #[derive(Deserialize)]
@@ -463,6 +469,7 @@ pub fn get_core(id: &str) -> Result<CoreInfo, String> {
         bitstream: bitstream_path,
         settings,
         statistics: json_core.statistics,
+        firmware_features: json_core.firmware_features,
         dumps: json_core.dumps,
         core_dir,
     })
@@ -624,6 +631,19 @@ where
     }
 
     deserializer.deserialize_seq(Visitor::<T, MAX>(Vec::new()))
+}
+
+/// What this firmware does beyond the stock one, for a core that asks
+/// (`firmware_features`): bit 0, it leaves a file alone when the core
+/// answers `FILE_READ_START` with 0 (the stock firmware empties it).
+pub const FIRMWARE_FEATURES: u32 = 1 << 0;
+
+/// [`deserialize_hex_u32`] for an optional value.
+fn deserialize_hex_u32_option<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_hex_u32(deserializer).map(Some)
 }
 
 /// Serde helper to deserialize a u32, either from a hex string or a number

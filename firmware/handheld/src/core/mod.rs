@@ -576,6 +576,10 @@ impl CoreManager {
             device.set_cart_power(true);
         }
 
+        // A core that asks is told what this firmware does beyond the stock one.
+        if let Some(address) = self.core_info.as_ref().unwrap().firmware_features {
+            let _ = Device::lock().fpga.write_u32(address, info::FIRMWARE_FEATURES);
+        }
         self.load_files()?;
 
         // Transmit initial settings values
