@@ -13,6 +13,7 @@
   "hardware": {
     "cartridge_enable": "no"
   },
+  "firmware_features": "0x0024",
   "statistics": [
     {
       "label": "SDRAM row hits",

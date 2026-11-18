@@ -248,6 +248,7 @@ impl Gameboy {
             .into_iter()
             .collect(),
             statistics: Vec::new(),
+            firmware_features: None,
             dumps: Vec::new(),
             bitstream: crate::util::get_system_file_path("gameboy.bit.hs"),
         }
