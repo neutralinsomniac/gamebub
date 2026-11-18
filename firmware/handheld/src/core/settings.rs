@@ -104,7 +104,13 @@ impl CoreManager {
         }
 
         log::info!("Core setting {} => {}", setting.label, value);
-        let save_after = matches!(setting.inner, Action { save_after: true, .. });
+        let save_after = matches!(
+            setting.inner,
+            Action {
+                save_after: true,
+                ..
+            }
+        );
         self.setting_send(setting, value);
 
         if let Some(core_handler) = self.core_handler.get_mut() {
