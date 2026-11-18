@@ -96,9 +96,10 @@ pub struct CoreFile {
     /// behind the window; costs about the transfer time again).
     #[serde(default)]
     pub verify: bool,
-    /// If true, the file is a CD image (a `.cue` sheet with its `.bin` files,
-    /// or a raw `.bin`): its table of contents goes to `address` instead of
-    /// the file, and the core reads sectors by request (see `core::disc`).
+    /// If true, the file is a disc image, which the core reads on demand
+    /// (see `core::disc`): the files `dependent_on_0` are named after the
+    /// game rather than the disc (unless `per_disc`), and the pause menu
+    /// offers to change the disc.
     #[serde(default)]
     pub disc: bool,
     /// If true, a file `dependent_on_0` on a disc image is named after the
