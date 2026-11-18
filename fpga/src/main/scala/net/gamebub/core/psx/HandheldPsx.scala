@@ -77,16 +77,17 @@ object HandheldPsx {
      */
     val Sdram = 0x3000_0000L
     val Bios = Sdram + 0x80_0000
-    /** The disc's table of contents (see [[psx.PsxDisc]]). */
-    val DiscToc = 0x6000_0000L
-    /** The disc sector buffer. */
+    /** The disc's sector buffer, where the firmware writes the disc reader's file reads (see [[psx.PsxDisc]]). */
     val DiscSector = 0x7000_0000L
   }
 
   /**
    * File IDs (files.json): the disc, the BIOS for each region (slots 0-2,
    * the core's region codes), the memory cards in slots 1 and 2 and the
-   * save-state slots (6-9 for slots 1-4).
+   * save-state slots (6-9 for slots 1-4). The disc and the files named like
+   * it, its cue sheet (10) and image (11), are on demand: the disc reader
+   * reads them (see [[psx.PsxDisc]]); a write to the disc's ID is a disc
+   * change.
    */
   object FileId {
     val Disc = 0
@@ -213,13 +214,12 @@ class HandheldPsx extends Module with Core {
   val regCoreResetOnce = RegInit(false.B)
   regCoreResetOnce := false.B
 
-  /** Files loaded: the disc's table of contents, the BIOS slots. */
-  val discLoaded = RegInit(false.B)
-  /** Pulse: a disc's table of contents has been loaded (at the start, or a disc change while the core runs). */
+  /** Pulse: the host has put another disc in (a write to the disc's file, as a disc change from the pause menu does). */
   val discChanged = WireDefault(false.B)
+  /** Files loaded: the BIOS slots. */
   val biosLoaded = RegInit(VecInit(Seq.fill(3)(false.B)))
   val coreRunPulse = WireDefault(false.B)
-  val disc = Module(new PsxDisc(sectorHostAddress = HostMap.DiscSector))
+  val disc = Module(new PsxDisc)
 
   //////////////////////////////////
   // Host registers
@@ -264,7 +264,6 @@ class HandheldPsx extends Module with Core {
   val stateCycles = RegInit(0.U(32.W))
   /** A save or load is in progress. */
   val stateActive = Wire(Bool())
-  val discTocInterface = Wire(new MemoryInterface(addressWidth = 11, dataWidth = 32))
   val discSectorInterface = Wire(new MemoryInterface(addressWidth = 12, dataWidth = 32))
   // Statistics (the firmware logs them when the game is paused, clearing
   // each by writing it; 0x1000 / 0x1004 are the stall / run cycles every
@@ -305,7 +304,6 @@ class HandheldPsx extends Module with Core {
     entries = Seq(
       0x0.U(4.W) -> registerInterface,
       0x3.U(4.W) -> sdramHost,
-      0x6.U(4.W) -> discTocInterface,
       0x7.U(4.W) -> discSectorInterface,
       0xF0.U(8.W) -> commandInterface,
     ))
@@ -481,12 +479,10 @@ class HandheldPsx extends Module with Core {
   // spins the new disc up. The console is not reset, and the region stays
   // the first disc's.
   core.io.region := regionReg
-  core.io.hasCD := discLoaded
+  core.io.hasCD := disc.io.hasDisc
   core.io.LIDopen := false.B
-  disc.io.toc <> discTocInterface
   disc.io.sector <> discSectorInterface
   io.host.commandCore <> disc.io.commandCore
-  disc.io.discLoaded := discLoaded
   disc.io.discChanged := RegNext(discChanged, false.B)
   disc.io.start := coreRunPulse
   disc.io.coreReset := coreReset
@@ -895,13 +891,24 @@ class HandheldPsx extends Module with Core {
   // and reads a result from word 0.
   val commandHostState = RegInit(CommandState.idle)
   val regCommandHost = Reg(Vec(4, UInt(32.W)))
+  disc.io.commandWrite.valid := false.B
+  disc.io.commandWrite.bits := DontCare
   commandInterface <> RegisterMap(
     addressWidth = 16,
     dataWidth = 32,
     entries =
       regCommandHost.zipWithIndex.map { case (reg, i) => (0x0000 + (4 * i) -> RegisterMap.Entry.rw(reg)) } ++
-      // Core -> host request words (the disc's sector reads)
-      disc.io.commandWords.zipWithIndex.map { case (word, i) => (0x1000 + (4 * i) -> RegisterMap.Entry.r(word)) }
+      // Core -> host request words (the disc reader's file requests); the
+      // host writes its results into the first three
+      disc.io.commandWords.zipWithIndex.map { case (word, i) => (0x1000 + (4 * i) -> RegisterMap.Entry(32,
+        RegisterMap.ReadFn(_ => word),
+        RegisterMap.WriteFn((write, data) => {
+          when (write) {
+            disc.io.commandWrite.valid := true.B
+            disc.io.commandWrite.bits.index := i.U
+            disc.io.commandWrite.bits.data := data
+          }
+        }))) }
   )
   val setupReady = regCoreSetup && memoryReady
   statusWire := Cat(0.U(5.W), regCoreReset, regCoreSetup, memoryReady)
@@ -962,7 +969,6 @@ class HandheldPsx extends Module with Core {
       } .elsewhen (command === HostV0.CommandFileWriteEnd.U) {
         val loaded = regCommandHost(2) =/= 0.U
         when (fileId === FileId.Disc.U) {
-          discLoaded := loaded
           discChanged := loaded
         }
         for (slot <- 0 until 3) {
