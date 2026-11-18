@@ -48,7 +48,7 @@
       "address": "0x1024"
     },
     {
-      "label": "disc state",
+      "label": "disc reader",
       "address": "0x1028"
     },
     {
