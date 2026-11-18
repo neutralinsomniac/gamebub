@@ -7,8 +7,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use esp_idf_svc::hal::units::Hertz;
-
 use crate::{
     bitstream,
     device::{drivers::fpga, Device},
@@ -62,8 +60,6 @@ pub struct CoreManager {
     run_cartridge: bool,
     /// When the core last got focus, to put a duration on the statistics.
     focus_since: Option<Instant>,
-    /// The CD images of the running core's `disc` files, by file ID.
-    discs: Vec<(u16, disc::DiscImage)>,
     /// The disc file whose new disc is being chosen while the core runs
     /// (see `begin_disc_change`).
     changing_disc: Option<usize>,
@@ -93,7 +89,6 @@ impl CoreManager {
             open_on_demand_file: None,
             run_cartridge: false,
             focus_since: None,
-            discs: Vec::new(),
             changing_disc: None,
         }
     }
@@ -242,7 +237,6 @@ impl CoreManager {
         self.stage = Stage::Idle;
         self.selected_files.clear();
         self.open_on_demand_file = None;
-        self.discs.clear();
         self.changing_disc = None;
 
         InputManager::lock().clear_core_input_caps();
@@ -460,11 +454,13 @@ impl CoreManager {
     }
 
     /// Put the disc at `path` in the running core's drive, in place of the
-    /// one in `changing_disc`. The core gets the new table of contents while
-    /// it runs, and its drive sees the disc change. What goes with the disc
-    /// (the `per_disc` files, such as save states) is saved under the old
-    /// disc's name and loaded again under the new one's; what goes with the
-    /// game (a memory card) stays as it is.
+    /// one in `changing_disc`. The core reads its discs itself, on demand:
+    /// it is told by a write to the disc's file (`FILE_WRITE_START` /
+    /// `FILE_WRITE_END` with a size of 1), reads the new disc and lets its
+    /// drive see the change. What goes with the disc (the `per_disc` files:
+    /// the on-demand files named after it, such as its cue sheet, and save
+    /// states) is saved under the old disc's name and loaded again under the
+    /// new one's; what goes with the game (a memory card) stays as it is.
     fn change_disc(&mut self, path: PathBuf) {
         let index = self.changing_disc.unwrap();
         match self.change_disc_inner(index, &path) {
@@ -494,11 +490,13 @@ impl CoreManager {
     fn change_disc_inner(&mut self, index: usize, path: &Path) -> Result<Vec<String>, CoreError> {
         let core = self.core_info.as_ref().unwrap();
         let disc_file = &core.files[index];
-        let image = disc::DiscImage::open(path)
-            .map_err(|e| CoreError::FailedLoadFile(disc_file.label.to_string(), e))?;
+        let (disc_id, label) = (disc_file.id, disc_file.label.to_string());
+        if !path.is_file() {
+            return Err(CoreError::CannotOpenFile(label));
+        }
         // The files named after the disc, if this is the file they depend on.
         let goes_with_disc = |info: &CoreFile| info.dependent_on_0 && info.per_disc;
-        let dependents: Vec<usize> = if disc_file.id == 0 {
+        let dependents: Vec<usize> = if disc_id == 0 {
             (0..core.files.len())
                 .filter(|&i| goes_with_disc(&core.files[i]))
                 .collect()
@@ -509,7 +507,8 @@ impl CoreManager {
             self.persist_files(goes_with_disc)?;
         }
 
-        self.send_disc(index, image)?;
+        // The old disc's file (or one named after it) may be open for the core.
+        self.open_on_demand_file = None;
         self.selected_files[index] = Some(path.to_path_buf());
         self.remember_path(index, path);
 
@@ -522,6 +521,16 @@ impl CoreManager {
                 failed.push(label);
             }
         }
+        drop(scratch);
+
+        // Tell the core; it reads the new disc once this returns (its
+        // requests wait for the core manager).
+        self.run_core_command(&[command::FILE_WRITE_START, disc_id as u32], &mut [], SETUP_TIMEOUT)?;
+        self.run_core_command(
+            &[command::FILE_WRITE_END, disc_id as u32, 1, 0],
+            &mut [],
+            NOTIFY_TIMEOUT,
+        )?;
         Ok(failed)
     }
 
@@ -615,87 +624,6 @@ impl CoreManager {
         let _ = self.run_core_command(&[command::CORE_RUN], &mut [], NOTIFY_TIMEOUT);
         self.focus_changed(true);
         Ok(())
-    }
-
-    /// `DISC_READ`: a sector of a disc into the core's memory (file ID,
-    /// LBA, address), at the file's transfer speed, read back and compared
-    /// if it has `verify` set (written again, up to three times, when it
-    /// does not match).
-    fn handle_disc_read(&mut self, params: &[u32], _result: &mut [u32]) -> bool {
-        let (id, lba, address) = (params[0] as u16, params[1], params[2]);
-        let Some(info) = self
-            .core_info
-            .as_ref()
-            .and_then(|core| core.files.iter().find(|f| f.id == id))
-        else {
-            log::warn!("Disc read: no file {id}");
-            return false;
-        };
-        let write_clock = Hertz(info.max_transfer_speed * 1000 * 2);
-        let read_clock = write_clock.min(fpga::MAX_SPI_READ_CLOCK);
-        let verify = info.verify;
-        let Some((_, image)) = self.discs.iter_mut().find(|(i, _)| *i == id) else {
-            log::warn!("Disc read: no disc in file {id}");
-            return false;
-        };
-        // The scratch buffer (internal RAM, free while the core runs): the
-        // sector, then its read-back.
-        let Some(mut scratch) = crate::bitstream::SCRATCH.take() else {
-            log::warn!("Disc read: scratch buffer busy");
-            return false;
-        };
-        let (sector, readback) = scratch.deref_mut().split_at_mut(disc::SECTOR_SIZE);
-        let sector: &mut [u8; disc::SECTOR_SIZE] = sector.try_into().unwrap();
-        let readback = &mut readback[..disc::SECTOR_SIZE];
-        if let Err(e) = image.read_sector(lba, sector) {
-            log::error!("Disc read at {lba}: {e}");
-            return false;
-        }
-        let command = fpga::SpiCommand::new(fpga::FpgaSpiWordSize::Bits32);
-        for attempt in 0..3 {
-            let mut device = Device::lock();
-            if device
-                .fpga
-                .spi_write(Some(write_clock), command, address, sector)
-                .is_err()
-            {
-                return false;
-            }
-            if !verify {
-                return true;
-            }
-            if device
-                .fpga
-                .spi_read(Some(read_clock), command, address, readback)
-                .is_err()
-            {
-                return false;
-            }
-            drop(device);
-            if readback == &sector[..] {
-                if attempt > 0 {
-                    log::warn!("Disc read at {lba}: written correctly on attempt {}", attempt + 1);
-                }
-                return true;
-            }
-            let word = |b: &[u8], i: usize| u32::from_le_bytes(b[4 * i..4 * i + 4].try_into().unwrap());
-            let wrong: Vec<usize> = (0..disc::SECTOR_SIZE / 4)
-                .filter(|&i| word(sector, i) != word(readback, i))
-                .collect();
-            log::warn!(
-                "Disc read at {lba}: {} of {} words differ after writing (attempt {}): {}",
-                wrong.len(),
-                disc::SECTOR_SIZE / 4,
-                attempt + 1,
-                wrong
-                    .iter()
-                    .take(6)
-                    .map(|&i| format!("word {i} {:08X} -> {:08X}", word(sector, i), word(readback, i)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        false
     }
 
     fn load_bitstream(&mut self) {
