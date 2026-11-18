@@ -5,16 +5,18 @@ A port of the MiSTer PSX core
 Robert Peip, GPLv2), running as the external core `jeremy.PSX`. The core is
 vendored in `fpga/verilog/psx/` (its README lists the local changes), the glue
 is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
-`fpga/src/main/scala/psx/`, the descriptors in `fpga/cores/psx/`.
+`fpga/src/main/scala/psx/`, the descriptors in `fpga/cores/psx/`, and the disc
+reader, a program for a RISC-V CPU in the glue, in `fpga/cpu/psx-disc/`.
 
 ## Features
 
-* Discs from the microSD card: `.cue` sheets with their `.bin` files, or a lone `.bin`
+* Discs from the microSD card: a `.cue` sheet with its `.bin` file, or a lone `.bin`, read by the core itself
+  through the firmware's on-demand files
 * Region and NTSC / PAL from the disc, or set by hand
 * Memory cards: one per game (shared by its discs) and one shared by all games, as `.mcd`
   files; MiSTer's are compatible (rename its `.sav` to `.mcd`)
 * Save states: four slots per disc (not compatible with MiSTer's)
-* Disc swapping from the pause menu
+* Disc swapping from the pause menu (this tree's firmware)
 * Digital, Analog and DualShock controllers, with rumble
 * CRT look: scanlines, mask, soft horizontal blur
 * TV output through the Game Bub Dock (720 x 480 at 4:3, with the CRT look as set)
@@ -24,17 +26,21 @@ is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
 
 * Rumble on the dock's gamepads (the dock has no way to pass it on); it is the handheld's own, off while docked
 * 50 Hz TV output: PAL games run on the dock's 60 Hz output, every fifth frame shown twice
+* Cue sheets with a `.bin` per track (Redump's): the core can only read the files named like the selected one. Merge
+  the tracks into one `.bin` (binmerge does, writing a matching `.cue`), or select the first track's `.bin` (it plays
+  without its CD audio then)
 * `.iso`, CHD and libcrypt-protected discs (`.sbi`)
 * Board revisions before 4 (the core uses both SDRAM chips)
 
 ## Installing
 
-1. Flash the firmware from the same release (or this tree): the core needs it to read discs.
+1. Flash the firmware from the same release (or this tree).
 2. Copy `cores/jeremy.PSX/` to the SD card's `cores/`, from a release zip or built with
    `cd fpga && make psx package-psx` (into `fpga/build/package/cores/`).
 3. Add a PlayStation BIOS image for your discs' region to `cores/jeremy.PSX/`:
    `bios_us.bin`, `bios_jp.bin` or `bios_eu.bin`.
-4. Put discs (a `.cue` with its `.bin` files) anywhere under `roms/`.
+4. Put discs anywhere under `roms/`: a `.cue` with its `.bin` named alike (`Game.cue`, `Game.bin`), or a lone
+   `.bin`; select either file.
 
 ## Controls
 

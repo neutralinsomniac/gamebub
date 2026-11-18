@@ -1,0 +1,27 @@
+[package]
+name = "psx-disc"
+version = "0.1.0"
+edition = "2021"
+description = "The PSX core's disc reader: a program for the sub-CPU in the PSX glue (see README.md)"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+test = true
+
+[[bin]]
+name = "psx-disc"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.dev]
+panic = "abort"

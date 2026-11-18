@@ -1,19 +1,19 @@
 package psx
 
 import chisel3._
+import chisel3.experimental.ExtModule
 import chisel3.util._
 import lib.mem.MemoryInterface
 import net.gamebub.framework.interface.HostV0
 
 object PsxDisc {
-  /** Core -> host request: read a disc sector (see the firmware's `core::disc`). */
-  val CommandDiscRead = 0x0480
-  /** The disc's file ID (files.json). */
-  val DiscFileId = 0
   val SectorBytes = 2352
   val SectorWords = SectorBytes / 4
-  /** The sector holding the license text the region is read from. */
-  val LicenseSector = 154
+  /** The sector buffer (words): a sector, and a cue sheet's chunks. */
+  val SectorBufferWords = 1024
+  /** The sub-CPU's RAM: its program, data and stack. */
+  val RamBytes = 16 * 1024
+  val RamWords = RamBytes / 4
 
   /** Region codes, as the core's `region` input takes them. */
   object Region {
@@ -22,70 +22,204 @@ object PsxDisc {
     val Europe = 2
   }
 
-  /** The license text's last words for each region. */
-  val RegionPatterns = Seq(
-    "Entertainment Amer  ica" -> Region.Us,
-    "Entertainment Inc." -> Region.Japan,
-    "Entertainment Euro pe" -> Region.Europe,
-  )
+  /** The sub-CPU's address space, by address bits 25-24. */
+  object Space {
+    val Ram = 0
+    val SectorBuffer = 1
+    val Registers = 2
+  }
 
-  /** A RAM the host writes and reads (32-bit words, byte addresses) and the glue reads. */
-  def hostRam(words: Int, host: MemoryInterface): SRAMInterface[UInt] = {
-    val ram = SRAM(words, UInt(32.W), numReadPorts = 1, numWritePorts = 0, numReadwritePorts = 1)
-    val port = ram.readwritePorts(0)
-    port.enable := host.enable
-    port.address := host.address >> 2
-    port.isWrite := host.write
-    port.writeData := host.dataWrite
-    host.dataRead := port.readData
-    host.done := RegNext(host.enable, false.B)
-    ram
+  /** The sub-CPU's registers (see the program, `fpga/cpu/psx-disc/src/main.rs`). */
+  object Regs {
+    val CmdWords = 0x00
+    val CmdCtrl = 0x18
+    val Events = 0x20
+    val Status = 0x24
+    val HpsLba = 0x28
+    val Stream = 0x2C
+    val TrackinfoData = 0x30
+    val TrackinfoAddr = 0x34
+    val Control = 0x38
+    val Timer = 0x3C
+    val Debug = 0x40
+    val DebugLba = 0x44
+  }
+
+  /**
+   * The program (`fpga/cpu/psx-disc`, built into the resources as
+   * `psx_disc.bin`), as little-endian words.
+   */
+  lazy val programWords: Seq[Long] = {
+    val stream = getClass.getClassLoader.getResourceAsStream("psx_disc.bin")
+    require(stream != null, "psx_disc.bin is missing from the resources (see fpga/cpu/psx-disc/README.md)")
+    val bytes = try stream.readAllBytes() finally stream.close()
+    bytes.map(_ & 0xFF).padTo((bytes.length + 3) / 4 * 4, 0).grouped(4).map { b =>
+      b(0).toLong | (b(1).toLong << 8) | (b(2).toLong << 16) | (b(3).toLong << 24)
+    }.toSeq
   }
 }
 
+/** The PicoRV32's ports (the disc reader uses the native memory interface only). */
+class PicoRV32Io extends Bundle {
+  val clk = Input(Clock())
+  val resetn = Input(Bool())
+  val trap = Output(Bool())
+  val mem_valid = Output(Bool())
+  val mem_instr = Output(Bool())
+  val mem_ready = Input(Bool())
+  val mem_addr = Output(UInt(32.W))
+  val mem_wdata = Output(UInt(32.W))
+  val mem_wstrb = Output(UInt(4.W))
+  val mem_rdata = Input(UInt(32.W))
+  val mem_la_read = Output(Bool())
+  val mem_la_write = Output(Bool())
+  val mem_la_addr = Output(UInt(32.W))
+  val mem_la_wdata = Output(UInt(32.W))
+  val mem_la_wstrb = Output(UInt(4.W))
+  val pcpi_valid = Output(Bool())
+  val pcpi_insn = Output(UInt(32.W))
+  val pcpi_rs1 = Output(UInt(32.W))
+  val pcpi_rs2 = Output(UInt(32.W))
+  val pcpi_wr = Input(Bool())
+  val pcpi_rd = Input(UInt(32.W))
+  val pcpi_wait = Input(Bool())
+  val pcpi_ready = Input(Bool())
+  val irq = Input(UInt(32.W))
+  val eoi = Output(UInt(32.W))
+  val trace_valid = Output(Bool())
+  val trace_data = Output(UInt(36.W))
+}
+
+object PicoRV32 {
+  /** RV32IMC, as the boot core has it (the program is built for riscv32imc). */
+  val Parameters: Map[String, chisel3.experimental.Param] = Map(
+    "BARREL_SHIFTER" -> 1,
+    "ENABLE_MUL" -> 1,
+    "ENABLE_DIV" -> 1,
+    "COMPRESSED_ISA" -> 1,
+  ).map { case (k, v) => k -> chisel3.experimental.IntParam(v) }
+
+  /** `fpga/verilog/picorv32.v`, found from the working directory up (for simulation). */
+  def source: String = {
+    val roots = Option(System.getenv("MILL_WORKSPACE_ROOT")).toSeq.map(new java.io.File(_)) ++
+      Iterator.iterate(new java.io.File(System.getProperty("user.dir")).getAbsoluteFile)(_.getParentFile)
+        .takeWhile(_ != null).toSeq
+    val file = roots.flatMap(r => Seq(new java.io.File(r, "fpga/verilog/picorv32.v"), new java.io.File(r, "verilog/picorv32.v")))
+      .find(_.isFile)
+      .getOrElse(throw new IllegalStateException("picorv32.v not found above " + System.getProperty("user.dir")))
+    val s = scala.io.Source.fromFile(file)
+    try s.mkString finally s.close()
+  }
+}
+
+/** The PicoRV32 in a build: `verilog/picorv32.v` is in every target's file list. */
+class PicoRV32Ext extends ExtModule(PicoRV32.Parameters) {
+  override def desiredName = "picorv32"
+  val io = FlatIO(new PicoRV32Io)
+}
+
+/** The PicoRV32 in simulation: its source inlined. */
+class PicoRV32Sim extends BlackBox(PicoRV32.Parameters) with HasBlackBoxInline {
+  override def desiredName = "picorv32"
+  val io = IO(new PicoRV32Io)
+  setInline("picorv32.v", PicoRV32.source)
+}
+
 /**
- * The PSX's CD drive, fed from a CD image on the SD card by the firmware
- * (in the clk1x domain, the module's clock).
- *
- * The firmware writes the image's table of contents (`toc`, the format of
- * the firmware's `DiscImage::toc`) and reads sectors on request: the glue
- * raises a core -> host request (`commandCore`, command words in
- * `commandWords`, which the host reads at 0xF000_1000) for a sector, which
- * the firmware writes into `sector`.
- *
- * - Region: when the core is first started (`start`, CoreRun) with a disc,
- *   it is held in reset (`holdCore`) while the license sector (154) is read
- *   and its text searched for the region ("...Entertainment Amer  ica",
- *   "... Inc.", "...Euro pe"), as the MiSTer does.
- * - Table of contents: every time the core leaves reset, it gets its track
- *   table through its `trackinfo` port (MiSTer's `disk_t` layout; the core
- *   ignores the port in reset), and again when the host loads another disc
- *   while it runs (`discChanged`): the core's drive takes that as a disc
- *   change, as on the MiSTer, and shows its lid opened and closed.
- * - Sectors: when the core asks for one (`hpsReq`, `hpsLba`), it is
- *   requested from the firmware, then acknowledged and streamed into the
- *   core as 1176 halfwords, low half of each word first (the bytes in file
- *   order).
+ * The disc reader's RAM: single-port, byte write enables, read-first, one
+ * cycle; it holds `init` (the program) from configuration on.
  */
-class PsxDisc(sectorHostAddress: Long) extends Module {
+class PsxDiscRam(init: Seq[Long], depth: Int) extends BlackBox with HasBlackBoxInline {
+  require(init.length <= depth, s"the program (${init.length * 4} bytes) does not fit in the RAM (${depth * 4} bytes)")
+  val addressWidth = log2Ceil(depth)
+  val io = IO(new Bundle {
+    val clk = Input(Clock())
+    val en = Input(Bool())
+    val we = Input(UInt(4.W))
+    val addr = Input(UInt(addressWidth.W))
+    val din = Input(UInt(32.W))
+    val dout = Output(UInt(32.W))
+  })
+  private val words = init.zipWithIndex.filter(_._1 != 0).map { case (w, i) => f"    mem[$i] = 32'h$w%08x;" }
+  setInline("PsxDiscRam.sv",
+    s"""// The PSX disc reader's RAM, holding its program from configuration on
+       |// (generated by psx.PsxDisc from psx_disc.bin).
+       |module PsxDiscRam(
+       |  input clk,
+       |  input en,
+       |  input [3:0] we,
+       |  input [${addressWidth - 1}:0] addr,
+       |  input [31:0] din,
+       |  output reg [31:0] dout
+       |);
+       |  (* ram_style = "block" *) reg [31:0] mem [0:${depth - 1}];
+       |  initial begin
+       |`ifndef SYNTHESIS
+       |    for (int i = 0; i < $depth; i++) mem[i] = 32'h0;
+       |`endif
+       |${words.mkString("\n")}
+       |  end
+       |  always @(posedge clk) begin
+       |    if (en) begin
+       |      for (int i = 0; i < 4; i++)
+       |        if (we[i]) mem[addr][8 * i +: 8] <= din[8 * i +: 8];
+       |      dout <= mem[addr];
+       |    end
+       |  end
+       |endmodule
+       |""".stripMargin)
+}
+
+/**
+ * The PSX's CD drive, fed from a disc image on the SD card through the
+ * framework's on-demand file requests (in the clk1x domain, the module's
+ * clock): a sub-CPU (a PicoRV32 with 16 KiB of RAM) runs the disc reader,
+ * `fpga/cpu/psx-disc`, which does what the MiSTer's firmware does for its
+ * PSX core. Any firmware with on-demand files serves it.
+ *
+ * - When the core is first started (`start`, CoreRun), it is held in reset
+ *   (`holdCore`) while the reader finds the image (the cue sheet named like
+ *   the selected disc file, file 10, with the image named like it, file 11;
+ *   or that image alone), parses it and reads the region from the license
+ *   sector (154).
+ * - Every time the core leaves reset, the reader gives it its track table
+ *   through its `trackinfo` port (MiSTer's `disk_t` layout; the core ignores
+ *   the port in reset), and again when the host signals another disc while
+ *   it runs (`discChanged`): the core's drive takes that as a disc change.
+ * - Sectors: when the core asks for one (`hpsReq`, `hpsLba`), the reader
+ *   has the firmware write it into the sector buffer (host address
+ *   0x7000_0000, `sector`), and the glue acknowledges and streams it into
+ *   the core as 1176 halfwords, low half of each word first (the bytes in
+ *   file order).
+ *
+ * Core -> host requests: the reader sets the six words (`commandWords`, the
+ * host reads them at 0xF000_1000) and raises `commandCore`; the host writes
+ * its three result words back into them (`commandWrite`).
+ */
+class PsxDisc(simulation: Boolean = false) extends Module {
   import PsxDisc._
 
   val io = IO(new Bundle {
-    val toc = new MemoryInterface(addressWidth = 11, dataWidth = 32)
+    /** The sector buffer, as the host reads and writes it. */
     val sector = new MemoryInterface(addressWidth = 12, dataWidth = 32)
     val commandCore = Flipped(new HostV0.CommandChannel)
-    val commandWords = Output(Vec(4, UInt(32.W)))
+    val commandWords = Output(Vec(6, UInt(32.W)))
+    /** The host writes a request word (its result words). */
+    val commandWrite = Input(Valid(new Bundle {
+      val index = UInt(3.W)
+      val data = UInt(32.W)
+    }))
 
-    /** A disc's table of contents has been loaded. */
-    val discLoaded = Input(Bool())
-    /** Pulse: a disc's table of contents has been loaded, into the RAM already. */
+    /** Pulse: the host has put another disc in (a disc file write). */
     val discChanged = Input(Bool())
     /** Pulse: the core is started (CoreRun). */
     val start = Input(Bool())
-    /** Keep the core in reset (the region is being read). */
+    /** Keep the core in reset (the disc is being read). */
     val holdCore = Output(Bool())
     /** The core is in reset. */
     val coreReset = Input(Bool())
+    /** A disc can be read. */
+    val hasDisc = Output(Bool())
     /** The disc's region, once read (valid: it was recognized). */
     val region = Output(Valid(UInt(2.W)))
 
@@ -106,263 +240,208 @@ class PsxDisc(sectorHostAddress: Long) extends Module {
     val clearSectorReads = Input(Bool())
     val clearReadErrors = Input(Bool())
     val clearWorstWait = Input(Bool())
-    /** Debug: the state machines and the core's request; the last LBA asked for. */
+    /** Debug: the reader's debug word (bit 31: the CPU has trapped); the last LBA asked for. */
     val debugState = Output(UInt(32.W))
     val lastLba = Output(UInt(32.W))
   })
 
-  val tocRam = hostRam(512, io.toc)
-  val sectorRam = hostRam(1024, io.sector)
-  val tocRead = tocRam.readPorts(0)
-  val sectorRead = sectorRam.readPorts(0)
-  tocRead.enable := true.B
-  tocRead.address := 0.U
-  sectorRead.enable := true.B
-  sectorRead.address := 0.U
+  //////////////////////////////////
+  // CPU and memories
+  //////////////////////////////////
+  val cpu = if (simulation) Module(new PicoRV32Sim).io else Module(new PicoRV32Ext).io
+  cpu.clk := clock
+  cpu.resetn := !reset.asBool
+  cpu.pcpi_wr := false.B
+  cpu.pcpi_rd := 0.U
+  cpu.pcpi_wait := false.B
+  cpu.pcpi_ready := false.B
+  cpu.irq := 0.U
+
+  val ram = Module(new PsxDiscRam(programWords, RamWords))
+  val sectorRam = SRAM.masked(SectorBufferWords, Vec(4, UInt(8.W)), numReadPorts = 1, numWritePorts = 0, numReadwritePorts = 1)
+  val sectorPort = sectorRam.readwritePorts(0)
+  val streamPort = sectorRam.readPorts(0)
+  streamPort.enable := true.B
+  streamPort.address := 0.U
+
+  // An access takes two cycles: issued in the first (the sector buffer
+  // waits while the host uses it), answered (`mem_ready`) in the second.
+  val space = cpu.mem_addr(25, 24)
+  val ready = RegInit(false.B)
+  val hostSector = io.sector.enable
+  val issue = cpu.mem_valid && !ready && !(space === Space.SectorBuffer.U && hostSector)
+  val write = cpu.mem_wstrb.orR
+  ready := issue
+  val issuedSpace = RegEnable(space, 0.U, issue)
+  val registerRead = Reg(UInt(32.W))
+  cpu.mem_ready := ready
+  cpu.mem_rdata := MuxLookup(issuedSpace, registerRead)(Seq(
+    Space.Ram.U -> ram.io.dout,
+    Space.SectorBuffer.U -> sectorPort.readData.asUInt,
+  ))
+
+  ram.io.clk := clock
+  ram.io.en := issue && space === Space.Ram.U
+  ram.io.we := Mux(write, cpu.mem_wstrb, 0.U)
+  ram.io.addr := cpu.mem_addr(log2Ceil(RamBytes) - 1, 2)
+  ram.io.din := cpu.mem_wdata
+
+  val cpuSector = issue && space === Space.SectorBuffer.U
+  sectorPort.enable := hostSector || cpuSector
+  sectorPort.address := Mux(hostSector, io.sector.address >> 2, cpu.mem_addr(log2Ceil(SectorBufferWords) + 1, 2))
+  sectorPort.isWrite := Mux(hostSector, io.sector.write, write)
+  sectorPort.writeData := Mux(hostSector, io.sector.dataWrite, cpu.mem_wdata).asTypeOf(sectorPort.writeData)
+  sectorPort.mask.get := Mux(hostSector, "b1111".U, cpu.mem_wstrb).asBools
+  io.sector.dataRead := sectorPort.readData.asUInt
+  io.sector.done := RegNext(hostSector, false.B)
 
   //////////////////////////////////
+  // Registers
+  //////////////////////////////////
+  val regWrite = issue && space === Space.Registers.U && write
+  val regRead = issue && space === Space.Registers.U && !write
+  val regAddress = cpu.mem_addr(7, 0)
+  def written(address: Int): Bool = regWrite && regAddress === address.U
+
   // Core -> host requests
-  //////////////////////////////////
-  // Raise the request with the words set; it ends with `done` or `error`
-  // from the host, then waits for the host to clear its answer.
-  object RequestState extends ChiselEnum {
-    val idle, waiting, clearing = Value
-  }
-  val requestState = RegInit(RequestState.idle)
-  val words = RegInit(VecInit(Seq.fill(4)(0.U(32.W))))
+  val words = RegInit(VecInit(Seq.fill(6)(0.U(32.W))))
+  val request = RegInit(false.B)
   io.commandWords := words
-  val requestStart = WireDefault(false.B)
-  val requestLba = WireDefault(0.U(32.W))
-  /** Pulses when the host has answered; `requestFailed` then says how. */
-  val requestDone = WireDefault(false.B)
-  val requestFailed = RegInit(false.B)
-  io.commandCore.request := requestState === RequestState.waiting
-  switch (requestState) {
-    is (RequestState.idle) {
-      when (requestStart) {
-        words(0) := CommandDiscRead.U
-        words(1) := DiscFileId.U
-        words(2) := requestLba
-        words(3) := sectorHostAddress.U
-        requestState := RequestState.waiting
-      }
-    }
-    is (RequestState.waiting) {
-      when (io.commandCore.done || io.commandCore.error) {
-        requestFailed := io.commandCore.error
-        requestState := RequestState.clearing
-      }
-    }
-    is (RequestState.clearing) {
-      when (!io.commandCore.done && !io.commandCore.error) {
-        requestState := RequestState.idle
-        requestDone := true.B
-      }
-    }
+  io.commandCore.request := request
+  for (i <- 0 until 6) {
+    when (written(Regs.CmdWords + 4 * i)) { words(i) := cpu.mem_wdata }
   }
+  when (io.commandWrite.valid && io.commandWrite.bits.index < 6.U) {
+    words(io.commandWrite.bits.index) := io.commandWrite.bits.data
+  }
+  when (written(Regs.CmdCtrl)) { request := cpu.mem_wdata(0) }
+  val commandStatus = Cat(io.commandCore.error, io.commandCore.done, io.commandCore.busy, request)
+
+  // Events (sticky, cleared by writing ones)
+  val evStart = RegInit(false.B)
+  val evLeftReset = RegInit(false.B)
+  val evDiscChanged = RegInit(false.B)
+  val evSector = RegInit(false.B)
+  when (written(Regs.Events)) {
+    when (cpu.mem_wdata(0)) { evStart := false.B }
+    when (cpu.mem_wdata(1)) { evLeftReset := false.B }
+    when (cpu.mem_wdata(2)) { evDiscChanged := false.B }
+  }
+  when (io.start) { evStart := true.B }
+  when (RegNext(io.coreReset, true.B) && !io.coreReset) { evLeftReset := true.B }
+  when (io.discChanged) { evDiscChanged := true.B }
+  val sectorAsked = io.hpsReq && !RegNext(io.hpsReq, false.B)
+
+  // Control: the core is held, with no disc, until the reader has run.
+  val hold = RegInit(true.B)
+  val hasDisc = RegInit(false.B)
+  val region = RegInit(0.U.asTypeOf(Valid(UInt(2.W))))
+  when (written(Regs.Control)) {
+    hold := cpu.mem_wdata(0)
+    hasDisc := cpu.mem_wdata(1)
+    region.valid := cpu.mem_wdata(4)
+    region.bits := cpu.mem_wdata(6, 5)
+  }
+  io.holdCore := hold
+  io.hasDisc := hasDisc
+  io.region := region
+
+  // Track table words
+  val trackinfoData = Reg(UInt(32.W))
+  when (written(Regs.TrackinfoData)) { trackinfoData := cpu.mem_wdata }
+  io.trackinfoWrite := RegNext(written(Regs.TrackinfoAddr), false.B)
+  io.trackinfoAddr := RegEnable(cpu.mem_wdata(8, 0), 0.U, written(Regs.TrackinfoAddr))
+  io.trackinfoData := trackinfoData
+
+  val timer = RegInit(0.U(32.W))
+  timer := timer + 1.U
+  val debug = RegInit(0.U(32.W))
+  val debugLba = RegInit(0.U(32.W))
+  when (written(Regs.Debug)) { debug := cpu.mem_wdata }
+  when (written(Regs.DebugLba)) { debugLba := cpu.mem_wdata }
+  io.debugState := Cat(cpu.trap, debug(30, 0))
+  io.lastLba := debugLba
 
   //////////////////////////////////
-  // Region (once per disc)
+  // Sectors into the core
   //////////////////////////////////
-  object InitState extends ChiselEnum {
-    val idle, request, waiting, scanRead, scanBytes, done = Value
+  object StreamState extends ChiselEnum {
+    val idle, ack, stream = Value
   }
-  val initState = RegInit(InitState.idle)
-  val regionReg = RegInit(0.U.asTypeOf(Valid(UInt(2.W))))
-  io.region := regionReg
-  io.holdCore := initState =/= InitState.idle && initState =/= InitState.done
-  val maxPattern = RegionPatterns.map(_._1.length).max
-  /** The last bytes scanned, newest first. */
-  val window = Reg(Vec(maxPattern, UInt(8.W)))
-  val scanWord = Reg(UInt(10.W))
-  val scanByte = Reg(UInt(2.W))
-  val scanData = Reg(UInt(32.W))
-  switch (initState) {
-    is (InitState.idle) {
-      when (io.start && io.discLoaded) {
-        initState := InitState.request
-      }
-    }
-    is (InitState.request) {
-      when (requestState === RequestState.idle) {
-        requestStart := true.B
-        requestLba := LicenseSector.U
-        initState := InitState.waiting
-      }
-    }
-    is (InitState.waiting) {
-      when (requestDone) {
-        scanWord := 0.U
-        initState := Mux(requestFailed, InitState.done, InitState.scanRead)
-      }
-    }
-    is (InitState.scanRead) {
-      // The word is out of the RAM in the next cycle.
-      sectorRead.address := scanWord
-      scanByte := 0.U
-      initState := InitState.scanBytes
-    }
-    is (InitState.scanBytes) {
-      val data = Mux(scanByte === 0.U, sectorRead.data, scanData)
-      when (scanByte === 0.U) {
-        scanData := sectorRead.data
-      }
-      val byte = (data >> (scanByte ## 0.U(3.W)))(7, 0)
-      val shifted = VecInit(byte +: window.init)
-      window := shifted
-      for ((text, code) <- RegionPatterns) {
-        val bytes = text.getBytes("ASCII").toSeq
-        // newest byte = the pattern's last
-        val hit = bytes.reverse.zipWithIndex.map { case (b, i) => shifted(i) === (b & 0xFF).U }.reduce(_ && _)
-        when (hit && !regionReg.valid) {
-          regionReg.valid := true.B
-          regionReg.bits := code.U
-        }
-      }
-      scanByte := scanByte + 1.U
-      when (scanByte === 3.U) {
-        scanWord := scanWord + 1.U
-        initState := Mux(scanWord === (SectorWords - 1).U, InitState.done, InitState.scanRead)
-      }
-    }
-    is (InitState.done) {}
-  }
-
-  //////////////////////////////////
-  // Track table, whenever the core leaves reset
-  //////////////////////////////////
-  // Core word w (MiSTer's disk_t): 0 track count, 1 lead-out LBA, 2 lead-out
-  // minutes / seconds (BCD), 3 libcrypt mask / region / reset, then per
-  // track 4 words: first LBA (0 for track 1, as on the MiSTer), last LBA,
-  // index 1 minutes / seconds (BCD) with bit 16 = audio, and a word whose
-  // write stores the track. They come from the same TOC words, except the
-  // third of a track's (TOC word 4n + 7, the index 1 position).
-  val trackCount = RegInit(0.U(7.W))
-  val tocWrite = RegInit(false.B)
-  val tocWord = Reg(UInt(9.W))
-  val tocPhase = RegInit(false.B)
-  val leftReset = io.discLoaded && !io.coreReset && RegNext(io.coreReset, true.B)
-  // (In reset, a new disc waits for the core to leave it.)
-  val changedRunning = io.discChanged && !io.coreReset
-  val settle = RegInit(0.U(5.W))
-  when (leftReset || changedRunning) {
-    settle := 16.U
-  }
-  when (settle =/= 0.U) {
-    settle := settle - 1.U
-    when (settle === 1.U) {
-      tocWrite := true.B
-      tocWord := 0.U
-      tocPhase := false.B
-    }
-  }
-  io.trackinfoWrite := false.B
-  io.trackinfoAddr := tocWord
-  io.trackinfoData := 0.U
-  val isTrackWord = tocWord >= 4.U
-  val trackField = tocWord(1, 0)
-  when (tocWrite) {
-    // Phase 0: the TOC word is read; phase 1: the core gets it.
-    tocRead.address := Mux(isTrackWord && trackField === 2.U, tocWord + 1.U, tocWord)
-    tocPhase := !tocPhase
-    when (tocPhase) {
-      val toc = tocRead.data
-      val data = WireDefault(toc)
-      when (tocWord === 0.U) {
-        trackCount := toc(6, 0)
-      } .elsewhen (tocWord === 2.U) {
-        data := toc(23, 8)
-      } .elsewhen (tocWord === 3.U) {
-        // MiSTer metadata region: 0 unknown, 1 Japan, 2 US, 3 Europe
-        val code = MuxLookup(regionReg.bits, 0.U(2.W))(Seq(
-          Region.Us.U -> 2.U, Region.Japan.U -> 1.U, Region.Europe.U -> 3.U))
-        data := Cat(Mux(regionReg.valid, code, 0.U(2.W)), 0.U(16.W))
-      } .elsewhen (isTrackWord) {
-        switch (trackField) {
-          is (0.U) { data := Mux(tocWord === 4.U, 0.U, toc) }
-          is (2.U) { data := Cat(toc(31), toc(23, 8)) }
-          is (3.U) { data := 0.U }
-        }
-      }
-      io.trackinfoWrite := true.B
-      io.trackinfoData := data
-      val last = tocWord >= 3.U && tocWord === (Cat(Mux(tocWord === 0.U, toc(6, 0), trackCount), 0.U(2.W)) + 3.U)
-      tocWord := tocWord + 1.U
-      when (tocWord =/= 0.U && last) {
-        tocWrite := false.B
-      }
-    }
-  }
-
-  //////////////////////////////////
-  // Sectors
-  //////////////////////////////////
-  object SectorState extends ChiselEnum {
-    val idle, request, waiting, ack, stream = Value
-  }
-  val sectorState = RegInit(SectorState.idle)
+  val streamState = RegInit(StreamState.idle)
+  val streaming = streamState =/= StreamState.idle
   val halfword = Reg(UInt(11.W))
-  val waitCycles = Reg(UInt(32.W))
-  val sectorReads = RegInit(0.U(32.W))
-  val readErrors = RegInit(0.U(32.W))
-  val worstWait = RegInit(0.U(32.W))
-  io.sectorReads := sectorReads
-  io.readErrors := readErrors
-  io.worstWait := worstWait
-  when (io.clearSectorReads) { sectorReads := 0.U }
-  when (io.clearReadErrors) { readErrors := 0.U }
-  when (io.clearWorstWait) { worstWait := 0.U }
-  io.hpsAck := false.B
   val streamValid = RegInit(false.B)
   val streamHigh = Reg(Bool())
   streamValid := false.B
-  switch (sectorState) {
-    is (SectorState.idle) {
-      when (io.hpsReq && initState =/= InitState.request && initState =/= InitState.waiting) {
-        sectorState := SectorState.request
-        waitCycles := 0.U
-      }
+  io.hpsAck := false.B
+  val startStream = written(Regs.Stream) && !streaming
+  switch (streamState) {
+    is (StreamState.idle) {
+      when (startStream) { streamState := StreamState.ack }
     }
-    is (SectorState.request) {
-      waitCycles := waitCycles + 1.U
-      when (requestState === RequestState.idle) {
-        requestStart := true.B
-        requestLba := io.hpsLba
-        sectorState := SectorState.waiting
-      }
-    }
-    is (SectorState.waiting) {
-      waitCycles := waitCycles + 1.U
-      when (requestDone) {
-        sectorReads := sectorReads + 1.U
-        when (requestFailed) {
-          readErrors := readErrors + 1.U
-        }
-        when (waitCycles > worstWait) {
-          worstWait := waitCycles
-        }
-        sectorState := SectorState.ack
-      }
-    }
-    is (SectorState.ack) {
+    is (StreamState.ack) {
       // The core takes the data from the cycle after the acknowledge.
       io.hpsAck := true.B
       halfword := 0.U
-      sectorState := SectorState.stream
+      streamState := StreamState.stream
     }
-    is (SectorState.stream) {
-      sectorRead.address := halfword >> 1
+    is (StreamState.stream) {
+      streamPort.address := halfword >> 1
       streamValid := true.B
       streamHigh := halfword(0)
       halfword := halfword + 1.U
       when (halfword === (SectorBytes / 2 - 1).U) {
-        sectorState := SectorState.idle
+        streamState := StreamState.idle
       }
     }
   }
   io.hpsWrite := streamValid
+  io.hpsData := Mux(streamHigh, streamPort.data.asUInt(31, 16), streamPort.data.asUInt(15, 0))
+  when (startStream) { evSector := false.B }
+  when (sectorAsked) { evSector := true.B }
 
-  io.debugState := Cat(io.hpsReq, 0.U(3.W), sectorState.asUInt.pad(4), requestState.asUInt.pad(4), initState.asUInt.pad(4))
-  io.lastLba := RegEnable(requestLba, 0.U(32.W), requestStart)
-  io.hpsData := Mux(streamHigh, sectorRead.data(31, 16), sectorRead.data(15, 0))
+  // Statistics
+  val sectorReads = RegInit(0.U(32.W))
+  val readErrors = RegInit(0.U(32.W))
+  val worstWait = RegInit(0.U(32.W))
+  val waitCycles = RegInit(0.U(32.W))
+  when (sectorAsked) {
+    waitCycles := 0.U
+  } .elsewhen (evSector && waitCycles =/= ~0.U(32.W)) {
+    waitCycles := waitCycles + 1.U
+  }
+  when (io.clearSectorReads) {
+    sectorReads := 0.U
+  } .elsewhen (startStream) {
+    sectorReads := sectorReads + 1.U
+  }
+  when (io.clearReadErrors) {
+    readErrors := 0.U
+  } .elsewhen (startStream && cpu.mem_wdata(0)) {
+    readErrors := readErrors + 1.U
+  }
+  when (io.clearWorstWait) {
+    worstWait := 0.U
+  } .elsewhen (startStream && waitCycles > worstWait) {
+    worstWait := waitCycles
+  }
+  io.sectorReads := sectorReads
+  io.readErrors := readErrors
+  io.worstWait := worstWait
+
+  // Register reads (answered in the next cycle)
+  when (regRead) {
+    registerRead := MuxLookup(regAddress, 0.U)(
+      (0 until 6).map(i => (Regs.CmdWords + 4 * i).U -> words(i)) ++ Seq(
+        Regs.CmdCtrl.U -> commandStatus,
+        Regs.Events.U -> Cat(evSector, evDiscChanged, evLeftReset, evStart),
+        Regs.Status.U -> Cat(streaming, io.coreReset),
+        Regs.HpsLba.U -> io.hpsLba,
+        Regs.Control.U -> Cat(region.bits, region.valid, 0.U(2.W), hasDisc, hold),
+        Regs.Timer.U -> timer,
+        Regs.Debug.U -> debug,
+        Regs.DebugLba.U -> debugLba,
+      ))
+  }
 }

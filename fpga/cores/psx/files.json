@@ -7,9 +7,8 @@
       "optional": false,
       "read_only": true,
       "user_selected": true,
+      "on_demand": true,
       "disc": true,
-      "address": "0x60000000",
-      "max_size": "0x800",
       "max_transfer_speed": 10000
     },
     {
@@ -105,6 +104,28 @@
       "save_on_pause": true,
       "address": "0x33C00000",
       "max_size": "0x400000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 10,
+      "label": "Cue Sheet",
+      "extensions": ["cue"],
+      "dependent_on_0": true,
+      "per_disc": true,
+      "optional": true,
+      "read_only": true,
+      "on_demand": true,
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 11,
+      "label": "Disc Image",
+      "extensions": ["bin"],
+      "dependent_on_0": true,
+      "per_disc": true,
+      "optional": true,
+      "read_only": true,
+      "on_demand": true,
       "max_transfer_speed": 10000
     }
   ]
