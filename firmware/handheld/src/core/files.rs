@@ -174,14 +174,6 @@ impl CoreManager {
             }
         };
 
-        if info.disc {
-            // A CD image: the core gets its table of contents, and sectors on request.
-            drop(file);
-            let image = super::disc::DiscImage::open(&path)
-                .map_err(|e| FailedLoadFile(info.label.to_string(), e))?;
-            return self.send_disc(i, image);
-        }
-
         self.run_core_command(
             &[command::FILE_WRITE_START, info.id as u32],
             &mut [],
@@ -306,35 +298,6 @@ impl CoreManager {
         Ok(())
     }
 
-    /// Give the core disc file `i`'s table of contents (at the file's
-    /// address), and serve its sector reads from `image` from now on.
-    pub(super) fn send_disc(&mut self, i: usize, image: super::disc::DiscImage) -> Result<(), CoreError> {
-        let info = &self.core_info.as_ref().unwrap().files[i];
-        image.log();
-        let toc = image.toc();
-        if info.max_size != 0 && toc.len() > info.max_size as usize {
-            return Err(FileTooBig(info.label.to_string(), info.max_size, toc.len() as u32));
-        }
-        self.run_core_command(
-            &[command::FILE_WRITE_START, info.id as u32],
-            &mut [],
-            SETUP_TIMEOUT,
-        )?;
-        Device::lock()
-            .fpga
-            .spi_write(None, SpiCommand::new(info.transfer_word_size), info.address, &toc)
-            .unwrap();
-        self.run_core_command(
-            &[command::FILE_WRITE_END, info.id as u32, toc.len() as u32, 0],
-            &mut [],
-            NOTIFY_TIMEOUT,
-        )?;
-        let id = info.id;
-        self.discs.retain(|(d, _)| *d != id);
-        self.discs.push((id, image));
-        Ok(())
-    }
-
     /// Save the files that are not read-only and match `filter`, returning
     /// the labels of those saved. An external core answers `FILE_READ_START`
     /// with the number of bytes to save, 0 for nothing (no save memory, or
@@ -350,16 +313,20 @@ impl CoreManager {
         let core = self.core_info.as_ref().unwrap();
 
         // First, handle the open on-demand file (if any) before we start
-        // opening other files.
+        // opening other files. A read-only one has nothing to save and stays
+        // open: this runs at every pause (`save_on_pause`), and a disc image,
+        // the largest file a core reads at random, is the slowest to open
+        // (fast seek maps all of its clusters then).
         if let Some(file) = &mut self.open_on_demand_file {
-            if let Some(info) = core.files.iter().find(|f| f.id == file.id) {
-                if !info.read_only {
+            let info = core.files.iter().find(|f| f.id == file.id);
+            if !info.is_some_and(|info| info.read_only) {
+                if let Some(info) = info {
                     file.file.sync_all().map_err(|_| {
                         FailedSaveFile(info.label.to_string(), "Sync failed".to_string())
                     })?;
                 }
+                self.open_on_demand_file = None;
             }
-            self.open_on_demand_file = None;
         }
 
         for (i, info) in core.files.iter().enumerate() {
