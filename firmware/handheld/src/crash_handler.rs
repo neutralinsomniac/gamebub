@@ -70,7 +70,11 @@ fn get_location<'a>(info: &'a PanicHookInfo<'_>) -> &'a dyn Display {
 /// Notes a failed allocation in the crash report's message: running out of
 /// memory aborts without a panic message. (The last failure is kept, also
 /// one handled without a crash.)
-unsafe extern "C" fn alloc_failed(size: usize, caps: u32, _function_name: *const core::ffi::c_char) {
+unsafe extern "C" fn alloc_failed(
+    size: usize,
+    caps: u32,
+    _function_name: *const core::ffi::c_char,
+) {
     let report = REPORT.assume_init_mut();
     let internal = esp_idf_svc::sys::MALLOC_CAP_INTERNAL;
     report.message.clear();

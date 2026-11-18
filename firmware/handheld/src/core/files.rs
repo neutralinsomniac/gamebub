@@ -261,8 +261,8 @@ impl CoreManager {
             }
         };
 
-        let read_duration = result
-            .map_err(|_| FailedLoadFile(info.label.to_string(), "I/O error".to_string()))?;
+        let read_duration =
+            result.map_err(|_| FailedLoadFile(info.label.to_string(), "I/O error".to_string()))?;
 
         let duration = start_time.elapsed();
         self.run_core_command(
@@ -371,6 +371,7 @@ impl CoreManager {
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
+                .truncate(false)
                 .open(path)
                 .map_err(|_| FailedSaveFile(info.label.to_string(), "Open failed".to_string()))?;
             let old_size = file.metadata().map(|m| m.len()).unwrap_or(0);
