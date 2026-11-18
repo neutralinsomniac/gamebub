@@ -7,6 +7,10 @@
 #   make firmware            cargo build --release --features=rev4 (release does this)
 #   make bitstreams          all five bitstreams (~50 minutes; release does NOT)
 #   make HW=rev3 release     another board revision
+#   make FIRMWARE=no release build/release/gamebub-cores-<tag>-snes-psx-<hash>.zip:
+#                            the core packages only, for a stock firmware
+#                            (v1.1-beta or later: the PSX reads its discs
+#                            through on-demand files)
 #
 # The bitstreams under fpga/build/ must come from the same tree as the
 # firmware, or the menu never appears. Free BIOS replacements are taken from
@@ -20,11 +24,16 @@ HW_REVISION := $(patsubst rev%,%,$(HW))
 BUILD ?= build
 RELEASE_DIR ?= $(BUILD)/release
 BIOS_DIR ?= fpga/build/official-v1.0.1
+FIRMWARE ?= yes
 
 VER := $(shell git tag -l '[0-9]*' --sort=-v:refname | head -1)
 FW_VER := $(shell sed -n 's/^version = "\(.*\)"/\1/p' firmware/handheld/Cargo.toml | head -1)
 HASH := $(shell git describe --always --dirty --exclude '*')
+ifeq ($(FIRMWARE),no)
+NAME := gamebub-cores-$(VER)-snes-psx-$(HASH)
+else
 NAME := gamebub-handheld-$(VER)-snes-psx-$(HASH)
+endif
 OUT := $(RELEASE_DIR)/$(NAME)
 
 FIRMWARE_ELF := firmware/handheld/target/xtensa-esp32s3-espidf/release/handheld
@@ -67,7 +76,7 @@ $(OUT)/sdcard: fpga/build/snes/snes.bit fpga/build/psx/psx.bit $(wildcard fpga/c
 	cd fpga && python3 scripts/package_core.py --name snes --build-root build/snes --out ../$@
 	cd fpga && python3 scripts/package_core.py --name psx --build-root build/psx --out ../$@
 
-$(OUT)/SHA256SUMS: $(UF2) $(OUT)/sdcard
+$(OUT)/SHA256SUMS: $(if $(filter no,$(FIRMWARE)),,$(UF2)) $(OUT)/sdcard
 	cd $(OUT) && find . -type f ! -name SHA256SUMS | sort | xargs sha256sum > SHA256SUMS
 
 $(BITSTREAMS) fpga/build/snes/snes.bit fpga/build/psx/psx.bit:
