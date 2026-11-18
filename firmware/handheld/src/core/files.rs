@@ -261,8 +261,8 @@ impl CoreManager {
             }
         };
 
-        let read_duration = result
-            .map_err(|_| FailedLoadFile(info.label.to_string(), "I/O error".to_string()))?;
+        let read_duration =
+            result.map_err(|_| FailedLoadFile(info.label.to_string(), "I/O error".to_string()))?;
 
         let duration = start_time.elapsed();
         self.run_core_command(

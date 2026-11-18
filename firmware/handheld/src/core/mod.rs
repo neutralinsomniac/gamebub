@@ -393,7 +393,9 @@ impl CoreManager {
             let start = Instant::now();
             let result = (|| -> Result<(), String> {
                 let mut file = File::create(&path).map_err(|e| e.to_string())?;
-                let mut scratch = crate::bitstream::SCRATCH.take().ok_or("scratch buffer busy")?;
+                let mut scratch = crate::bitstream::SCRATCH
+                    .take()
+                    .ok_or("scratch buffer busy")?;
                 let buf = scratch.deref_mut();
                 let mut done = 0;
                 while done < dump.size {
@@ -401,7 +403,12 @@ impl CoreManager {
                     let command = fpga::SpiCommand::new(fpga::FpgaSpiWordSize::Bits32);
                     Device::lock()
                         .fpga
-                        .spi_read(Some(fpga::MAX_SPI_READ_CLOCK), command, dump.address + done, &mut buf[..n])
+                        .spi_read(
+                            Some(fpga::MAX_SPI_READ_CLOCK),
+                            command,
+                            dump.address + done,
+                            &mut buf[..n],
+                        )
                         .map_err(|e| format!("{e:?}"))?;
                     file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
                     done += n as u32;
@@ -442,7 +449,9 @@ impl CoreManager {
             }
         };
         self.changing_disc = Some(index);
-        let label = self.core_info.as_ref().unwrap().files[index].label.to_string();
+        let label = self.core_info.as_ref().unwrap().files[index]
+            .label
+            .to_string();
         let current = self.selected_files[index].clone();
         let (initial_path, initial_dir) = file_selection::browse_start(current.as_deref());
         ui::send(ui::Message::CoreFileSelectBegin {
@@ -525,7 +534,11 @@ impl CoreManager {
 
         // Tell the core; it reads the new disc once this returns (its
         // requests wait for the core manager).
-        self.run_core_command(&[command::FILE_WRITE_START, disc_id as u32], &mut [], SETUP_TIMEOUT)?;
+        self.run_core_command(
+            &[command::FILE_WRITE_START, disc_id as u32],
+            &mut [],
+            SETUP_TIMEOUT,
+        )?;
         self.run_core_command(
             &[command::FILE_WRITE_END, disc_id as u32, 1, 0],
             &mut [],
@@ -578,7 +591,9 @@ impl CoreManager {
 
         // A core that asks is told what this firmware does beyond the stock one.
         if let Some(address) = self.core_info.as_ref().unwrap().firmware_features {
-            let _ = Device::lock().fpga.write_u32(address, info::FIRMWARE_FEATURES);
+            let _ = Device::lock()
+                .fpga
+                .write_u32(address, info::FIRMWARE_FEATURES);
         }
         self.load_files()?;
 
@@ -618,7 +633,9 @@ impl CoreManager {
         log::info!("Core ready to run");
 
         // Clear loading bar
-        ui::send(ui::Message::GameCanChangeDisc(self.changeable_disc().is_some()));
+        ui::send(ui::Message::GameCanChangeDisc(
+            self.changeable_disc().is_some(),
+        ));
         ui::send(ui::Message::EnterGame);
         self.stage = Stage::Running;
 
