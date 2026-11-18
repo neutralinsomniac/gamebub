@@ -11,10 +11,11 @@ reader, a program for a RISC-V CPU in the glue, in `fpga/cpu/psx-disc/`.
 ## Features
 
 * Discs from the microSD card: a `.cue` sheet with its `.bin` file, or a lone `.bin`, read by the core itself
-  through the firmware's on-demand files
+  through the firmware's on-demand files (so the stock firmware runs it too, see below)
 * Region and NTSC / PAL from the disc, or set by hand
-* Memory cards: one per game (shared by its discs) and one shared by all games, as `.mcd`
-  files; MiSTer's are compatible (rename its `.sav` to `.mcd`)
+* Memory cards: one per game (shared by its discs, with this tree's firmware) and one shared by all games, as `.mcd`
+  files; MiSTer's are compatible (rename its `.sav` to `.mcd`). A missing card is made blank (the stock firmware's is
+  unformatted: format it from the BIOS menu or the game)
 * Save states: four slots per disc (not compatible with MiSTer's)
 * Disc swapping from the pause menu (this tree's firmware)
 * Digital, Analog and DualShock controllers, with rumble
@@ -34,7 +35,11 @@ reader, a program for a RISC-V CPU in the glue, in `fpga/cpu/psx-disc/`.
 
 ## Installing
 
-1. Flash the firmware from the same release (or this tree).
+1. Any firmware with on-demand files runs the core: the stock firmware has them on its v1.1-beta branch since
+   November 2026 (after 1.1.0-beta3). This tree's firmware (the same release's) adds: memory cards shared by a
+   game's discs (`Game (USA) (Disc 2).cue` uses `Game (USA).mcd`; the stock one names each disc's card after the
+   disc), disc swapping, saving cards and states at a pause and right after Save State (the stock one saves at
+   exit), and the core's statistics in the log.
 2. Copy `cores/jeremy.PSX/` to the SD card's `cores/`, from a release zip or built with
    `cd fpga && make psx package-psx` (into `fpga/build/package/cores/`).
 3. Add a PlayStation BIOS image for your discs' region to `cores/jeremy.PSX/`:

@@ -241,6 +241,14 @@ class HandheldPsx extends Module with Core {
     /** Bits 1-0: console region (0 US, 1 Japan, 2 Europe, 3 the disc's). */
     val region = UInt(2.W)
   }))
+  /**
+   * Register 0x0024 bit 0, which this tree's firmware sets (`firmware_features`
+   * in core.json): it leaves a file alone when `FILE_READ_START` answers 0.
+   * Other firmware, the stock one among them, saves what the answer says,
+   * and empties the file for 0; without the bit, a loaded memory card and a
+   * held save state are always answered with their full size.
+   */
+  val regSkipUnchanged = RegInit(false.B)
   /** The CRT effect's settings (register 0x0020; see [[Crt]]): a 25 % magenta / green mask, 75 % scanlines, soft. */
   val crtReg = RegInit(0x36.U(6.W).asTypeOf(new Crt.Settings))
   val statusWire = Wire(UInt(8.W))
@@ -324,6 +332,7 @@ class HandheldPsx extends Module with Core {
       0x0018 -> RegisterMap.Entry.rw(stateSlot),
       0x001C -> RegisterMap.Entry.r(stateResult),
       0x0020 -> RegisterMap.Entry.rw(crtReg),
+      0x0024 -> RegisterMap.Entry.rw(regSkipUnchanged),
       0x0100 -> RegisterMap.Entry.r(statusWire),
       statEntry(0, statMemoryWait),
       statEntry(1, statRun),
@@ -989,17 +998,18 @@ class HandheldPsx extends Module with Core {
           }
         }
       } .elsewhen (command === HostV0.CommandFileReadStart.U) {
-        // Word 0: the bytes to save; none for a card the core has not
-        // written to, or a save-state slot it has not saved into, since it
-        // was last saved.
+        // Word 0: the bytes to save. With `regSkipUnchanged`, none for a
+        // card the core has not written to, or a save-state slot it has not
+        // saved into, since it was last saved; else all of a loaded card or
+        // a held state, which the firmware would otherwise empty.
         for (slot <- 0 until 2) {
-          when (fileId === (FileId.Card1 + slot).U && cardWritten(slot)) {
+          when (fileId === (FileId.Card1 + slot).U && (cardWritten(slot) || !regSkipUnchanged && cardLoaded(slot))) {
             regCommandHost(0) := Card.Size.U
             cardSaving(slot) := true.B
           }
         }
         for (slot <- 0 until SaveState.Slots) {
-          when (fileId === (FileId.State1 + slot).U && stateSaved(slot)) {
+          when (fileId === (FileId.State1 + slot).U && (stateSaved(slot) || !regSkipUnchanged && stateHeld(slot))) {
             regCommandHost(0) := SaveState.Size.U
             stateSaved(slot) := false.B
           }
