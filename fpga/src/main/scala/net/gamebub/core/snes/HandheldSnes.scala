@@ -1795,9 +1795,13 @@ class HandheldSnes extends Module with Core {
   // during the PPU's vertical blank, so that switching modes leaves no stale
   // rows. The host counts rows on `hblank` edges and restarts on `vblank`,
   // so the PPU's blanking signals are replaced by generated ones: `vblank`
-  // pulses after the bottom padding, then the next frame's top padding is
-  // written before the PPU's first line arrives (the PPU's vertical blank
-  // lasts 38 lines, the padding takes at most 16 rows of 257 cycles).
+  // is held high after the bottom padding long enough (~1 ms) for a rotated
+  // display driver (`ILI9806E` / `ILI9488`, which switches buffers at a
+  // scanline boundary, ~21-35 us) to release the other framebuffer before
+  // `HandheldTop`'s first-pixel conflict check sees the next frame's top
+  // padding, which still finishes well before PPU line 1 arrives (the PPU's
+  // vertical blank lasts 38 lines in 224-line mode and 23 in 239-line mode,
+  // >= 31.4k clocks, and padding takes at most 8 rows = 2,056 clocks each).
   val pixelValid = pixelStrobe && tick
   val lineX = RegInit(0.U(10.W))
   val hblankEdge = hblank && !RegNext(hblank, false.B)
@@ -1822,7 +1826,9 @@ class HandheldSnes extends Module with Core {
   val padPixel = WireDefault(false.B)
   val padRowsLeft = RegInit(0.U(4.W))
   val outVblank = RegInit(false.B)
-  val vsyncTimer = RegInit(0.U(6.W))
+  /** Clocks (~0.95 ms) to hold `outVblank` high before emitting top padding. */
+  val VblankHoldClocks = 20480
+  val vsyncTimer = RegInit(0.U(log2Ceil(VblankHoldClocks).W))
   /** The frame being written has 224 lines (it was padded for them), and the last one completed, which is shown. */
   val writingV224 = RegInit(true.B)
   val shownV224 = RegInit(true.B)
@@ -1860,7 +1866,7 @@ class HandheldSnes extends Module with Core {
       when (outRow >= OutputLines.U) {
         padState := PadState.vsync
         outVblank := true.B
-        vsyncTimer := 63.U
+        vsyncTimer := (VblankHoldClocks - 1).U
         shownV224 := writingV224
       } .otherwise {
         padRow()
