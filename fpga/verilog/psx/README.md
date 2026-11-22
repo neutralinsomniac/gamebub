@@ -1,45 +1,30 @@
 # PlayStation core (vendored from MiSTer)
 
-This directory contains the PlayStation emulation core from
-[MiSTer-devel/PSX_MiSTer](https://github.com/MiSTer-devel/PSX_MiSTer)
-(by Robert Peip), vendored at commit `cd17b5a0ad261005c321d9d5ba41b8dbe313a7d3`
-(2026-08-21). It is licensed under the GPLv2 (see `LICENSE`), separately from
-the rest of `fpga/`, which is CERN-OHL-S.
+Vendored from [MiSTer-devel/PSX_MiSTer](https://github.com/MiSTer-devel/PSX_MiSTer) (by Robert Peip) at commit `cd17b5a0ad261005c321d9d5ba41b8dbe313a7d3` (2026-08-21). Licensed under GPLv2 (see `LICENSE`), separately from the CERN-OHL-S license on the rest of `fpga/`.
 
-Only the emulation core itself (`rtl/*.vhd`) is included, plus a wrapper
-(`gamebub/psx_gamebub.vhd`, Game Bub code) that fixes the options the port
-does not offer to constants, so that synthesis removes the logic behind
-them. The MiSTer framework (`sys/`), the MiSTer top level (`PSX.sv`), its
-SDRAM / DDR3 controllers (`rtl/sdram.sv`, `rtl/ddram.sv`), the HPS
-interface, the PLLs and the save-state OSD front end (`rtl/savestate_ui.sv`)
-are not used; their roles are played by the Chisel glue in
-`fpga/src/main/scala/net/gamebub/core/psx/`.
+Only the emulation RTL (`rtl/*.vhd`) is vendored here, along with `gamebub/psx_gamebub.vhd` (Game Bub wrapper that ties unused options to constants so synthesis prunes their logic). The MiSTer framework (`sys/`), top level (`PSX.sv`), SDRAM/DDR3 controllers (`rtl/sdram.sv`, `rtl/ddram.sv`), HPS interface, PLLs, and OSD save-state UI (`rtl/savestate_ui.sv`) are excluded; Chisel glue in `fpga/src/main/scala/net/gamebub/core/psx/` replaces them.
 
-All files are compiled into the VHDL library `mem`: upstream refers to its
-RAM wrappers both as `mem.dpram` and as `work.dpram`, which then name the
-same entity.
+All files are compiled into VHDL library `mem` because upstream references its RAM wrappers as both `mem.dpram` and `work.dpram`.
 
 ## Local modifications
 
-Changes relative to upstream are portability fixes so that the core
-synthesizes with Vivado, and changes that make it fit the XC7A100T.
+Changes relative to upstream are Vivado portability fixes, XC7A100T resource reductions, and a few glue/debug ports:
 
 | File | Change |
 | --- | --- |
-| `rtl/dpram.vhd` | Rewritten: `dpram` and `dpram_dif` as inferrable block RAM (mixed-width ports in Altera's word order, clock enables gating the inputs, same-port write-first) instead of `altsyncram`. The RAM is read-first with a per-port bypass for the written word: in write-first mode a Xilinx block RAM returns garbage on the other port when it reads the address being written, whereas the Cyclone V returns the old data. |
-| `rtl/RamMLAB.vhd` | Rewritten: asynchronous-read distributed RAM instead of `altdpram`. |
-| `rtl/spu_ram.vhd` | `altera_mf` library clause removed (nothing in the file uses it). The reverb area (the top 64 KiB of SPU RAM) stays in block RAM as upstream has it: moved to the SRAM, its accesses took the SPU over its 768 cycles per sample (the core flagged its SPU timeout, and Final Fantasy IX hung before its intro movie). |
-| `rtl/psx_top.vhd`, `rtl/psx_mister.vhd` | `video_vDisplayRange` and `video_hDisplayRange` passed out from the GPU. The save-state machine's busy flag passed out (`savestate_busy_out`, `savestate_busy` in `psx_mister`), so that the glue knows when a save has finished. The save-state machine's `validSStates_set` passed in (below). The SPU's `sound_out_valid` passed out. Debug outputs: `debug_errors` (every error code seen since reset, bit n for code n, the codes MiSTer shows on screen), `debug_pc` (the CPU's fetch address), `debug_mdec` and `debug_dma` (below) and `debug_flags` (the CPU's pause, the DMA requests). |
-| `rtl/savestates.vhd` | Input `validSStates_set`: marks slots as holding a state. The core only accepts a load into a slot it has seen a state in, which it checks after each reset (the state's header) and on a save; the host loads a disc's states again when the disc is changed, without a reset. |
-| `rtl/spu.vhd` | Output `sound_out_valid`: pulses with each new sample on `sound_out_left` / `sound_out_right`. The SPU finishes a sample anywhere in its 768-cycle period (and, when it has fallen behind, two in a row), so the glue queues samples on it for the DAC, which takes exactly one per period, instead of reading the outputs at a fixed time. |
-| `rtl/joypad_pad.vhd` | `ToggleDS` (a controller's Analog button) is taken while `ce` is low too, instead of only while it is high: the glue pulses it for one cycle, and the core pauses (`ce` low) whenever a CD sector is late. |
-| `rtl/dma.vhd` | Debug output `debug_state`: the controller's state, active channel, blocks and words left. |
-| `rtl/mdec.vhd` | Debug output `debug_status`: MDECSTAT. |
-| `rtl/cpu.vhd` | The data cache (`datacache`) is not instantiated (no hits, no data): it only serves the turbo modes, which the port does not offer, and its read data shares a multiplexer with the scratchpad's, so synthesis keeps all 19 of its block RAMs even with the modes off. |
+| `rtl/dpram.vhd` | Rewritten as inferrable block RAM (`dpram` and `dpram_dif` with Altera mixed-width word ordering, clock enables, and same-port write-first) replacing `altsyncram`. Uses read-first mode with a per-port write bypass because Xilinx BRAM in write-first mode returns undefined data on the opposite port during same-address conflicts, whereas Cyclone V M10K returns the old value. |
+| `rtl/RamMLAB.vhd` | Rewritten as async-read distributed RAM replacing `altdpram`. |
+| `rtl/spu_ram.vhd` | Removed unused `altera_mf` library clause. The top 64 KiB reverb buffer remains in block RAM as upstream; moving it to external SRAM pushed the SPU past its 768-cycle sample budget and caused Final Fantasy IX to hang before its intro movie. |
+| `rtl/psx_top.vhd`, `rtl/psx_mister.vhd` | Exposed `video_vDisplayRange`, `video_hDisplayRange`, `savestate_busy` / `savestate_busy_out`, `validSStates_set`, `sound_out_valid`, and debug ports (`debug_errors`, `debug_pc`, `debug_mdec`, `debug_dma`, `debug_flags`). |
+| `rtl/savestates.vhd` | Added `validSStates_set` input to mark valid slots when the host loads a new disc's save-state files without resetting the core. |
+| `rtl/spu.vhd` | Added `sound_out_valid` strobe pulsing with each new audio sample. Because the SPU can finish a sample at any point in its 768-cycle period (or output two back-to-back when catching up), the glue queues samples on this strobe instead of polling at a fixed interval. |
+| `rtl/joypad_pad.vhd` | Sample `ToggleDS` even when `ce` is low so a single-cycle toggle pulse from the glue is not lost when the core pauses waiting on a CD sector. |
+| `rtl/dma.vhd` | Added `debug_state` output (FSM state, active channel, remaining blocks and words). |
+| `rtl/mdec.vhd` | Added `debug_status` output (`MDECSTAT`). |
+| `rtl/cpu.vhd` | Removed `datacache` instantiation (tied off to miss). It is only used by turbo modes that this port omits, and its mux shared with scratchpad prevented synthesis from pruning its 19 block RAMs. |
 | `rtl/datacache.vhd` | Removed (see `cpu.vhd`). |
-| `rtl/gpu.vhd` | `video_fbmode` and `video_fb24` carry GPUSTAT's display-disable and 24-bit color bits (upstream: the 480p hack's framebuffer mode, unused here), and the new `video_vDisplayRange` / `video_hDisplayRange` outputs carry GP1(07h) / GP1(06h), the display ranges, for the Game Bub scanout. |
-| `rtl/gpu_poly.vhd` | The span skip test `to_integer(xStart(43 downto 32)) > drawingAreaRight` compares as signed: numeric_std's `">"(NATURAL, UNSIGNED)` with a negative left side is out of range, and Vivado converts it to unsigned (a large number), so every span starting left of x = 0 was skipped (black, jagged left edges in Final Fantasy IX's battles); Quartus, evidently, does not. The triangle's share of `targetTiming` (the drawing time the GPU waits out at the end of a polygon) is added two cycles after `CALCBOUNDARY1` through registers, instead of in that cycle: the multiply and the 32-bit add after the vertex comparisons are about 21 ns at clk2x, 6.4 ns over. `targetTiming` is only read when the triangle has been drawn. |
+| `rtl/gpu.vhd` | Repurposed `video_fbmode` and `video_fb24` (unused 480p hack outputs) to carry GPUSTAT display-disable and 24-bit color flags, and added `video_vDisplayRange` / `video_hDisplayRange` (`GP1(07h)` / `GP1(06h)`) for Game Bub scanout. |
+| `rtl/gpu_poly.vhd` | Fixed `to_integer(xStart(43 downto 32)) > drawingAreaRight` to use a signed comparison: `numeric_std` `>` on `(NATURAL, UNSIGNED)` fails on negative `xStart` in Vivado (converting it to a large unsigned value and dropping spans starting left of x = 0, causing jagged black left edges in Final Fantasy IX battles). Also pipelined the `targetTiming` polygon-area addition by two cycles after `CALCBOUNDARY1` to fix a 6.4 ns timing violation at `clk2x` (`targetTiming` is only read after drawing finishes). |
 | `rtl/SyncRamDualByteEnable.vhd` | Removed (unused, Altera-specific). |
 
-Everything else is byte-for-byte upstream. When updating the vendored copy,
-re-apply the table above.
+All other files are unmodified upstream copies. Re-apply the changes above when updating the vendored core.

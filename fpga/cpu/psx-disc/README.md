@@ -1,33 +1,22 @@
 # PSX disc reader
 
-The program of the RISC-V CPU (a PicoRV32, RV32IMC, with 16 KiB of RAM) in
-the PSX core's glue, `psx.PsxDisc`. It does what the MiSTer's firmware does
-for its PSX core, through the Game Bub framework's on-demand file requests
-(`FILE_GET_SIZE`, `FILE_READ`), which any firmware that has them serves:
+Firmware for the embedded RISC-V CPU (PicoRV32, RV32IMC, 16 KiB RAM) inside `psx.PsxDisc`. It handles the disc duties that MiSTer's HPS firmware performs for the upstream PSX core, reading disc files through the Game Bub framework's on-demand file interface (`FILE_GET_SIZE`, `FILE_READ`):
 
-* finds the disc: the cue sheet named like the selected file (file 10 in
-  `fpga/cores/psx/files.json`) with the image named like it (file 11), or
-  the image alone;
-* parses the cue sheet (one `BINARY` file; `AUDIO`, `MODE1/2352`,
-  `MODE2/2352` and `MODE1/2048` tracks; `INDEX 00` / `01`, `PREGAP`);
-* reads the region from the license sector while the core is held in reset;
-* gives the core its track table (MiSTer's `disk_t`) each time it leaves
-  reset, and after a disc change;
-* reads each sector the core asks for into the sector buffer, which the
-  glue streams into the core.
+* Locates the matching `.cue` sheet (file 10 in `fpga/cores/psx/files.json`) and `.bin` image (file 11), or a standalone `.bin` image
+* Parses single-file `BINARY` cue sheets (`AUDIO`, `MODE1/2352`, `MODE2/2352`, and `MODE1/2048` tracks; `INDEX 00`/`01` and `PREGAP`)
+* Reads the disc region from the license sector while the PSX core is held in reset
+* Sends the track table (MiSTer's `disk_t`) to the core on reset release and after disc swaps
+* Reads requested sectors into the sector buffer for the glue to stream into the core
 
-`src/lib.rs` is the part that knows about images (tested on the host);
-`src/main.rs` the part that talks to the hardware (its register map is at
-the top, and in `PsxDisc.scala`). `psx.PsxDiscSpec` runs the program on the
-CPU in simulation against a model of the firmware.
+`src/lib.rs` implements disc and cue parsing (unit-tested on the host), and `src/main.rs` handles the hardware registers (documented at the top of `src/main.rs` and in `PsxDisc.scala`). `psx.PsxDiscSpec` simulates the compiled binary on the PicoRV32 against a firmware model.
 
 ## Building
 
-    make          # cargo build, then ../../src/main/resources/psx_disc.bin
-    make test     # the image logic's tests, on the host
+```sh
+make       # builds the binary and updates ../../src/main/resources/psx_disc.bin
+make test  # runs host unit tests for src/lib.rs
+```
 
-The glue embeds `psx_disc.bin` (committed) in the CPU's RAM, so building a
-bitstream needs no RISC-V toolchain; rebuild it after changing the program
-and commit it with the change. The program needs Rust's
-`riscv32imc-unknown-none-elf` target (`rust-toolchain.toml` asks rustup
-for it; the commands run through `nix develop` unless cargo is on PATH).
+`psx_disc.bin` is checked into the repository and embedded directly into the CPU's RAM during FPGA synthesis, so bitstream builds do not require a RISC-V toolchain. Rebuild and commit `psx_disc.bin` whenever this code changes.
+
+Building requires the `riscv32imc-unknown-none-elf` Rust target (configured in `rust-toolchain.toml`). The Makefile runs commands through `nix develop` if `cargo` is not already on `PATH`.

@@ -1,61 +1,49 @@
 # PlayStation core
 
-A port of the MiSTer PSX core
-([MiSTer-devel/PSX_MiSTer](https://github.com/MiSTer-devel/PSX_MiSTer), by
-Robert Peip, GPLv2), running as the external core `jeremy.PSX`. The core is
-vendored in `fpga/verilog/psx/` (its README lists the local changes), the glue
-is in `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and
-`fpga/src/main/scala/psx/`, the descriptors in `fpga/cores/psx/`, and the disc
-reader, a program for a RISC-V CPU in the glue, in `fpga/cpu/psx-disc/`.
+Port of the MiSTer PlayStation core ([MiSTer-devel/PSX_MiSTer](https://github.com/MiSTer-devel/PSX_MiSTer), by Robert Peip, GPLv2), packaged as the external core `jeremy.PSX`.
+
+* Vendored RTL: `fpga/verilog/psx/` (see its README for local patches)
+* Chisel glue: `fpga/src/main/scala/net/gamebub/core/psx/HandheldPsx.scala` and `fpga/src/main/scala/psx/`
+* RISC-V disc reader: `fpga/cpu/psx-disc/`
+* Core descriptors: `fpga/cores/psx/`
 
 ## Features
 
-* Discs from the microSD card: a `.cue` sheet with its `.bin` file, or a lone `.bin`, read by the core itself
-  through the firmware's on-demand files (so the stock firmware runs it too, see below)
-* Region and NTSC / PAL from the disc, or set by hand
-* Memory cards: one per game (shared by its discs, with this tree's firmware) and one shared by all games, as `.mcd`
-  files; MiSTer's are compatible (rename its `.sav` to `.mcd`). A missing card is made blank (the stock firmware's is
-  unformatted: format it from the BIOS menu or the game)
-* Save states: four slots per disc (not compatible with MiSTer's)
-* Disc swapping from the pause menu (this tree's firmware)
-* Digital, Analog and DualShock controllers, with rumble
-* CRT look: scanlines, mask, soft horizontal blur
-* TV output through the Game Bub Dock (720 x 480 at 4:3, with the CRT look as set)
-* The dock's gamepads as full controllers (both sticks, L2 / R2, L3 / R3), the second one as player 2
+* Disc images from the microSD card (`.cue`/`.bin` pair or standalone `.bin`), read directly by the core using the firmware's on-demand file support (works on stock firmware v1.1.0-beta.5 or later)
+* Automatic or manual region and NTSC/PAL selection
+* Two memory cards stored as `.mcd` files: one per game (shared across multi-disc games with this repo's firmware) and one shared across all games; compatible with MiSTer memory cards (rename `.sav` to `.mcd`). Missing cards are created blank (on stock firmware, new cards start unformatted; format them in the BIOS menu or in-game)
+* Four save state slots per disc (not compatible with MiSTer save states)
+* Disc swapping from the pause menu (requires this repo's firmware)
+* Digital, Analog, and DualShock controller modes, with handheld rumble
+* CRT filter (scanlines, aperture-grille/shadow mask, soft horizontal blur)
+* TV output via the Game Bub Dock (720x480 at 4:3, with the configured CRT filter)
+* Full dock gamepad support (dual analog sticks, L2/R2, L3/R3), with a second gamepad mapped to player 2
 
-## Not supported
+## Limitations
 
-* Rumble on the dock's gamepads (the dock has no way to pass it on); it is the handheld's own, off while docked
-* 50 Hz TV output: PAL games run on the dock's 60 Hz output, every fifth frame shown twice
-* Cue sheets with a `.bin` per track (Redump's): the core can only read the files named like the selected one. Merge
-  the tracks into one `.bin` (binmerge does, writing a matching `.cue`), or select the first track's `.bin` (it plays
-  without its CD audio then)
-* `.iso`, CHD and libcrypt-protected discs (`.sbi`)
-* Board revisions before 4 (the core uses both SDRAM chips)
+* No rumble on dock gamepads (the dock cannot send rumble back to controllers); rumble only works on the handheld and is disabled while docked
+* No 50 Hz TV output: PAL games run on the dock's 60 Hz output by duplicating every fifth frame
+* Multi-bin cue sheets (such as Redump dumps with one `.bin` per track): the core can only open a `.cue` and `.bin` sharing the same base filename. Merge tracks into a single `.bin` (for example with `binmerge`), or launch track 1's `.bin` directly (without CD audio)
+* No `.iso`, `.chd`, or libcrypt-protected discs (`.sbi`)
+* Requires board revision 4 or newer (the core uses both SDRAM chips)
 
 ## Installing
 
-1. Any firmware with on-demand files runs the core: the stock firmware has them on its v1.1-beta branch since
-   November 2026 (after 1.1.0-beta3). This tree's firmware (the same release's) adds: memory cards shared by a
-   game's discs (`Game (USA) (Disc 2).cue` uses `Game (USA).mcd`; the stock one names each disc's card after the
-   disc), disc swapping, saving cards and states at a pause and right after Save State (the stock one saves at
-   exit), and the core's statistics in the log.
-2. Copy `cores/jeremy.PSX/` to the SD card's `cores/`, from a release zip or built with
-   `cd fpga && make psx package-psx` (into `fpga/build/package/cores/`).
-3. Add a PlayStation BIOS image for your discs' region to `cores/jeremy.PSX/`:
-   `bios_us.bin`, `bios_jp.bin` or `bios_eu.bin`.
-4. Put discs anywhere under `roms/`: a `.cue` with its `.bin` named alike (`Game.cue`, `Game.bin`), or a lone
-   `.bin`; select either file.
+1. Use firmware with on-demand file support (stock firmware v1.1.0-beta.5 or newer, or this repo's firmware). Compared to stock firmware, this repo's firmware adds:
+   * Faster microSD card reads and writes (larger word-aligned SD transfers and a larger FatFs fast-seek cluster map for fragmented disc images)
+   * Shared memory cards across multi-disc games (`Game (USA) (Disc 2).cue` uses `Game (USA).mcd`; stock firmware creates one card per disc)
+   * Pause-menu disc swapping
+   * Saving memory cards and save states on pause and immediately after Save State (stock firmware writes them on exit)
+   * Core statistics logging
+2. Copy `cores/jeremy.PSX/` to `cores/` on your microSD card. Grab it from a release zip, or build it with `cd fpga && make psx package-psx` (output goes to `fpga/build/package/cores/`).
+3. Place PlayStation BIOS images for your disc regions in `cores/jeremy.PSX/`: `bios_us.bin`, `bios_jp.bin`, or `bios_eu.bin`.
+4. Put disc images anywhere under `roms/`: either a matching `.cue`/`.bin` pair (`Game.cue` and `Game.bin`) or a standalone `.bin`. You can launch either file.
 
 ## Controls
 
-* Face buttons as on a PlayStation: Cross = B, Circle = A, Square = Y, Triangle = X
-* L / R = L1 / R1; Select + L / Select + R = L2 / R2
-* Dock gamepads (the framework's input slots): the first one plays on port 1 in place of the handheld's buttons, the
-  second on port 2, buttons by position as on the handheld; a pulled trigger counts as L2 / R2
-* The sticks need the Controller setting at Analog or DualShock. A DualShock starts in digital mode, with the left
-  stick as the D-pad, until the game switches it to analog, or L3 + R3 + Up does (L3 + R3 + Down switches back),
-  as the Analog button would; on a Digital controller the left stick is the D-pad
-* Select + Start is a DualShock's Analog button, on the handheld and on each dock gamepad: it toggles that controller
-  between digital and analog mode (unless the game has locked the mode), and the game sees neither button. With L1 / R1
-  / L2 / R2 already held, the game gets Select + Start instead (the soft reset many games have)
+* Face buttons match the PlayStation layout: Cross = B, Circle = A, Square = Y, Triangle = X.
+* L/R map to L1/R1; Select + L and Select + R map to L2/R2.
+* Dock gamepads use the same physical button positions as the handheld, with analog triggers mapped to L2/R2. When docked, gamepad 1 controls port 1 (replacing the handheld buttons) and gamepad 2 controls port 2.
+* Analog sticks require the Controller setting to be set to **Analog** or **DualShock**. In **Digital** mode, the left stick acts as the D-pad.
+* A **DualShock** controller starts in digital mode (left stick mapped to the D-pad) until the game enables analog mode or you toggle it manually.
+* Press **Select + Start** (on the handheld or a dock gamepad) to toggle between digital and analog mode, acting as the DualShock Analog button unless the game has locked the mode. On dock gamepads, **L3 + R3 + Up** also enables analog mode and **L3 + R3 + Down** switches back. When Select + Start triggers the toggle, neither button is sent to the game; hold any shoulder button (L1, R1, L2, or R2) first to pass Select + Start through to the game (for soft resets).

@@ -1,77 +1,48 @@
 # SNES core (vendored from MiSTer)
 
-This directory contains the SNES emulation core from
-[MiSTer-devel/SNES_MiSTer](https://github.com/MiSTer-devel/SNES_MiSTer)
-(originally by srg320), vendored at commit `ef6aec399af9fec5f228244c16aadc6a63e7ea16`
-(2026-08-25). It is licensed under the GPLv3 (see `LICENSE`), separately from
-the rest of `fpga/`, which is CERN-OHL-S.
+Vendored from [MiSTer-devel/SNES_MiSTer](https://github.com/MiSTer-devel/SNES_MiSTer) (originally by srg320) at commit `ef6aec399af9fec5f228244c16aadc6a63e7ea16` (2026-08-25). Licensed under GPLv3 (see `LICENSE`), separately from the CERN-OHL-S license on the rest of `fpga/`.
 
-Only the emulation core itself (`rtl/`) is included. The MiSTer framework
-(`sys/`), the MiSTer top level (`SNES.sv`), and the MiSTer-specific SDRAM /
-DDR controllers, HPS interface, UART/SNI, light gun, mouse, and PLL files are
-not used; their roles are played by the Chisel glue in
-`fpga/src/main/scala/net/gamebub/core/snes/HandheldSnes.scala`.
+Only the emulation RTL (`rtl/`) is included. The MiSTer framework (`sys/`), top level (`SNES.sv`), SDRAM/DDR controllers, HPS interface, UART/SNI, light gun, mouse, and PLLs are excluded; Chisel glue in `fpga/src/main/scala/net/gamebub/core/snes/HandheldSnes.scala` replaces them.
 
 ## Local modifications
 
-Changes relative to upstream are of two kinds: portability fixes so that the
-core synthesizes with Vivado (and analyzes under GHDL), and a few outputs added
-to the GSU and SA-1 that tell the Game Bub glue when a coprocessor consumes
-memory data.
+Changes relative to upstream are Vivado/GHDL portability fixes and coprocessor memory-sampling outputs used by the Game Bub latency-hiding glue:
 
 | File | Change |
 | --- | --- |
-| `rtl/bram.vhd` | Rewritten: `spram`, `spram_sz`, `dpram`, `dpram_dif`, `dpram_difclk` as inferrable RAM (incl. mixed-width dual port) instead of `altsyncram`. The dual-port RAM is read-first with a per-port write-first bypass: Xilinx block RAM returns garbage on the reading port when the other port writes the same address in write-first mode, whereas Altera M10K returns old data (the DSP's `BRR_BUF`/`REGRAM` hit this). |
-| `rtl/mlab.vhd` | Rewritten: async-read distributed RAM instead of `altdpram`. |
+| `rtl/bram.vhd` | Rewritten as inferrable RAM (`spram`, `spram_sz`, `dpram`, `dpram_dif`, `dpram_difclk`, including mixed-width dual port) replacing `altsyncram`. Uses read-first mode with a per-port write-first bypass because Xilinx BRAM in write-first mode returns undefined data on the opposite port during same-address conflicts, whereas Altera M10K returns the old value (hit by the DSP's `BRR_BUF` and `REGRAM`). |
+| `rtl/mlab.vhd` | Rewritten as async-read distributed RAM replacing `altdpram`. |
 | `rtl/chip/CX4/cx4cache.vhd` | Rewritten on top of `mlab`. |
-| `rtl/chip/SA1/SA1MULT.vhd` | `lpm_mult` replaced with `signed * signed`. |
-| `rtl/chip/SPC7110/SPC7110_MULDIV.vhd` | `lpm_mult` / `lpm_divide` replaced with generic arithmetic (combinational multipliers; the dividers keep the upstream 8-cycle latency). |
-| `rtl/chip/SPC7110/SPC7110_FIFO.vhd` | `scfifo` replaced with a generic show-ahead FIFO. |
-| `rtl/chip/DSP/DSPn.vhd`, `rtl/chip/CX4/CX4.vhd` | ROM instances point at `dspn_prog_rom` / `dspn_data_rom` / `cx4_data_rom` (see below) instead of `.mif`-initialized `spram`. |
-| `rtl/chip/DSP/DSPn.vhd` | `DATA_RAM_ADDR_A or x"40"` given matching operand widths (Vivado rejects the mismatch). |
-| `rtl/chip/CX4/CX4Map.vhd` | `CART_ADDR and ROM_MASK(22 downto 0)` given matching operand widths (22-bit `CART_ADDR` zero-extended; Vivado rejects the mismatch). |
-| `rtl/main.v` | Every mapper instance gets an explicit `.ENABLE(1'b1)` (upstream leaves the port open and relies on its VHDL default `'1'`; Vivado warns about the open port). |
-| `rtl/chip/GSU/GSU.vhd` | Processes with both a `falling_edge(CLK)` and a `rising_edge(CLK)` branch split into two single-edge processes (`tools/split_dual_edge.py`; Vivado: "else clause after check for clock not supported"). |
-| `rtl/chip/GSU/GSU.vhd`, `rtl/chip/GSU/GSUMap.vhd`, `rtl/main.v` | New outputs (`GSU_*` on `main`): `ROM_SAMPLE` / `RAM_SAMPLE`, the cycle in which the GSU latches `ROM_DI` / `RAM_DI`, so that the glue can stall the core only then; `RAM_OWNED` (`GSU_RAM_ACCESS`), the GSU owns the RAM bus; `RAM_RD_N`, low only in the states that consume `RAM_DI`, which `GSUMap` uses as `BSRAM_OE_N` instead of `not RAM_WE_N` so that the glue does not issue the speculative reads the original strobe implied (CE with WE high before every store byte, and in the pixel cache write phase). |
-| `rtl/chip/SA1/SA1.vhd`, `rtl/chip/SA1/SA1Map.vhd`, `rtl/main.v` | New outputs (`SA1_*` on `main`): `ROM_SAMPLE` (`EN and not SNES_ROM_SEL`), the cycles in which the SA-1 side (65C816, DMA, VBP) consumes `ROM_DI`; `BWRAM_SAMPLE` (`EN and not SNES_BWRAM_SEL`), likewise for `BWRAM_DI`; `BWRAM_OWNED` (`not SNES_BWRAM_SEL`), the SA-1 side owns the BW-RAM bus. |
-| `rtl/chip/SDD1/InputMgr.vhd`, `rtl/chip/SDD1/SDD1.vhd`, `rtl/chip/SDD1/SDD1Map.vhd`, `rtl/main.v` | New output (`SDD1_ROM_SAMPLE` on `main`): `ROM_SAMPLE` (`WAIT_ACCESS = 1`), the cycle in which the decompressor's input manager latches `ROM_DATA`, two cycles after its read strobe. |
-| `rtl/main.v` | Port connections to VHDL entities rewritten to the exact VHDL spelling (`tools/fix_port_case.py`); Vivado binds Verilog-to-VHDL ports case-sensitively and would leave every lowercase `.mclk(...)` unconnected. `SNI_JOY` declared `output` instead of `output reg` (driven by an instance; the file must be compiled as Verilog-2001 because it connects VHDL ports named `do`). |
-| `rtl/main.v` | New output `SS_BUSY` (the save-state program is running), so that the glue can report it to the firmware. |
-| `rtl/main.v` | The `SS_*` wire declarations moved above the coprocessor `generate` blocks. Upstream connects `SS_GSU_DI`, `SS_DSPN_*`, `SS_CX4_*` inside those blocks before declaring them; Vivado then creates implicit 1-bit nets in the generate scope and leaves the real wires undriven, so coprocessor save states silently save zeros. |
-| `rtl/savestates.sv` | `rom_addr` declared `output reg` (it is assigned in an `always` block; Vivado rejects the original `output`). |
-| `rtl/cheatcodes.sv` | `wire`s assigned in `always_comb` declared as `logic` (Vivado rejects the original). |
-| `rtl/chip/MSU1/` | Removed (needs streaming storage that Game Bub does not have). |
+| `rtl/chip/SA1/SA1MULT.vhd` | Replaced `lpm_mult` with `signed * signed`. |
+| `rtl/chip/SPC7110/SPC7110_MULDIV.vhd` | Replaced `lpm_mult` / `lpm_divide` with generic RTL (combinational multipliers; dividers keep the upstream 8-cycle latency). |
+| `rtl/chip/SPC7110/SPC7110_FIFO.vhd` | Replaced `scfifo` with a generic show-ahead FIFO. |
+| `rtl/chip/DSP/DSPn.vhd`, `rtl/chip/CX4/CX4.vhd` | Pointed ROM instances at `dspn_prog_rom`, `dspn_data_rom`, and `cx4_data_rom` (generated by `tools/gen_roms.py`) instead of `.mif`-initialized `spram`. |
+| `rtl/chip/DSP/DSPn.vhd` | Matched operand widths on `DATA_RAM_ADDR_A or x"40"` (required by Vivado). |
+| `rtl/chip/CX4/CX4Map.vhd` | Zero-extended 22-bit `CART_ADDR` to match `ROM_MASK(22 downto 0)` width (required by Vivado). |
+| `rtl/main.v` | Connected `.ENABLE(1'b1)` explicitly on every mapper instance to avoid Vivado open-port warnings. |
+| `rtl/chip/GSU/GSU.vhd` | Split dual-edge (`rising_edge` + `falling_edge`) processes into separate single-edge processes via `tools/split_dual_edge.py` (Vivado does not support `else` after a clock-edge check). |
+| `rtl/chip/GSU/GSU.vhd`, `rtl/chip/GSU/GSUMap.vhd`, `rtl/main.v` | Added `GSU_*` outputs on `main`: `ROM_SAMPLE` and `RAM_SAMPLE` (cycles when the GSU latches `ROM_DI`/`RAM_DI`), `RAM_OWNED` (`GSU_RAM_ACCESS`), and `RAM_RD_N` (asserted only in states that consume `RAM_DI`, wired to `BSRAM_OE_N` in `GSUMap` to suppress spurious reads during write setup and pixel-cache write phases). |
+| `rtl/chip/SA1/SA1.vhd`, `rtl/chip/SA1/SA1Map.vhd`, `rtl/main.v` | Added `SA1_*` outputs on `main`: `ROM_SAMPLE` (`EN and not SNES_ROM_SEL`), `BWRAM_SAMPLE` (`EN and not SNES_BWRAM_SEL`), and `BWRAM_OWNED` (`not SNES_BWRAM_SEL`). |
+| `rtl/chip/SDD1/InputMgr.vhd`, `rtl/chip/SDD1/SDD1.vhd`, `rtl/chip/SDD1/SDD1Map.vhd`, `rtl/main.v` | Added `SDD1_ROM_SAMPLE` (`WAIT_ACCESS = 1`), marking the cycle the input manager latches `ROM_DATA` two cycles after its read strobe. |
+| `rtl/main.v` | Fixed Verilog-to-VHDL port name casing (`tools/fix_port_case.py`) because Vivado binds mixed-language ports case-sensitively. Changed `SNI_JOY` from `output reg` to `output` (driven by a submodule; file must compile as Verilog-2001 because VHDL ports are named `do`). |
+| `rtl/main.v` | Added `SS_BUSY` output (save-state program active) and `MCLK_EN` / `DSP_PAL` inputs for split S-CPU/APU clock gating. |
+| `rtl/main.v` | Moved `SS_*` wire declarations above the coprocessor `generate` blocks so Vivado does not create implicit 1-bit nets inside the generate scopes and leave coprocessor save-state data undriven. |
+| `rtl/savestates.sv` | Changed `rom_addr` to `output reg` (assigned in an `always` block) and added `SS_CANCEL` input to abort unserviced save-state requests on timeout. |
+| `rtl/cheatcodes.sv` | Changed `wire`s driven by `always_comb` to `logic` (required by Vivado). |
+| `rtl/chip/MSU1/` | Removed (requires streaming storage not present on Game Bub). |
 
-Everything else is byte-for-byte upstream. When updating the vendored copy,
-re-apply the table above.
+All other files are unmodified upstream copies. Re-apply the changes above when updating the vendored core.
 
 ## Save states
 
-`savestates/savestates.bin` is upstream's `releases/boot1.rom`, the 65816
-program that `rtl/savestates.sv` runs on the S-CPU to dump and restore the
-machine state (source: `src/savestates*.asm` upstream, bass syntax). The
-firmware embeds it and writes it to SDRAM at byte address `0xFF0000`, where
-the core fetches it; see `docs/snes.md`.
+`savestates/savestates.bin` is upstream's `releases/boot1.rom`, the 65816 routine that `rtl/savestates.sv` runs on the S-CPU to dump and restore system state (source: `src/savestates*.asm` upstream, bass syntax). `HandheldSnes` (`SaveStateProgramLoader`) embeds it in the FPGA bitstream and copies it to SDRAM at byte address `0xFF0000` after setup; see [docs/snes.md](../../../docs/snes.md).
 
 ## Coprocessor ROMs
 
-The DSP-1/1B/2/3/4, ST010 and CX4 coprocessors contain firmware ROMs that
-are not redistributable and therefore not checked in. `tools/gen_roms.py`
-builds `rtl/generated/coprocessor_roms.vhd` from images placed in `roms/`
-(git-ignored); without them the ROMs are zero-filled and games using those
-chips will not run, everything else is unaffected. `scripts/build_core.py`
-runs the generator automatically. See the script's docstring for accepted
-file names.
+The DSP-1/1B/2/3/4, ST010, and CX4 coprocessors require firmware ROMs that cannot be redistributed and are not checked in. `tools/gen_roms.py` generates `rtl/generated/coprocessor_roms.vhd` from images placed in `roms/` (git-ignored). Without them, the ROMs are zero-filled and games using those chips will not work, while all other cartridges are unaffected. `fpga/scripts/build_core.py` runs this generator automatically; see `tools/gen_roms.py` for expected filenames.
 
 ## Integration notes
 
-* `main.v` is the top of the vendored core. Its `USE_*` parameters select
-  which coprocessors are synthesized; they are set from
-  `snes.SnesCoreConfig` in Chisel (DSP-n, S-DD1, CX4, Super FX and SA-1 on;
-  SPC7110, BS-X and Sufami Turbo off).
-* The core is clocked at the SNES master clock (21.477 MHz). External memory
-  (ROM in SDRAM, WRAM/BSRAM in SRAM) is slower than the single-cycle memory
-  the core expects, so the core clock is gated (`BUFGCE`) while an access is
-  outstanding.
-* VRAM and ARAM live in block RAM; BSRAM (cartridge save RAM) and WRAM live
-  in the external 512 KiB SRAM so the MCU can load/save them.
+* `main.v` is the top-level module. Its `USE_*` parameters are configured from `snes.SnesCoreConfig` in Chisel (DSP-n, S-DD1, CX4, Super FX, and SA-1 enabled; SPC7110, BS-X, and Sufami Turbo disabled).
+* The core runs at the 21.477 MHz SNES master clock. Because external memory (ROM in SDRAM, WRAM/BSRAM in async SRAM) is slower than single-cycle memory, the S-CPU domain clock is gated with a `BUFGCE` during stalls while the APU runs on a separate `BUFGCE`.
+* VRAM and ARAM live in block RAM; BSRAM and WRAM live in the external 512 KiB SRAM so the MCU can load and save `.srm` files directly.

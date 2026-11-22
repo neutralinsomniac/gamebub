@@ -1,564 +1,223 @@
-# SNES core port (work in progress)
+# SNES core
 
-Game Bub's SNES support is a port of the MiSTer SNES core
-([MiSTer-devel/SNES_MiSTer](https://github.com/MiSTer-devel/SNES_MiSTer), by
-srg320 et al., GPLv3). The core is vendored in `fpga/verilog/snes/` and wrapped
-by Chisel glue in `fpga/src/main/scala/net/gamebub/core/snes/HandheldSnes.scala`.
+Port of the MiSTer SNES core ([MiSTer-devel/SNES_MiSTer](https://github.com/MiSTer-devel/SNES_MiSTer), by srg320 et al., GPLv3), packaged as the external core `jeremy.SNES`.
 
-**Status (2026-08-29):** runs on rev4 hardware with correct video, audio, input
-and saves. Base cartridges, DSP-n, S-DD1, CX4, Super FX and SA-1 are
-synthesized (DSP-n and CX4 games additionally need the coprocessor ROM images).
-Measured run rates (core cycles / (core cycles + stall cycles), logged by the
-firmware when a game is paused):
+* Vendored RTL: `fpga/verilog/snes/` (see its README for local patches)
+* Chisel glue: `fpga/src/main/scala/net/gamebub/core/snes/HandheldSnes.scala`
+* Core descriptors: `fpga/cores/snes/`
+
+## Status
+
+Runs on rev4 hardware with video, audio, input, battery saves, and save states. Base cartridges, DSP-n, S-DD1, CX4, Super FX, and SA-1 are synthesized (DSP-n and CX4 games require the user's coprocessor ROM images at build time).
+
+Measured run rates (`core cycles / (core cycles + stall cycles)`, logged by the firmware when pausing a game):
 
 | Game | Cartridge | Run rate | Worst 49 ms window |
 | --- | --- | --- | --- |
-| Chrono Trigger, Final Fantasy VI | base (HiROM) | 99.99 % | |
-| Star Fox | Super FX | 99.7 % | 1.1 %, all ROM misses |
-| Yoshi's Island | Super FX 2 | 99.60 % | 1.0 % |
-| Super Mario RPG | SA-1 | 99.80 % | 2.5 % |
+| Chrono Trigger, Final Fantasy VI | Base (HiROM) | 99.99% | |
+| Star Fox | Super FX | 99.7% | 1.1% (all ROM misses) |
+| Yoshi's Island | Super FX 2 | 99.60% | 1.0% |
+| Super Mario RPG | SA-1 | 99.80% | 2.5% |
 
-Vivado 2025.1, build of 2026-09-14: 45.1 k LUTs (71 %), 21.5 k registers,
-130 of 135 block RAM tiles (96 %); timing met at 21.477 MHz core /
-42.955 MHz SDRAM (outputs 4.4 ns of setup slack at the chip, read data
-8.2 ns, captured in IOB flops). Block RAM is the tight resource.
+Resource usage (Vivado 2025.1): ~45.1k LUTs (71%), 21.5k registers, and 130 of 135 block RAM tiles (96%). Timing closes at 21.477 MHz core / 42.955 MHz SDRAM (4.4 ns output setup slack at the SDRAM chip, 8.2 ns read slack with IOB capture). Block RAM is the tightest resource.
 
 ## Design
 
 ### Clocking
 
-The MiSTer core runs entirely on the SNES master clock (21.477 MHz, `MCLK`),
-with internal clock enables for the CPU, PPU, SMP and DSP. The framework's
-default 939.583 MHz MMCM cannot produce that frequency: the closest integer
-divider gives 939.583 / 44 = 21.354 MHz (0.57 % slow, and audio pitch and
-frame rate scale with it because the DSP's `CEGen` assumes the nominal
-frequency), the fractional divider 43.75 is out because the SDRAM clock must
-be an integer multiple of the system clock (`PipelineMemoryBurstCdc` is a
-synchronous crossing) and only MMCM output 0 is fractional, and no single MMCM
-setting (multiplier in 1/8 steps) produces 945/44 MHz together with a 2x or
-4x SDRAM clock.
+The MiSTer core runs on the SNES master clock (21.477 MHz, `MCLK`), using internal clock enables for the CPU, PPU, SMP, and DSP.
 
-Each core builds its own clock tree (`ClocksV0`), so `HandheldSnes` puts a
-PLL stage (`xilinx.PLL`) behind its MMCM: MMCM 50 / 1 x 23.625 = 1181.25 MHz,
-output /11 = 107.386 MHz into a PLL x12 = 1288.636 MHz, divided by 60 for the
-system clock (exactly 21.4773 MHz) and by 30 for the SDRAM clock (42.955 MHz;
-a third PLL output, the same clock delayed by 14 ns, is the SDRAM chip's
-clock, see "SDRAM interface timing"). The display and host SPI clocks are divided from the
-MMCM's 1181.25 MHz VCO: the display clock is the lowest the revision's display
-driver accepts, like the other cores (26.25 MHz on rev4), and the SPI clock
-the closest to 200 MHz below it (196.9 MHz).
+The framework's default 939.583 MHz MMCM cannot generate this frequency cleanly:
+* The nearest integer divider gives 939.583 / 44 = 21.354 MHz (0.57% slow, which shifts audio pitch and frame rate because the DSP's `CEGen` assumes the nominal rate).
+* The fractional divider (43.75) cannot be used because `PipelineMemoryBurstCdc` requires the SDRAM clock to be an integer multiple of the system clock, and only MMCM output 0 supports fractional division.
+* No single MMCM multiplier (in 1/8 steps) produces 945/44 MHz alongside a 2x or 4x SDRAM clock.
+
+Instead, `HandheldSnes` cascades a `xilinx.PLL` behind its MMCM:
+* **MMCM**: 50 MHz / 1 * 23.625 = 1181.25 MHz VCO
+  * `/11` (107.386 MHz) feeds the PLL
+  * Display clock divided from the MMCM VCO to the lowest frequency the board's display driver accepts (26.25 MHz on rev4)
+  * Host SPI clock divided from the MMCM VCO to 168.75 MHz (`/7`, the lowest rate above the framework's 160 MHz minimum, chosen to ease timing closure on the SPI request FIFO)
+* **PLL**: 107.386 MHz * 12 = 1288.636 MHz VCO
+  * `/60` = 21.4773 MHz system clock
+  * `/30` = 42.955 MHz SDRAM controller clock
+  * `/30` delayed by 14 ns = SDRAM pin clock (see below)
 
 ### SDRAM interface timing
 
-The SDRAM runs at 2x the core clock (42.955 MHz, 23.28 ns). The chip's
-clock is a third PLL output, the controller's clock delayed by 14 ns
-(`HandheldSnes.SdramClockPhaseNs`), forwarded through a BUFG and the pin.
-`BurstSdramController` launches commands, address and write data from plain
-flops on the rising edge of its clock, so the chip samples them 4-13 ns
-after they settle and 8-12 ns before they change again, across the corners.
-Read data is captured on the falling edge of the controller clock
-(`readCaptureFalling`) in a register placed in the IOB, which is within
-1.5 ns of the centre of the data window: the chip drives a beat from the
-clock edge after the READ (CAS latency 2: valid at the second edge), so
-the beats change within the first quarter cycle after the controller's
-rising edge, the first one in the second cycle after the READ, and the
-capture sits 5-8 ns inside the window at the corners. The burst runs one
-beat past the two wanted and freezes on it (clock suspend), and a burst
-continuation resumes on that beat, as the controller assumes. The budget
-is a PC133-class chip: setup 2 ns, hold 1 ns, clock-to-data 6 ns, data
-hold 2.5 ns. The interface does not work at 4x: the routed pin paths spread
-over most of an 11.64 ns period across the corners, so no clock phase
-gives every pin the same edge.
+The SDRAM runs at 2x the core clock (42.955 MHz, 23.28 ns period). Running at 4x is not viable because routed pin delays span most of an 11.64 ns period across corners, leaving no single clock phase that works for all pins. Running at 2x halves peak SDRAM bandwidth, which the ROM cache's prefetch hides except on miss latency.
 
-`fpga/verilog/handheld/core_snes.xdc` (picked up by `build_core.py` as the
-per-core constraints file) declares the pin clock and those budgets, and
-Vivado's default edge relationships are the intended ones, so the
-sdram_clk_pin rows of the timing summary's inter-clock table are the
-check to make after every build. The cost of the 2x clock is half the
-SDRAM bandwidth, which the ROM cache's prefetch hides for everything but
-the miss latency.
-
-The firmware uploads to the SDRAM at 10 MB/s (`max_transfer_speed` in
-`fpga/cores/snes/files.json`): a host write takes 4 core cycles through the
-CDC at the 2x clock and the controller only refreshes in gaps of 8 SDRAM
-cycles, so a faster stream would defer the refreshes and overflow the
-512-word SPI request FIFO, which the firmware does not check. (The former
-firmware driver read the whole ROM back after loading to catch a corrupting
-upload or interface; a driverless core has no such check, so compare the
-SDRAM window over SPI if that is ever suspected again.)
-
-`BurstSdramControllerSpec` checks the controller against a cycle-level SDRAM
-model (JEDEC CAS latency semantics) in both timings (the rising-edge one
-the other cores use and this one), and the whole chain through
-`PipelineMemoryBurstCdc` at the 2x ratio, with both clocks derived from
-one counter (see `SnesRomPathSpec` below for why). The CDC holds the
-initiator off while its 4-entry request fifo is full, and drops a prefetch
-that completes after a write was pushed (it read the memory before the
-write reached it).
+* **Write/command launch**: `BurstSdramController` launches commands, addresses, and write data on the rising edge of the controller clock. The SDRAM chip receives a third PLL output delayed by 14 ns (`HandheldSnes.SdramClockPhaseNs`, forwarded via BUFG and pin), so the chip samples 4-13 ns after signals settle and 8-12 ns before the next transition across corners.
+* **Read capture**: Read data is captured on the falling edge of the controller clock (`readCaptureFalling`) in IOB registers. At CAS latency 2, beats transition within the first quarter cycle after the controller's rising edge, putting the falling-edge capture within 1.5 ns of the data eye center (5-8 ns margin at the corners). The burst runs one beat past the two requested beats and holds via clock suspend; burst continuations resume from that beat.
+* **Constraints**: `fpga/verilog/handheld/core_snes.xdc` (picked up automatically by `build_core.py`) specifies the pin clock and a PC133 timing budget (2 ns setup, 1 ns hold, 6 ns clock-to-data, 2.5 ns data hold). Check the `sdram_clk_pin` rows in Vivado's inter-clock timing summary after every build.
+* **Host upload limit**: The firmware transfers files to SDRAM at 10 MB/s (`max_transfer_speed` in `fpga/cores/snes/files.json`). At the 2x clock, each host write takes 4 core cycles through the CDC and the controller only refreshes during 8-cycle idle gaps; faster uploads can starve refreshes and overflow the 512-word SPI request FIFO.
+* **Simulation**: `BurstSdramControllerSpec` tests both the standard rising-edge timing and this falling-edge timing against a cycle-accurate JEDEC SDRAM model, including `PipelineMemoryBurstCdc` at the 2x ratio. The CDC stalls when its 4-entry request FIFO is full and drops prefetches that complete after a newer write is queued.
 
 ### SRAM interface timing
 
-WRAM and BSRAM live in the external asynchronous SRAM (IS61WV25616BLL-10)
-behind `AsyncSramController`, which for this core runs with
-`registeredOutputs`: a request is accepted in one cycle, the address, data,
-byte enables and output enable pass through a second register stage in the
-next, the chip sees them for a full 46.56 ns cycle after that (the write
-pulse, from an ODDR, in its second half; read data captured at the end),
-and `done` follows. The chip's own budget is met with more than 15 ns to
-spare on every line. What the interface turned out to be sensitive to is
-*skew between the output registers*: left in the fabric, they reached the
-pins anywhere between 2 and 9 ns after the clock edge, differently on
-every placement, and one placement whose upper byte enable arrived a few
-hundred picoseconds later than the others corrupted WRAM writes on every
-boot (the Lufia II intro band of September 2026, found by bisecting cell
-moves on that placement down to the single register driving `sram_ub_n`).
-The second stage exists so that those registers can sit in the I/O blocks
-(`IOB TRUE` in `core_snes.xdc`), where every pin gets the same fixed delay
-as the write-enable ODDR and the read data is captured in the ILOGIC, while
-the first stage stays next to the accept logic and keeps the 46 ns request
-path short. The constraint file also gives the pins output and input delay
-budgets that fail a build if a register ever leaves its I/O block again;
-check the `sram_*` rows of the I/O timing after a build. The extra cycle
-per access is covered by the latency-hiding mode, which only stalls the core
-when it is about to latch.
+WRAM and BSRAM live in the external asynchronous SRAM (IS61WV25616BLL-10) behind `AsyncSramController` with `registeredOutputs` enabled:
+1. Cycle 0: request accepted.
+2. Cycle 1: address, data, byte enables, and output enable pass through a second register stage placed in the IOBs (`IOB TRUE` in `core_snes.xdc`).
+3. Cycle 2: the chip sees the signals for a full 46.56 ns cycle (write pulse generated via ODDR in the second half; read data captured in ILOGIC at the end), followed by `done`.
+
+The SRAM's own timing budget has over 15 ns of margin on every pin. The extra IOB register stage exists to eliminate pin-to-pin output skew: when those registers sit in general fabric, routing delays vary from 2 to 9 ns across builds, and even a few hundred picoseconds of skew on `sram_ub_n` caused WRAM write corruption on boot. Placing the final stage in the IOBs matches the write-enable ODDR delay while keeping the first stage close to the request logic. `core_snes.xdc` includes I/O delay budgets that fail the build if a register drops out of its IOB; check the `sram_*` I/O timing rows after builds. The extra cycle of access latency is covered by latency hiding.
 
 ### Memory map
 
-| Memory | Where | Notes |
+| Memory | Location | Notes |
 | --- | --- | --- |
-| Cartridge ROM (<= 16 MiB) | SDRAM, byte 0 | The ROM file as loaded by the MCU (a copier header included). Read through a 32 KiB 2-way cache with 16-byte lines and next-line prefetch (`LineReadCache`), fronted by a 16-line register buffer that answers hits in the request cycle and pulls the next line in the background (`LineBuffer`); the cache's SDRAM requests go through `RomMirrorTable`, a 512-entry table of 32 KiB blocks (distributed RAM) that mirrors a non-power-of-two ROM up to the next power of two the way a cartridge's partial address decoding does, and adds the copier header offset. The table is rebuilt from the file size at the end of the ROM transfer. A ROM size that is not a multiple of 32 KiB cannot be mirrored this way (identity table; no known dump has one). |
-| BSRAM (save RAM, <= 256 KiB) | SRAM, byte 0x00000 | Filled with 0xFF by the glue when the ROM transfer starts, then loaded/saved by the MCU as `<rom>.srm`; 2-way 2 KiB word cache in the bridge |
-| WRAM (128 KiB) | SRAM, byte 0x40000 | Initialized by the glue with the MiSTer power-on pattern after SetupComplete (`SramFill`) |
-| VRAM (2 x 32 KiB) | block RAM | |
-| ARAM (64 KiB) | block RAM | |
-| Framebuffer | block RAM | 256 x 240 x 15 bpp, double buffered (framework) |
+| Cartridge ROM (<= 16 MiB) | SDRAM, `0x000000` | Raw file loaded by MCU (including any 512-byte copier header); cached via `LineBuffer` + `LineReadCache` and translated by `RomMirrorTable` |
+| Save states (4 x 1 MiB) | SDRAM, `0x1000000` | Loaded/saved as `<rom>.ss`; save-state 65816 program sits at `0xFF0000` |
+| BSRAM (save RAM, <= 256 KiB) | SRAM, `0x00000` | Filled with `0xFF` by `SramFill` at ROM load, then loaded/saved as `<rom>.srm`; 2-way 2 KiB word cache in bridge |
+| WRAM (128 KiB) | SRAM, `0x40000` | Initialized with the MiSTer power-on pattern after `SETUP_COMPLETE` (`SramFill`) |
+| VRAM (2 x 32 KiB) | Block RAM | |
+| ARAM (64 KiB) | Block RAM | |
+| Framebuffer | Block RAM | 256x240, 15 bpp, double buffered (framework) |
 
-### Stalling the core for slow memory
+Cartridge ROM reads go through a 16-line register buffer (`LineBuffer`, single-cycle hits with background next-line prefetch) backed by a 32 KiB 2-way `LineReadCache` (16-byte lines, next-line prefetch). Cache misses pass through `RomMirrorTable`, a 512-entry distributed-RAM table of 32 KiB blocks rebuilt at the end of the ROM transfer. It adds the copier header offset and mirrors non-power-of-two ROM sizes up to the next power of two, matching cartridge address decoding. ROM sizes that are not a multiple of 32 KiB fall back to an identity mapping and are rejected.
 
-On the MiSTer the core sees ROM, WRAM and BSRAM as memory that responds within
-its own cycle (SDRAM at 4x the core clock, or block RAM). On Game Bub, ROM
-lives in SDRAM behind an arbiter, a clock-domain crossing and a burst
-controller, and WRAM/BSRAM live in the external asynchronous SRAM, which takes
-two cycles. A single-cycle SRAM read is not possible from the core: the routed
-path from the core's address registers to the `sram_a` pins is ~47 ns, the
-whole cycle, before the SRAM's own access time. (An MCU-path self-test passes
-because its addresses come from registers next to the arbiter.)
+### Core clock gating and stall reduction
 
-The core has no usable global pause input (`ENABLE` does not stop its clock
-dividers), so `HandheldSnes` feeds it a gated clock (`BUFGCE`): whenever an
-external access is outstanding, the clock is stopped and the core sees
-single-cycle memory, exactly as on the MiSTer. The glue (memory bridges, video
-capture, statistics) runs on the ungated system clock; pulses from the core
-domain are consumed with the `tick` qualifier.
+On MiSTer, ROM, WRAM, and BSRAM respond within a single core cycle. On Game Bub, ROM sits behind an SDRAM arbiter, CDC, and burst controller, while WRAM and BSRAM sit in external async SRAM taking two cycles (a single-cycle SRAM read from the core is impossible because routing from the core's address registers to `sram_a` already consumes ~47 ns).
 
-Only the S-CPU side (CPU, PPU, coprocessors) is gated. The APU (SMP, DSP and
-ARAM, which is block RAM) has no external memory to wait for and runs on a
-second `BUFGCE` (`ACLK`) that stops only for a pause, so a stalling game slows
-down without its music dropping in pitch, as on a real console, whose APU has
-its own crystal. Both clocks are the same net with edges removed, so Vivado
-times the paths between them as one domain. Two Game Bub inputs on `main.v`
-make the core safe for this: `MCLK_EN` (the gated clock's enable) qualifies
-the S-CPU's one-cycle port write strobe in `SMP.vhd`, so a stall in that
-cycle does not repeat the write after the SPC700 has cleared the port, and
-`DSP_PAL` (tied low) keeps the DSP's clock-enable generator at the NTSC
-modulus in both regions, since the APU clock is not PAL-paced. The other
-signals into the APU are levels or the save-state bus's multi-cycle writes,
-which repeat harmlessly; the S-CPU's reads from the APU (ports, save-state
-data, ARAM) are ready by its next delivered edge because the APU's edges are
-a superset of its own.
+Because the MiSTer core's `ENABLE` input does not pause its internal clock dividers, `HandheldSnes` gates the core clock using a `BUFGCE`. Whenever an external access must complete before the core advances, the clock pauses so the core still observes single-cycle memory. The glue (memory bridges, video capture, counters) runs on the ungated system clock and qualifies core pulses with `tick`.
 
-The memory path is built to keep those stalls rare:
+Only the S-CPU domain (CPU, PPU, coprocessors) is gated for memory stalls. The APU (SMP, DSP, and BRAM-backed ARAM) has no external memory dependencies and runs on a second `BUFGCE` (`ACLK`) that only pauses when the game is paused. As a result, memory stalls slow the game slightly without bending audio pitch, matching a real console where the APU has its own crystal. Both clocks share the same root net, so Vivado times paths between them as a single domain. Two additions to `main.v` keep the split safe:
+* `MCLK_EN` (the gated clock enable) qualifies the S-CPU's one-cycle port write strobe in `SMP.vhd` so a stall on that cycle cannot duplicate a write after the SPC700 clears the port.
+* `DSP_PAL` is tied low so the DSP's clock-enable generator always uses the NTSC modulus, since the APU clock is not PAL-paced.
 
-* `BytePortBridge` (WRAM and BSRAM) issues a request in the cycle the core
-  asserts a strobe and forwards read data in the cycle it arrives, so an SRAM
-  read is done two cycles after the strobe. Writes are posted through an
-  in-order queue (4 deep for WRAM, 8 for BSRAM: the Super FX flushes its pixel
-  cache as a burst of read-modify-writes) and only stall the core when the
-  queue is nearly full. `pendingRead` counts demand reads only, not queued
-  writes or prefetches, so a burst of stores never stalls the coprocessor
-  issuing them.
-* The BSRAM bridge has a 2-way 2 KiB word cache in distributed RAM
-  (asynchronous read, so hits are answered in the strobe cycle; byte-valid
-  bits in registers so `invalidate` clears it at once). It is write-through
-  and write-allocate per byte, so a decompressor reading back what it just
-  wrote hits, and it prefetches the next word only when an access continues a
-  sequential run, so random reads do not double the SRAM load.
-* Two consumers can share a port (the S-CPU and the SA-1 on BW-RAM, the S-CPU
-  and the GSU on the Super FX's RAM), so the bridge's read data follows the
-  address on the port whenever the cache has it, and a demand read that
-  completes after a newer hit is discarded instead of replacing the hit's data
-  (`BytePortBridgeSpec` covers both cases).
-* The SRAM controller and arbiter accept a *different* request in an access's
-  `done` cycle, so back-to-back accesses run every two cycles instead of
-  three. An identical request held through `done` is taken to be the completed
-  one and waits a cycle. The SNES's arbiter is round-robin (`fair`) so the
-  S-CPU's WRAM traffic cannot hold up the SA-1's BW-RAM reads.
-* A ROM miss fetches the requested word first (the rest of the line follows,
-  wrapping around), issues it in the cache's lookup cycle and shows every word
-  on `fillWord*` as it arrives; the `LineBuffer` answers a pending miss from
-  that (`early*`) and installs the whole line when the cache's regular
-  response follows. A random read therefore costs the SDRAM round trip
-  (~5 cycles) rather than the whole line (~12). Config bits 11 and 12 switch
-  the two halves off for A/B tests.
+Memory path optimizations to minimize stalls:
+
+* **`BytePortBridge` (WRAM and BSRAM)**: Issues SRAM requests on the strobe cycle and forwards read data on the arrival cycle (two-cycle total read latency). Writes go through an in-order posted write queue (4 entries for WRAM, 8 for BSRAM to absorb Super FX pixel cache flushes) and only stall when nearly full. `pendingRead` tracks demand reads only, so bursts of stores do not stall coprocessors.
+* **BSRAM cache**: 2-way 2 KiB word cache in distributed RAM (async read for same-cycle hits, register byte-valid bits for single-cycle invalidation). Write-through and byte write-allocate so decompressors hit on recently written bytes. Only prefetches the next word during sequential runs so random accesses do not double SRAM traffic.
+* **Shared BSRAM/BW-RAM ports**: When two masters share a port (S-CPU and SA-1 on BW-RAM, or S-CPU and GSU on Super FX RAM), bridge read data tracks the current port address on cache hits, and stale demand reads completing after a newer hit are discarded (`BytePortBridgeSpec` tests both cases).
+* **Back-to-back SRAM arbitration**: The SRAM controller and arbiter accept a new request during the previous access's `done` cycle (2 cycles per access instead of 3; an unchanged request held through `done` is ignored for one cycle). The arbiter uses round-robin fairness so S-CPU WRAM traffic cannot starve SA-1 BW-RAM reads.
+* **Critical-word-first ROM misses**: A ROM miss fetches the requested word first (wrapping the rest of the 16-byte line), issues it in the cache lookup cycle, and streams words out on `fillWord*` as they arrive. `LineBuffer` completes pending misses early (`early*`) and installs the full line when the regular response finishes, cutting random miss latency from ~12 cycles to ~5 cycles. Config bits 11 and 12 disable these optimizations for A/B testing.
 
 #### Stall policies
 
-Which accesses may stall the core is chosen per cartridge through config
-register bits; the choice depends on which chips read ROM and BSRAM and
-whether the core exports their sampling instants. Bit 2 alone, on from
-reset (no setting changes it), asks the glue for the mode that is safe for
-the cartridge type in `ROM_TYPE`; it and the mode bits can be written
-explicitly (over SPI, for experiments).
+Stall behavior is selected per cartridge via config register bits. By default, bit 2 is set at reset, which tells the glue to automatically select the safe mode for the cartridge's `ROM_TYPE`. Individual mode bits can also be written directly over SPI for testing.
 
-* *Conservative* (all bits clear): stall while any ROM or BSRAM read is
-  outstanding. Correct for every coprocessor; costs a cycle per BSRAM read and
-  per ROM access that misses the line buffer. Used for CX4 cartridges.
-* *Latency hiding* (bit 2): only stall if a read is still outstanding when the
-  S-CPU is about to latch data (`SYSCLKF_CE`). Hides all memory latency for
-  the S-CPU; safe only when nothing else reads ROM or BSRAM. Used for base
-  cartridges and DSP-n. For an S-DD1 cartridge the glue also stalls at the
-  decompressor's sampling instant (`SDD1_ROM_SAMPLE`, a Game Bub addition to
-  `InputMgr.vhd`): it strobes a read the cycle after `SYSCLKR_CE` or
-  `SYSCLKF_CE` and latches `ROM_Q` two cycles later, MiSTer's fixed SDRAM
-  latency, so with the S-CPU latch alone a miss handed it stale data and
-  every decompressed graphic came out as noise. The next strobe is at least
-  three cycles away, so a request is never superseded before it is sampled.
-  For a Super FX, SA-1 or CX4 cartridge (per `ROM_TYPE`) the glue turns bit
-  2 into the modes below (bit 7; bits 9 and 10; none) instead.
-* *Super FX RAM latency hiding* (bit 7): BSRAM reads stall at `SYSCLKF_CE` or
-  at the GSU's own sampling instant. `GSU.vhd` gained three outputs for this:
-  `RAM_SAMPLE` (the cycle in which `RAM_ACCESS_CNT` reaches zero in a fetching
-  state; the GSU fetching code from RAM samples one cycle after its strobe, so
-  a fixed window would not do), `RAM_OWNED` (`GSU_RAM_ACCESS`: the S-CPU
-  cannot read BSRAM then, so its `SYSCLKF_CE` is ignored) and `RAM_RD_N`,
-  which `GSUMap` now uses as `BSRAM_OE_N`. The original strobe implied a read
-  whenever CE was asserted with WE high, which the GSU does for a cycle before
-  every store byte and again in the pixel cache write phase; the bridge took
-  those as reads (10.5 M reads for 4.6 M writes in Star Fox) and a store cost
-  the SRAM four cycles per byte. GSU ROM reads stay conservative: the GSU
-  strobes `ROM_RD_N` every other cycle with whatever address it currently
-  shows and relies on the MiSTer SDRAM's fixed latency, so a pending miss can
-  be superseded by a strobe for another address before the GSU samples. Bit 8
-  enables the experimental ROM variant; Star Fox shows a black screen with it.
-* *SA-1 ROM latency hiding* (bit 9): ROM reads stall at `SYSCLKF_CE` or at the
-  SA-1 side's sampling instant (`ROM_SAMPLE` = `EN and not SNES_ROM_SEL`, every
-  SA-1 clock in which the 65C816, its DMA or the variable-length bit processor
-  owns the ROM bus). The SA-1 changes the ROM address only in its `CLK_CE`
-  cycle and consumes the data one cycle later, so, unlike the GSU, a request
-  is never superseded before it is sampled. A cache hit two cycles after the
-  request is one too many for the SA-1, which is why the `LineBuffer` issues
-  misses in the request cycle and has 16 lines (with 4, two instruction
-  streams and their data thrashed it: Super Mario RPG ran at 87 %).
-* *SA-1 BW-RAM latency hiding* (bit 10): BSRAM reads stall at `SYSCLKF_CE`
-  while the S-CPU owns the BW-RAM bus (`BWRAM_OWNED` = `SNES_BWRAM_SEL`) or at
-  the SA-1 side's sampling instant (`BWRAM_SAMPLE` = `EN and not
-  SNES_BWRAM_SEL`; every SA-1 side consumer of `BWRAM_DI` advances on `EN`).
-  The strobe-to-sample histogram (stats 0x1064-0x1070) shows the SA-1 sampling
-  one core cycle after its address appears (461 K of 464 K misses) while the
-  SRAM read takes two, so no latency trick wins that cycle and the BSRAM cache
-  hit rate is the lever: Super Mario RPG's BW-RAM hit rate went from 80 %
-  (16-word buffer) to 85.6 % (1 KiB direct-mapped) to 89 % (4 KiB
-  direct-mapped, +9 k LUTs of byte-valid registers and their mux). 2-way
-  2 KiB reaches 87.9 % for 5 k LUTs less and is what is built; 2 x 1024 words
-  does not make timing on the strobe-cycle issue path, and a bigger cache
-  would need the byte-valid bits moved into the distributed RAM. The misses
-  left are capacity misses (the SA-1 streams through more BW-RAM than fits).
-  Yoshi's Island's GSU samples two cycles after its strobe, so a free SRAM
-  makes it in time and its 2.2 M misses (61 % hit rate) cost 0.3 stall cycles
-  each.
+* **Conservative** (all mode bits clear): Stalls whenever any ROM or BSRAM read is in flight. Safe for all coprocessors, at the cost of extra stall cycles on BSRAM reads and line-buffer misses. Used for CX4.
+* **Base latency hiding** (bit 2): Only stalls if a read is still pending when the S-CPU latches data (`SYSCLKF_CE`). Used for base cartridges, DSP-n, and S-DD1. For S-DD1, the glue also stalls on `SDD1_ROM_SAMPLE` (added to `InputMgr.vhd`), which marks the cycle two clocks after the decompressor strobes a ROM read; without it, ROM misses return stale data and corrupt decompressed graphics. For Super FX, SA-1, and CX4 cartridges, the glue automatically remaps bit 2 to the modes below (bit 7, bits 9+10, or conservative).
+* **Super FX RAM latency hiding** (bit 7): BSRAM reads stall at `SYSCLKF_CE` or at the GSU's sampling cycle. `GSU.vhd` exports three signals for this: `RAM_SAMPLE` (the cycle `RAM_ACCESS_CNT` hits zero during a fetch), `RAM_OWNED` (`GSU_RAM_ACCESS`, suppressing S-CPU `SYSCLKF_CE` stalls while the GSU owns RAM), and `RAM_RD_N` (wired to `BSRAM_OE_N` in `GSUMap` to eliminate spurious reads during write setup and pixel-cache write phases, which previously generated 10.5M reads for 4.6M writes in Star Fox). GSU ROM reads remain conservative because the GSU strobes `ROM_RD_N` every other cycle and relies on fixed latency, allowing a newer strobe to supersede a miss before sampling (bit 8 enables experimental GSU ROM hiding, which currently black-screens Star Fox).
+* **SA-1 ROM latency hiding** (bit 9): ROM reads stall at `SYSCLKF_CE` or on `ROM_SAMPLE` (`EN and not SNES_ROM_SEL`). Because the SA-1 updates its ROM address on `CLK_CE` and consumes data one cycle later, requests are never superseded before sampling. `LineBuffer` issues misses on the request cycle and uses 16 lines so the SA-1's instruction and data streams do not thrash it (a 4-line buffer dropped Super Mario RPG to 87%).
+* **SA-1 BW-RAM latency hiding** (bit 10): BSRAM reads stall at `SYSCLKF_CE` while `BWRAM_OWNED` (`SNES_BWRAM_SEL`) is high, or at `BWRAM_SAMPLE` (`EN and not SNES_BWRAM_SEL`). Because the SA-1 samples one cycle after asserting its address while SRAM reads take two cycles, cache hit rate is what controls performance. The 2-way 2 KiB cache achieves an 87.9% hit rate in Super Mario RPG (compared to 80% for a 16-word buffer and 89% for a 4 KiB direct-mapped cache that cost 5k more LUTs); larger caches miss timing on the strobe-cycle issue path unless byte-valid bits move into distributed RAM. Remaining misses are capacity misses. On Yoshi's Island, the GSU samples two cycles after its strobe, so an idle SRAM finishes in time and its 2.2M misses (61% hit rate) average 0.3 stall cycles each.
 
-WRAM reads are latency-hidden in every mode: only the S-CPU and its DMA access
-WRAM, and they latch on `SYSCLKF_CE`. A nearly full SRAM write queue stalls
-the core in every mode.
+WRAM reads always use latency hiding (only the S-CPU and its DMA access WRAM, latching on `SYSCLKF_CE`). A nearly full SRAM write queue stalls the core in all modes.
 
 #### Statistics
 
-`HandheldSnes` counts run and stall cycles, splits the stalls by port (ROM /
-WRAM / BSRAM / queue full), by what the BSRAM bridge had at the SRAM (write /
-prefetch / demand read / nothing) and by S-CPU latch versus coprocessor
-sample, and keeps the stall count of the worst 2^20-cycle (49 ms) window since
-the last clear, because the totals average brief slowdowns (an area
-transition, a menu) away while the ear picks them up as a pitch dip. They
-are host registers 0x1000-0x1078 (write to clear; see the `HandheldSnes`
-header comment), readable over SPI.
+`HandheldSnes` tracks run and stall cycles in host registers `0x1000-0x1078` (write to clear; see the `HandheldSnes.scala` header comments for the full map). Counters break down stalls by port (ROM, WRAM, BSRAM, write queue full), BSRAM bridge state (write, prefetch, demand read, idle), and S-CPU vs. coprocessor sampling. It also tracks the worst 2^20-cycle (49 ms) window since the last clear to catch brief spikes (such as area transitions or menus) that totals average out.
 
-The firmware logs them whenever the core loses focus (the pause menu), so the
-numbers cover the stretch of play that just ended:
+Whenever the core loses focus (opening the pause menu), `CoreManager::log_statistics` reads, clears, and logs the standard run/stall counters (`0x1000`, `0x1004`) plus the entries listed under `statistics` in `fpga/cores/snes/core.json`:
 
-```
+```text
 Run rate: 99.80% (1051797216 run, 2118143 stalled, over 49.0 s)
   ROM stalls: 1983204 (0.19%)
   ...
   worst 49 ms: 26214 (2.50%)
 ```
 
-The run rate comes from the counters every core keeps (stalls at 0x1000, run
-cycles at 0x1004); the rest are listed in `statistics` in the core's
-`core.json`, each with a label, an address and, for a counter over a fixed
-window rather than over the cycles since the last clear, a `percent_of`
-denominator. `CoreManager::log_statistics` reads, clears and logs them.
+Counters are 32-bit, so the cycle counter wraps after ~200 seconds at 21.477 MHz. Pause within three minutes to get valid numbers; compare the total cycles against the logged duration to verify no wrap occurred.
 
-The counters are 32 bits, so the cycle count wraps after 200 s of play at
-21.477 MHz: pause within about three minutes, or the rate is nonsense. The
-duration in the line is there to catch that, since the cycle count divided by
-it is the core's clock rate when nothing wrapped.
+#### Implementation notes and pitfalls
 
-#### Pitfalls met along the way
-
-* An early answer lets the core move on to the next word while the line is
-  still on its way. A request landing in the cycle the cache delivers the line
-  must be a hit (the line is installed at the end of that cycle), and a new
-  request supersedes an older miss: the buffer never reports `hit` and
-  `respValid` together, and the glue clears `romPending` on either. The first
-  build without this crashed every base cartridge within a second.
-* `SnesRomPathSpec` runs the whole ROM chain (`LineBuffer`, `LineReadCache`,
-  arbiter, burst CDC, SDRAM controller, behavioural SDRAM) with both clocks
-  derived from one counter so their common edges fall in the same simulation
-  delta. A slow clock made from a fast-domain register fires a delta late, and
-  the slow domain then sees post-edge fast values, which made the CDC
-  misbehave in ways the hardware never does.
-* A `main.v` generate `else` without `begin`/`end` left the SA-1 strobe tied
-  to ground: a blank screen, and the only clue was Vivado's "multi-driven net
-  ... constant driver preserved" critical warning. Grep `runme.log` for it
-  after touching `main.v`.
-* If the core's `RESET_N` is generated in the *system* clock domain and
-  released on `HVCNT_ATZERO`, Vivado silently optimizes every coprocessor away
-  (their reset is `RESET_N` gated by the mapper select) while the SNES itself
-  survives, so the bitstream looks fine until a coprocessor cartridge is
-  loaded. `HandheldSnes` generates `RESET_N` in the core's gated clock domain.
-  Check the utilization report's hierarchy (`GSUMap`, `SA1Map`, ... should be
-  thousands of cells) after touching anything around the reset.
-* Vivado rejects the GSU's dual-edge processes; `tools/split_dual_edge.py`
-  splits them.
+* **Early ROM fill vs. line installation**: Because early answers let the core advance before the full line finishes filling, a new request arriving on the cycle the cache delivers the line must resolve as a hit, and a new request supersedes any older miss. `LineBuffer` never asserts `hit` and `respValid` simultaneously, and the glue clears `romPending` on either.
+* **Simulation clock alignment**: `SnesRomPathSpec` derives both the 1x and 2x clocks from a single counter so coincident edges happen in the same simulation delta. Generating the slow clock from a fast-domain flip-flop introduces a one-delta lag that makes the CDC behave differently from hardware.
+* **Verilog generate blocks in `main.v`**: A missing `begin`/`end` on a generate `else` silently tied the SA-1 strobe to ground, leaving only a Vivado `multi-driven net ... constant driver preserved` critical warning in `runme.log`. Check `runme.log` for that warning after editing `main.v`.
+* **Reset clock domain**: Generating `RESET_N` in the ungated system clock domain and releasing it on `HVCNT_ATZERO` caused Vivado to optimize away every coprocessor (their resets are `RESET_N` gated by mapper select) while keeping the base SNES intact. `HandheldSnes` generates `RESET_N` in the core's gated clock domain. Verify that `GSUMap`, `SA1Map`, etc. remain in the utilization hierarchy after reset changes.
+* **Dual-edge VHDL**: Vivado rejects the GSU's dual-edge processes; `fpga/verilog/snes/tools/split_dual_edge.py` splits them into single-edge processes.
 
 ### Video and audio
 
-The PPU outputs one pixel per `DOTCLK` rising edge (DOTCLK is a 50 % clock at
-the pixel rate). The glue latches R/G/B and blanking on each rising edge,
-counts pixels per line, and drops odd pixels in 512-pixel (hi-res) modes. The
-framebuffer is 256 x 240 (scaled to the screen's height, see below): the PPU's
-224 visible lines go to rows 8-231 and its 239 lines (overscan mode, `$2133`
-bit 2) to rows 0-238, matching where a TV would show them, with black padding
-rows written by the glue during the vertical blank so a mode switch leaves no
-stale rows (`HandheldSnes` generates its own `hblank` / `vblank` for the
-framework's row counter). Interlace is shown as one frame per field (bob
-deinterlacing at half vertical resolution). PAL games see the PAL master-clock
-rate (21.281 MHz, 312 lines, 50.0 Hz): the physical clock stays at the NTSC
-rate and the core's clock enable withholds one edge in ~110, paced by a phase
-accumulator, so the average rate is exact (the MiSTer retunes its PLL
-instead). The display drivers follow a slower source with their vertical
-front porch (the rev4 ILI9806E driver can stretch a frame by 31 %, enough for
-PAL; the rev1-3 drivers cannot and refresh unsynchronized).
-PAL is untested on the LCD; if the panel dislikes 50 Hz, frame-rate
-conversion is the fallback.
+#### Video capture and timing
 
-The picture fills the screen's height at 4:3 or 8:7 (square pixels; the
-Aspect Ratio setting, register 0x002C, default 4:3): the 224 lines are
-scaled to the 480 rows, 640 or 549 pixels across on the LCD (all of HDMI's
-720 x 480, which a TV shows at 4:3, or 617 of it), and the 239 lines of
-overscan mode by 2 (640 or 512 across), centered. 8:7 Integer scales by 2
-both ways (512 x 448 with black bars on the LCD, like the framework's
-whole-number scaling; on HDMI 2 down but 576 across, which its narrower
-pixels need for 8:7); 4:3 Integer by 2 down and 7/3 across (597 x 448;
-672 on HDMI), so the scanlines fall on every line alike, as at 8:7 Integer,
-rather than beating against the 15/7 rows of the full-height scalings. The framework keeps the
-frame and scans the screen; the core's video filter is a `VideoScalerV0`,
-which names the frame pixel to read for each screen pixel and makes its
-color, so `SnesVideoFilter` does the scaling itself: each screen pixel's
-middle in the frame, in 16-bit fixed point, from the screen's middle
-(the frame shown is the last one completed, whose line count the glue
-keeps for it). With Interpolation at Bilinear (the CRT effect's soft blur,
-register 0x0028 bit 5, the default), a screen pixel interpolates the frame
-pixels whose middles are around its own: across, through the `Crt`'s blur
-(each screen column blends its source column with the one to its left; the
-own column is the one right of the middle); down, without scanlines,
-through the `Crt`'s previous-line path (`Pixel.lineWeight`), except in the
-Integer scalings, whose rows each show their own line, sharp. With
-scanlines, the lines' beams are the vertical filter instead. At Nearest,
-each screen pixel is the frame pixel its middle is in. Past the frame's
-edges the neighbors are black.
+The PPU outputs one pixel per rising edge of `DOTCLK`. The glue latches RGB and blanking on each edge, counts pixels per line, and drops odd pixels in 512-pixel hi-res modes.
 
-The CRT look is the PSX core's (`lib.video.Crt`: scanlines whose beams widen
-with their lines' brightness, an aperture-grille mask, a soft horizontal
-blur, all in linear light), with the same pause-menu settings (Scanlines,
-CRT Mask, Mask Type, and Interpolation for the PSX's Sharpness; register
-0x0028; default 75 % scanlines and a 25 % magenta / green mask, bilinear).
-With 224 lines filling the screen, 15 screen rows show 7 lines, so the rows
-fall at 15 distances from the beams (2 at two rows to a line); the picture is half a phase
-(1/60 line) lower than centered so that each row lands in the middle of
-one of the `Crt`'s phases (1/30 line) rather than on their edges. Rows past a
-line's beam miss the next line's beam, as on the PSX in PAL. HDMI and the
-rev 3 LCD scan row by row: the `Crt`'s line buffer then holds 1024
-columns. The filter replaced the color correction, which the firmware
-never loaded for the external core.
+The framebuffer is 256x240:
+* Standard 224-line mode writes to rows 8-231.
+* 239-line overscan mode (`$2133` bit 2) writes to rows 0-238.
+* During vertical blank, the glue writes black padding rows so switching modes leaves no stale pixels (`HandheldSnes` generates its own `hblank`/`vblank` for the framework row counter).
+* Interlaced modes display one frame per field (bob deinterlacing at half vertical height).
 
-Audio is the DSP's 16-bit stereo output, which updates every 671.16 cycles
-(~32 kHz) of the APU clock. The framework's filter chain
-(`lib.audio.AudioFilterChain`, as for the Game Boy and GBA) resamples it to
-the DAC's 48 kHz: CIC decimation from the system clock, a 20 kHz FIR
-low-pass, cubic interpolation and a DC blocker, so the 32 kHz steps' images
-no longer fold back into the audio band at the DAC rate. Before the APU had
-its own clock, its samples shared the S-CPU's stalls, bursty within the
-frame, which frequency-modulated the audio at the frame rate (a fast warble
-on sustained notes, diagnosed on Chrono Trigger's flute); a rate-servo'd,
-interpolating FIFO re-timed them then, at the price of the pitch ramping up
-for ~200 ms after every pause while its servo recovered. The free-running APU
-leaves no jitter to remove, so it is gone.
+PAL games run at the PAL master clock rate (21.281 MHz, 312 lines, 50.0 Hz) by keeping the physical clock at 21.477 MHz and withholding ~1 in 110 clock-enable pulses via a phase accumulator. The rev4 ILI9806E display driver can stretch its vertical front porch by up to 31% to follow 50 Hz (rev1-3 drivers cannot and refresh unsynchronized). PAL on the LCD is currently untested; frame-rate conversion is the fallback if the panel rejects 50 Hz.
 
-Debug facilities, synthesized when `HandheldSnes.DebugAudio` is set (config
-register bits 3-6, registers 0x0020 / 0x0024 and a capture buffer at host
-address `0x1xxxxx`; 4 block RAMs): a 1 kHz test tone, playback of the capture
-buffer through the audio path, and capture of either the raw DSP samples or
-the clocks between them (a phase-locked replica of the DSP's clock-enable
-generator marks the sample boundaries). The firmware has no driver for them
-(write the registers from a debug build as needed).
-`fpga/scripts/snes_audio_capture.py` decodes a capture dumped as `CAP` hex
-lines over serial and reports spectra, glitches and jitter.
+#### Scaling and CRT filter
+
+`SnesVideoFilter` implements `VideoScalerV0` (driving per-pixel framebuffer coordinates directly) alongside the shared `lib.video.Crt` filter (linear-light scanlines with brightness-dependent beam width, aperture-grille/shadow mask, and horizontal blur). It replaces the framework's color correction lookup table, which is unused by external cores.
+
+Aspect Ratio (register `0x002C`, default `4:3`) and output dimensions for 224-line / 239-line modes:
+
+* **4:3**: Full screen height. 224 lines scale to 640x480 on the LCD and 720x480 on HDMI (4:3 on a TV). 239-line overscan scales 2x vertically (640x478 LCD, centered).
+* **8:7**: Square pixels at full screen height. 224 lines scale to 549x480 on the LCD and 617x480 on HDMI. 239-line overscan scales 2x vertically (512x478 LCD, centered).
+* **8:7 Integer**: 2x vertical integer scale. 512x448 with black borders on the LCD; 576x448 on HDMI (compensating for HDMI's 8:9 pixel aspect ratio).
+* **4:3 Integer**: 2x vertical and 7/3 horizontal scale (597x448 LCD, 672x448 HDMI). Keeps scanlines uniform across every source line without beating against non-integer vertical scaling.
+
+With **Interpolation** set to **Bilinear** (register `0x0028` bit 5, default), each output pixel blends neighboring source pixels horizontally via `Crt`'s blur stage and vertically (when scanlines are off and not using an integer mode) via `Crt`'s previous-line blend (`Pixel.lineWeight`). When scanlines are enabled, the scanline beam profile handles vertical filtering. In **Nearest** mode, each screen pixel samples the single source pixel at its center. Out-of-bounds neighbors sample black.
+
+With 224 lines scaled to 480 rows (15 screen rows per 7 source lines), the image is shifted down by 1/60 line so screen rows land cleanly in the center of `Crt`'s 1/30-line scanline phases instead of straddling phase boundaries. On HDMI and rev3 LCDs (which scan row-by-row), the `Crt` line buffer holds 1024 columns.
+
+Pause-menu CRT settings live in register `0x0028`: **Scanlines** (default 75%), **CRT Mask** (default 25%), **Mask Type** (default Magenta/Green), and **Interpolation** (default Bilinear).
+
+#### Audio
+
+The DSP outputs 16-bit stereo audio every 671.16 APU clock cycles (~32 kHz). The framework's `lib.audio.AudioFilterChain` resamples it to the DAC's 48 kHz rate (CIC decimation from the system clock, 20 kHz FIR low-pass, cubic interpolation, and DC blocker), eliminating 32 kHz aliasing images. Running the APU on its own free-running `BUFGCE` keeps sample timing steady during S-CPU stalls, so no rate-servo FIFO is needed.
+
+Setting `HandheldSnes.DebugAudio = true` synthesizes audio debug tools (4 extra BRAMs; config bits 3-6, registers `0x0020`/`0x0024`, capture buffer at host window `0x1xxxxx`): a 1 kHz test tone, capture playback, and raw DSP sample or inter-sample cycle-count capture. There is no firmware UI for these registers; drive them from a debug build and decode serial `CAP` dumps with `fpga/scripts/snes_audio_capture.py`.
 
 ### Coprocessors
 
-`snes.SnesCoreConfig` selects which of the core's coprocessors are
-synthesized: DSP-n, S-DD1, CX4, Super FX (GSU) and SA-1 are on; SPC7110, BS-X
-and Sufami Turbo are off; MSU-1 is removed. The firmware
-refuses ROMs that need a disabled chip and picks the stall policy per chip (see
-above). DSP-n and CX4 need firmware ROM images that are not distributed with
-Game Bub; see `fpga/verilog/snes/README.md`.
+`snes.SnesCoreConfig` enables DSP-n, S-DD1, CX4, Super FX (GSU), and SA-1, and leaves SPC7110, BS-X, and Sufami Turbo disabled. MSU-1 is removed. `RomHeaderAnalyzer` in the FPGA glue detects the cartridge type, rejects ROMs requiring disabled chips during `SETUP_COMPLETE`, and selects the stall policy. DSP-n and CX4 require external firmware ROMs that are not distributed with Game Bub (see `fpga/verilog/snes/README.md`).
 
 ### Save states
 
-The MiSTer core's save states are software, not a hardware snapshot: on a
-request, `rtl/savestates.sv` overrides the game's NMI (or, for games that
-don't use NMI, IRQ) vector so that a 65816 program runs on the S-CPU. The
-program (`fpga/verilog/snes/savestates/savestates.bin`, upstream's
-`boot1.rom`; source `src/savestates*.asm` in the MiSTer repository) walks the
-CPU, PPU, DMA and coprocessor registers, WRAM, VRAM, OAM, CGRAM, ARAM, the
-SPC700 and S-DSP state and the BSRAM, and streams every byte through a
-register at `$C06000`; the RTL packs 8 bytes into one 64-bit word of a
-request / acknowledge memory port meant for the MiSTer's DDR3 (4 slots x
-1 MiB, `SS_DDR_ADDR[21:3]`). A load runs the same program backwards. The
-first 64-bit word of a slot holds the size (bytes / 4, bits 49:32) and a save
-counter (bits 31:0); the data starts at byte 8 with the magic `SNES`, which
-the RTL checks before it lets a load proceed. Plain cartridges, DSP-n, CX4,
-Super FX and SA-1 are supported (`SS_AVAIL`); S-DD1 is not.
+The MiSTer core implements save states in software. On a save/load request, `rtl/savestates.sv` overrides the NMI (or IRQ) vector to run a 65816 routine (`fpga/verilog/snes/savestates/savestates.bin`, upstream's `boot1.rom`). That program streams CPU, PPU, DMA, coprocessor, WRAM, VRAM, OAM, CGRAM, ARAM, SMP/DSP, and BSRAM state through `$C06000`, where the RTL packs 8 bytes per 64-bit word into four 1 MiB slots (`SS_DDR_ADDR[21:3]`). Each slot header stores the size (words in bits 49:32), a save counter (bits 31:0), and the `SNES` magic at byte 8. Base cartridges, DSP-n, CX4, Super FX, and SA-1 support save states (`SS_AVAIL`); S-DD1 does not.
 
-On Game Bub the program is fetched from the SDRAM like any ROM data (the core
-addresses it at `0xFF0000`, above any real ROM; the glue writes it there
-after SetupComplete from a copy embedded in the bitstream,
-`SaveStateProgramLoader`, unless the padded ROM reaches that address, which
-also clears `SS_AVAIL`), and the 64-bit port is adapted to the SDRAM by
-`snes.SaveStateMemoryPort` (two 32-bit accesses per word, little-endian) with
-the slots at byte address `0x1000000`. The SDRAM is shared with the ROM cache
-through `lib.mem.PipelineMemoryLowPriorityMux`, which gives the save-state
-port the bus only when the cache is idle so that ROM miss latency is
-unchanged. The MiSTer program assumes its memory answers within one CPU
-access (it polls the port's busy flag only once, before the first read of a
-load), so the glue stalls the core's clock for every transfer instead
-(stat `0x1078`): a full state costs roughly 64k transfers, i.e. tens of
-milliseconds of stalls on top of the second or so the program itself takes.
+On Game Bub:
+* `SaveStateProgramLoader` embeds `savestates.bin` in the bitstream and copies it to SDRAM at `0xFF0000` after `SETUP_COMPLETE` (unless the padded ROM extends up to `0xFF0000`, which clears `SS_AVAIL`).
+* `snes.SaveStateMemoryPort` adapts the 64-bit port to two little-endian 32-bit SDRAM accesses starting at `0x1000000`, sharing SDRAM behind the ROM cache via `lib.mem.PipelineMemoryLowPriorityMux`.
+* Because the 65816 program expects single-access memory latency, the glue stalls the core clock on every save-state transfer (tracked in stat `0x1078`), adding a few tens of milliseconds on top of the ~1 s program runtime.
+* Save and load actions from the pause menu write `0x11` or `0x12` to register `0x0014`, using the slot in register `0x0018`. Because the core lacks focus while paused, the glue temporarily clocks the core (with input and audio muted) until completion and reports the outcome in register `0x001C` (done, empty slot, timed out, or unavailable) so the firmware can show a notification before returning focus.
+* If a game leaves interrupts disabled and never enters the save-state handler, the glue cancels the request after 5 seconds and asserts `SS_CANCEL` (a local addition to `savestates.sv`) so it does not trigger later when the game resumes.
+* All four slots live in a single `<rom>.ss` file next to the ROM (trimmed to the last populated 1 MiB slot). The firmware loads it with the ROM and writes it back on **Exit Core** or power-off, not immediately on save.
 
-The settings menu drives it through register `0x0014` (the "Save State" /
-"Load State" actions write 0x11 / 0x12: a request taking its slot from
-register `0x0018`, the "State Slot" list) and the status register
-(`SS_AVAIL`, `SS_BUSY`, "save done", "request pending", "in progress", the
-valid slots). Requests come from the settings menu, i.e. while the game is
-paused and the core has no focus, so the glue runs the core's clock without
-focus (no input, no sound) from the request until the program has finished
-(Save State and Load State also close the menu, `resume_after`, but the
-firmware gives the focus back only once the glue has said how the request
-ended, register `0x001C`: done, a slot holding no state, given up, or save
-states unavailable, each a notification).
-Because the core only acts at an NMI / IRQ, a game that is waiting with
-interrupts off never gets there; the glue gives up after 5 s and cancels the
-request (as a write with both request bits clear does), which stops the
-clock again. The cancel also reaches the core (`SS_CANCEL`, a Game Bub
-addition to `savestates.sv`), so a request the game never serviced does not
-fire at the next NMI after the game resumes; a new request replaces one
-that is still armed. A load of a slot holding no state is ignored, as is any
-request when save states are unavailable (`SS_AVAIL`, or a ROM reaching the
-program's address). The four slots are one core
-file, `<rom>.ss` next to the ROM (whole 1 MiB slots up to the last one in
-use), which the core manager loads into the SDRAM with the ROM and writes
-back when the core exits, like the `.srm` save: a state reaches the SD card
-on "Exit Core" or power-off, not when it is taken.
+### External core packaging
 
-### Firmware
+The SNES core runs as an external core from `/sdcard/cores/jeremy.SNES/` with no SNES-specific code in the firmware. `fpga/cores/snes/` holds its descriptors:
+* `core.json`: metadata, rev4 bitstream path, and stall statistics registers
+* `files.json`: `.sfc`/`.smc` ROM (with `"verify": true` for post-load FNV-1a read-back), `.srm` save, and `.ss` save-state file
+* `settings.json`: Reset Core, Save/Load State, State Slot, Region, Pseudo Transparency, Aspect Ratio, Interpolation, Scanlines, CRT Mask, and Mask Type
 
-The SNES is an external core: the stock firmware runs it from
-`/sdcard/cores/jeremy.SNES/`, which holds the descriptors in
-`fpga/cores/snes/` (`core.json`, which also lists the stall counters the
-firmware logs on a pause; `files.json`: the ROM as `.sfc` / `.smc`,
-the `.srm` save file and the `.ss` states file next to it, with their SDRAM /
-SRAM windows and transfer speeds; `settings.json`: "Reset Core", "Save State"
-/ "Load State" / "State Slot", "Region" (from the header, or forced), "Pseudo
-Transparency" (the core's `BLEND`) and the CRT look's four, as register
-writes) and the uncompressed bitstream.
-`scripts/package_core.py --name snes --build-root build/snes --out <dir>`
-assembles that directory from a build. There is no SNES code in the
-firmware; the history of getting there, and the framework facts it relies
-on, are in `snes-external-core.md`.
+Assemble the SD card directory from `fpga/` with `make package` (or `python3 scripts/package_core.py --name snes --build-root build/snes --out <dir>`).
 
-Everything a driver would do, the glue does from the framework's file
-commands (four command words; the ROM and states file sizes are recorded):
+All cartridge setup is handled in FPGA hardware from the framework's file lifecycle commands:
+* `RomHeaderAnalyzer` scores LoROM/HiROM/ExHiROM headers after ROM upload, configures `ROM_TYPE`, masks, `RAM_SIZE`, and region, detects 512-byte copier headers, and fails `SETUP_COMPLETE` for unsupported chips or ROMs > 16 MiB (result exposed at `0x0030`).
+* `RomMirrorTable` handles non-power-of-two ROM mirroring and copier header offset translation on cache misses.
+* `SramFill` fills BSRAM with `0xFF` during ROM upload and initializes WRAM after `SETUP_COMPLETE`, while `FILE_READ_START` returns the `.srm` write-back size from `RAM_SIZE`.
+* `SaveStateProgramLoader` and `SaveStateSlotScanner` load `savestates.bin`, validate slots (status bits 14:11), clear stale slots beyond the loaded `.ss` size, and report the `.ss` write-back size.
+* `SramHostAdapter` translates the framework's 32-bit host file transfers into 16-bit external SRAM accesses.
 
-* At the end of the ROM transfer, `RomHeaderAnalyzer` (a port of MiSTer's
-  `Main_MiSTer/support/snes/snes.cpp`: header scoring for
-  LoROM/HiROM/ExHiROM, coprocessor detection, ROM/RAM size codes, region)
-  writes `ROM_TYPE`, the masks and `RAM_SIZE`, the header's region for
-  config bit 15, and makes SetupComplete fail for an unsupported cartridge
-  (SPC7110, Satellaview, Sufami Turbo, competition carts, ROMs above
-  16 MiB); register 0x0030 exposes its result. A 512-byte copier header is
-  detected from the file size and skipped by address translation.
-* `RomMirrorTable` mirrors a non-power-of-two ROM by address translation on
-  the cache's SDRAM requests (see the memory map).
-* The BSRAM is filled with 0xFF when the ROM transfer starts and the WRAM
-  with the power-on pattern after SetupComplete (`SramFill`; the status
-  stays "setup" until done); the save file's write-back size is answered
-  from `RAM_SIZE`.
-* The save-state program is written above the ROM
-  (`SaveStateProgramLoader`), the slots are scanned when the states file
-  has been transferred and after every save (`SaveStateSlotScanner`: status
-  bits 14:11, a load of an empty slot is ignored, stale slots beyond the
-  file are cleared, the states file's write-back size follows the last slot
-  in use), a request can take its slot from register 0x0018, and a request
-  the game never services times out after 5 s.
-* Config bit 2 selects the latency-hiding mode per cartridge type, and the
-  host's SRAM window takes 32-bit words (`SramHostAdapter`, two 16-bit
-  accesses each), since an external core's files are always transferred that
-  way.
-
-Lost with the driver: user-facing messages for unsupported cartridges and
-save-state failures (an unsupported cartridge shows as a generic core
-error) and the stall-statistics log. The ROM read-back is kept: a file
-entry with `"verify": true` (the ROM in `files.json`) is read back over SPI
-after the transfer and compared chunk by chunk (FNV-1a).
+Compared to a dedicated firmware driver, unsupported cartridges show a generic core error instead of a chip-specific message, and truncated ROMs are not explicitly flagged. See [docs/snes-external-core.md](snes-external-core.md) for the full external-core interface details.
 
 ## Building
 
 ```sh
-nix develop .#vivado   # nix-packaged Vivado (see docs/building.md); or `nix develop` with your own Vivado on PATH
+nix develop .#vivado   # Nix-packaged Vivado (see docs/building.md), or `nix develop` with Vivado on PATH
 cd fpga
+make snes package
+```
+
+Or invoke `build_core.py` directly:
+
+```sh
 python3 scripts/build_core.py --target gamebub_rev4 --name snes \
     --core-class net.gamebub.core.snes.HandheldSnes --build-root build/snes
 ```
 
-The SNES build asks Vivado for the `Performance_Explore` implementation
-strategy (`build_core.py` prepends it to the run script edalize generates).
-The core fills about 70% of the device and its longest paths run from the
-S-CPU / SA-1 through the memory glue into the SRAM controller's output
-registers, which the default strategy leaves a fraction of a nanosecond
-short; Vivado has no seed parameter, so directives are the knob. Margin is
-small (0.35 ns at the time of writing), so check the timing summary after
-any change that adds logic.
-
-The SDRAM interface constraints (`verilog/handheld/core_snes.xdc`, see
-"SDRAM interface timing") are part of that summary; a build that fails them
-may boot base cartridges and still corrupt Super FX games or crash others.
-
-`build_core.py` runs `fpga/verilog/snes/tools/gen_roms.py` (place coprocessor
-ROM images in `fpga/verilog/snes/roms/` first if you have them) and hands the
-Chisel output plus the vendored VHDL/Verilog to Vivado via edalize.
-
-To check the VHDL without Vivado:
+Notes:
+* `build_core.py` runs `fpga/verilog/snes/tools/gen_roms.py` automatically (place DSP-n/CX4 firmware images in `fpga/verilog/snes/roms/` first if you have them) and builds with Vivado via edalize.
+* The SNES build uses Vivado's `Performance_Explore` implementation strategy because the default strategy falls slightly short of timing closure on paths from the S-CPU/SA-1 into the SRAM IOB registers. Timing margin is tight (~0.35 ns), so always check the timing summary (including the `sdram_clk_pin` and `sram_*` rows from `fpga/verilog/handheld/core_snes.xdc`) after adding logic.
+* To syntax-check the VHDL without Vivado:
 
 ```sh
 cd fpga/verilog/snes
@@ -566,20 +225,14 @@ ghdl -i --std=08 --workdir=/tmp/w --ieee=synopsys -frelaxed -fexplicit $(find rt
 ghdl -m --std=08 --workdir=/tmp/w --ieee=synopsys -frelaxed -fexplicit SNES
 ```
 
-(`CPU.vhd` has one case statement that VHDL-2008 rejects for incomplete
-coverage; Vivado's VHDL-93 mode accepts it.)
+(`CPU.vhd` has one case statement that VHDL-2008 rejects for incomplete coverage; Vivado's VHDL-93 mode accepts it.)
 
-The Verilator simulator (`build_sim.py`) cannot run this core because it is
-VHDL; a GHDL/CXXRTL flow or a Verilog translation would be needed.
+* `build_sim.py` (Verilator) cannot simulate this core because the upstream RTL is VHDL.
 
 ## TODO
 
-* ROM: a larger cache if block RAM allows, or a wider SDRAM fetch. Star Fox's
-  remaining stalls are all ROM misses (the Super FX reading 3-D model data all
-  over the cartridge).
-* BSRAM: the SA-1's one-cycle sample makes the cache hit rate the only lever;
-  a bigger cache needs the byte-valid bits in distributed RAM to make timing.
-* PAL on the LCD is untested (see Video and audio).
-* SPC7110, BS-X and Sufami Turbo remain off.
-* Second controller / multitap, rumble and physical-cartridge support are out
-  of scope (there is no SNES cartridge slot).
+* **ROM bandwidth**: A larger ROM cache (if BRAM allows) or wider SDRAM fetch would help Star Fox, where remaining stalls are all ROM misses from 3D geometry reads.
+* **BSRAM cache**: Because the SA-1 samples one cycle after strobing, cache hit rate is the main bottleneck. Growing the cache while meeting timing requires moving byte-valid bits into distributed RAM.
+* **PAL LCD testing**: Verify 50 Hz vertical-porch stretching on the rev4 LCD panel.
+* **Additional chips**: SPC7110, BS-X, and Sufami Turbo remain disabled.
+* **Out of scope**: Second controller/multitap, rumble, and physical cartridge support (Game Bub has no SNES slot).
