@@ -5,7 +5,7 @@
     "name": "Super Nintendo",
     "author": "jeremy",
     "description": "MiSTer SNES port with Super FX, SA-1, CX4, DSP-1/2/3/4, S-DD1, save states, and CRT filter",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "license": "GPL-3.0-or-later"
   },
   "bitstreams": [
