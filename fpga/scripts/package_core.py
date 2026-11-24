@@ -11,6 +11,9 @@ uncompressed bitstream(s) the core.json names. This copies them to
 
 With --id, the core's id is replaced (in core.json and the directory name),
 e.g. to install it next to a built-in core of the same id while testing.
+With --version, metadata.version in the packaged core.json is set to that
+value. With --flat, files go to <out>/<id>/ rather than <out>/cores/<id>/
+(for single-core release zips).
 """
 
 import argparse
@@ -26,6 +29,8 @@ def main() -> None:
     parser.add_argument("--build-root", required=True, type=Path, help="build_core.py --build-root of the bitstream")
     parser.add_argument("--out", required=True, type=Path, help="output root (the SD card's root, or a staging directory)")
     parser.add_argument("--id", help="override the core id (core.json metadata.id and the directory name)")
+    parser.add_argument("--version", help="override metadata.version in the packaged core.json (max 16 UTF-8 bytes)")
+    parser.add_argument("--flat", action="store_true", help="write directly into <out>/<id>/ instead of <out>/cores/<id>/")
     args = parser.parse_args()
 
     fpga_root = Path(__file__).resolve().parent.parent
@@ -36,9 +41,14 @@ def main() -> None:
     core = json.loads((core_dir / "core.json").read_text())
     if args.id:
         core["metadata"]["id"] = args.id
+    if args.version:
+        version = args.version.strip()
+        if not version or len(version.encode("utf-8")) > 16:
+            sys.exit(f"invalid --version {args.version!r}: must be 1-16 UTF-8 bytes")
+        core["metadata"]["version"] = version
     core_id = core["metadata"]["id"]
 
-    out_dir = args.out / "cores" / core_id
+    out_dir = (args.out / core_id) if args.flat else (args.out / "cores" / core_id)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "core.json").write_text(json.dumps(core, indent=2) + "\n")
     for source in sorted(core_dir.iterdir()):

@@ -215,15 +215,18 @@ The device should automatically reboot into the main menu.
 
 ## Release package
 
-`make release` in the repository root assembles a flashable package for people who do not
-want to compile anything: `build/release/gamebub-handheld-<tag>-snes-psx-<commit>.zip`,
-named after the newest release tag (tag the commit first, or pass `VER=`), holding the UF2
-(firmware plus the built-in boot/Game Boy/GBA bitstreams and free BIOS replacements of its
-system partition), the SNES and PSX core packages for `cores/` and
-checksums. It builds the firmware itself but takes the
-bitstreams from `fpga/build/` as they are (`make bitstreams` rebuilds all five), and needs
-free BIOS replacements in `BIOS_DIR` (default `fpga/build/official-v1.0.1`); `HW=rev3` selects
-another board revision. `make FIRMWARE=no release` leaves the UF2 out:
-`gamebub-cores-<tag>-snes-psx-<commit>.zip` holds only the core packages and checksums, for
-the stock firmware (v1.1-beta or later, which the PSX core needs for its on-demand disc
-files).
+`make release` in the repository root assembles the release assets in `build/release/<tag>/`
+(named after the newest release tag; tag the commit first, or pass `VER=`):
+
+* `jeremy.SNES-<tag>.zip` and `jeremy.PSX-<tag>.zip`: standalone external core zips formatted
+  for the [Game Bub Core Directory](https://github.com/gamebub/core-directory) (`<CoreID>/core.json`
+  at the zip root, with `metadata.version` stamped from `<tag>`).
+* `gamebub-handheld-<hw>-<fw>-<tag>.uf2`: flashable UF2 containing this repo's firmware, the
+  built-in boot/Game Boy/GBA bitstreams, and free BIOS replacements in its system partition.
+* `SHA256SUMS`: checksums for the release assets.
+
+It builds the firmware itself but takes the bitstreams from `fpga/build/` as they are
+(`make bitstreams` rebuilds all five), and needs free BIOS replacements in `BIOS_DIR`
+(default `fpga/build/official-v1.0.1`); `HW=rev3` selects another board revision.
+`make FIRMWARE=no release` omits the UF2 and builds only the two core zips and `SHA256SUMS`,
+for stock firmware (`v1.1.0-beta.5` or later).

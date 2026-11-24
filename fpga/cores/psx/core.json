@@ -3,7 +3,10 @@
   "metadata": {
     "id": "jeremy.PSX",
     "name": "PlayStation",
-    "author": "jeremy"
+    "author": "jeremy",
+    "description": "MiSTer PlayStation port with on-demand disc streaming, memory cards, save states, CRT filter, and dock support",
+    "version": "0.2.0",
+    "license": "GPL-2.0-only"
   },
   "bitstreams": [
     {

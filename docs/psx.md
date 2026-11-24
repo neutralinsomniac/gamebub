@@ -35,7 +35,7 @@ Port of the MiSTer PlayStation core ([MiSTer-devel/PSX_MiSTer](https://github.co
    * Pause-menu disc swapping
    * Saving memory cards and save states on pause and immediately after Save State (stock firmware writes them on exit)
    * Core statistics logging
-2. Copy `cores/jeremy.PSX/` to `cores/` on your microSD card. Grab it from a release zip, or build it with `cd fpga && make psx package-psx` (output goes to `fpga/build/package/cores/`).
+2. Copy `jeremy.PSX/` into `cores/` on your microSD card (from `jeremy.PSX-<ver>.zip` in a release, or build it with `cd fpga && make psx package-psx`, which writes `fpga/build/package/cores/jeremy.PSX/`).
 3. Place PlayStation BIOS images for your disc regions in `cores/jeremy.PSX/`: `bios_us.bin`, `bios_jp.bin`, or `bios_eu.bin`.
 4. Put disc images anywhere under `roms/`: either a matching `.cue`/`.bin` pair (`Game.cue` and `Game.bin`) or a standalone `.bin`. You can launch either file.
 
