@@ -29,12 +29,7 @@ Port of the MiSTer PlayStation core ([MiSTer-devel/PSX_MiSTer](https://github.co
 
 ## Installing
 
-1. Use firmware with on-demand file support (stock firmware v1.1.0-beta.5 or newer, or this repo's firmware). Compared to stock firmware, this repo's firmware adds:
-   * Faster microSD card reads and writes (larger word-aligned SD transfers and a larger FatFs fast-seek cluster map for fragmented disc images)
-   * Shared memory cards across multi-disc games (`Game (USA) (Disc 2).cue` uses `Game (USA).mcd`; stock firmware creates one card per disc)
-   * Pause-menu disc swapping
-   * Saving memory cards and save states on pause and immediately after Save State (stock firmware writes them on exit)
-   * Core statistics logging
+1. Use firmware with on-demand file support (stock firmware v1.1.0-beta.5 or newer, or this repo's firmware — see the [top-level README](../README.md#firmware-modifications) for what this repo's firmware adds).
 2. Copy `jeremy.PSX/` into `cores/` on your microSD card (from `jeremy.PSX-<ver>.zip` in a release, or build it with `cd fpga && make psx package-psx`, which writes `fpga/build/package/cores/jeremy.PSX/`).
 3. Place PlayStation BIOS images for your disc regions in `cores/jeremy.PSX/`: `bios_us.bin`, `bios_jp.bin`, or `bios_eu.bin`.
 4. Put disc images anywhere under `roms/`: either a matching `.cue`/`.bin` pair (`Game.cue` and `Game.bin`) or a standalone `.bin`. You can launch either file.

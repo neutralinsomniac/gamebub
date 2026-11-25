@@ -28,6 +28,23 @@ Check out the [announcement blog post](https://eli.lipsitz.net/posts/introducing
 * Video output to TV or monitor via Game Bub Dock
 * Extensible hardware, designed for future improvements
 
+## Additional Cores
+
+This fork adds two external cores for revision 4 hardware. Both work on stock firmware (`v1.1.0-beta.5` or newer) as well as this repo's firmware:
+
+* **SNES (`jeremy.SNES`)**: MiSTer SNES port with Super FX, SA-1, CX4, DSP-1/2/3/4, and S-DD1 support, save states, and CRT filter — see [docs/snes.md](docs/snes.md) (and [docs/snes-external-core.md](docs/snes-external-core.md) for the external-core interface).
+* **PlayStation (`jeremy.PSX`)**: MiSTer PlayStation port with on-demand `.cue`/`.bin` disc reading, memory cards, save states, CRT filter, and dock/gamepad support — see [docs/psx.md](docs/psx.md).
+
+## Firmware Modifications
+
+Compared to upstream `v1.1-beta` firmware, this repo's firmware adds:
+
+* **Larger SD transfer buffer**: Enlarges the file-transfer scratch buffer from 16 KiB to 64 KiB for faster large microSD reads and writes on FAT32 cards with 32 KiB clusters (word-/sector-aligned SDMMC DMA, in-place save overwrites, and the larger FatFs fast-seek cluster map have been merged into upstream `v1.1-beta`).
+* **Multi-disc games**: Shares saves and memory cards across discs of the same game (for example, `Game (USA) (Disc 2).cue` uses `Game (USA).mcd`, while per-disc files like save states stay tied to each disc) and adds pause-menu disc swapping (**Change Disc**).
+* **Save-on-pause and blank save templates**: Saves memory cards and save states on pause and immediately after Save State (stock firmware writes them on exit), leaves unchanged files untouched when a core reports 0 bytes to save instead of truncating them, and loads pre-formatted blank templates (such as a formatted PlayStation memory card) for missing or empty saves.
+* **Pause-menu action feedback**: Automatically closes the pause menu after actions such as Load State or Reset, and polls core result registers to display status notifications.
+* **Diagnostics**: Logs core run/stall statistics and free heap on pause, logs SD card bus and FAT cluster size at mount, records failed allocations in crash reports, and supports optional post-load FNV-1a read-back verification and pause-time memory dumps in core descriptors.
+
 ## Building
 
 Building a Game Bub handheld requires manufacturing PCBs, 3D printing the shell and buttons, and assembling components from a variety of sources. For information on manufacturing and assembling your own, see [here](https://github.com/elipsitz/gamebub/blob/v0.1/docs/building.md). Note that this information is for the older, vertical revision 2. Updated building information will be available in the Game Bub Docs soon.
