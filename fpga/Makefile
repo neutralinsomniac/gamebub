@@ -16,18 +16,19 @@ TARGET ?= gamebub_rev4
 BUILD ?= build
 PACKAGE_OUT ?= $(BUILD)/package
 
-CORES := boot gameboy gba snes psx
+CORES := boot gameboy gba snes psx nes
 CLASS_boot := net.gamebub.core.boot.HandheldBoot
 CLASS_gameboy := net.gamebub.core.gameboy.HandheldGameboy
 CLASS_gba := net.gamebub.core.gba.HandheldGba
 CLASS_snes := net.gamebub.core.snes.HandheldSnes
 CLASS_psx := net.gamebub.core.psx.HandheldPsx
+CLASS_nes := net.gamebub.core.nes.HandheldNes
 
 ifeq ($(shell command -v vivado 2>/dev/null),)
 RUN := nix develop ..\#vivado -c
 endif
 
-.PHONY: all $(CORES) package package-psx clean
+.PHONY: all $(CORES) package package-psx package-nes clean
 
 all: $(CORES)
 
@@ -43,7 +44,11 @@ package-psx: $(BUILD)/psx/psx.bit
 	python3 scripts/package_core.py --name psx --build-root $(BUILD)/psx \
 	    --out $(PACKAGE_OUT)
 
-$(BUILD)/snes/snes.bit $(BUILD)/psx/psx.bit:
+package-nes: $(BUILD)/nes/nes.bit
+	python3 scripts/package_core.py --name nes --build-root $(BUILD)/nes \
+	    --out $(PACKAGE_OUT)
+
+$(BUILD)/snes/snes.bit $(BUILD)/psx/psx.bit $(BUILD)/nes/nes.bit:
 	@echo "$@ is missing: run 'make $(notdir $(basename $@))' first" >&2; exit 1
 
 clean:

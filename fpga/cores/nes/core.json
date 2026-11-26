@@ -1,0 +1,27 @@
+{
+  "min_firmware": "1.1.0-beta.5",
+  "metadata": {
+    "id": "jeremy.NES",
+    "name": "Nintendo (NES)",
+    "author": "jeremy",
+    "description": "MiSTer NES port with iNES/NES 2.0, FDS, NSF, expansion audio, save states, CRT filter, and dock multiplayer",
+    "version": "0.2.1",
+    "license": "GPL-3.0-or-later"
+  },
+  "bitstreams": [
+    {
+      "target": "gamebub_rev4",
+      "filename": "nes_rev4.bit"
+    }
+  ],
+  "hardware": {
+    "cartridge_enable": "no"
+  },
+  "firmware_features": "0x0024",
+  "statistics": [
+    { "label": "SDRAM row hits", "address": "0x1008" },
+    { "label": "SDRAM row conflicts", "address": "0x100C" },
+    { "label": "mapper info", "address": "0x1010" },
+    { "label": "save states", "address": "0x14" }
+  ]
+}

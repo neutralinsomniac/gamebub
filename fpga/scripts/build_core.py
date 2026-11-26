@@ -87,6 +87,7 @@ FILE_TYPES = {
 # entries are listed explicitly where needed.
 SNES_ROOT = "verilog/snes"
 PSX_ROOT = "verilog/psx"
+NES_ROOT = "verilog/nes"
 CORE_FILES: dict[str, list[str | dict]] = {
     "net.gamebub.core.snes.HandheldSnes": [
         # Generic memory / arithmetic wrappers
@@ -126,6 +127,33 @@ CORE_FILES: dict[str, list[str | dict]] = {
     "net.gamebub.core.psx.HandheldPsx": [
         dict(path=f"{PSX_ROOT}/rtl", file_type="vhdlSource-2008", logical_name="mem"),
         dict(path=f"{PSX_ROOT}/gamebub", file_type="vhdlSource-2008", logical_name="mem"),
+    ],
+    # MiSTer NES core (packages and VHDL units ordered before SV/V users).
+    "net.gamebub.core.nes.HandheldNes": [
+        f"{NES_ROOT}/rtl/dpram.vhd",
+        f"{NES_ROOT}/rtl/bus_savestates.vhd",
+        f"{NES_ROOT}/rtl/t65/T65_Pack.vhd",
+        f"{NES_ROOT}/rtl/t65/T65_ALU.vhd",
+        f"{NES_ROOT}/rtl/t65/T65_MCode.vhd",
+        f"{NES_ROOT}/rtl/t65/T65.vhd",
+        f"{NES_ROOT}/rtl/SOUND/OPLL/VM2413/vm2413.vhd",
+        f"{NES_ROOT}/rtl/SOUND/OPLL/VM2413",
+        f"{NES_ROOT}/rtl/SOUND/OPLL/eseopll.vhd",
+        f"{NES_ROOT}/rtl/statemanager.vhd",
+        f"{NES_ROOT}/rtl/savestates.vhd",
+        f"{NES_ROOT}/rtl/regs_savestates.sv",
+        f"{NES_ROOT}/rtl/iir_filter.v",
+        f"{NES_ROOT}/rtl/nsf_rom.v",
+        f"{NES_ROOT}/rtl/EEPROM_24C0x.sv",
+        f"{NES_ROOT}/rtl/cheatcodes.sv",
+        f"{NES_ROOT}/rtl/mappers",
+        f"{NES_ROOT}/rtl/cart.sv",
+        f"{NES_ROOT}/rtl/composite_board.sv",
+        f"{NES_ROOT}/rtl/ppu.sv",
+        f"{NES_ROOT}/rtl/apu.sv",
+        f"{NES_ROOT}/rtl/video.sv",
+        dict(path=f"{NES_ROOT}/rtl/nes.v", file_type="systemVerilogSource"),
+        f"{NES_ROOT}/gamebub/nes_gamebub.sv",
     ],
 }
 

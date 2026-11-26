@@ -1,0 +1,228 @@
+{
+  "settings": [
+    {
+      "id": 0,
+      "label": "Reset Core",
+      "address": "0x2000",
+      "type": "action",
+      "value": 1,
+      "resume_after": true
+    },
+    {
+      "id": 6,
+      "label": "Save State",
+      "address": "0x14",
+      "type": "action",
+      "value": 1,
+      "save_after": true,
+      "resume_after": true,
+      "result": {
+        "address": "0x1C",
+        "timeout_ms": 3000,
+        "messages": [
+          { "value": 0, "text": "State {8} did not save in time" },
+          { "value": 1, "text": "State {8} saved" },
+          { "value": 3, "text": "No save states for this game" },
+          { "value": 4, "text": "State {8} could not be saved" }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "label": "Load State",
+      "address": "0x14",
+      "type": "action",
+      "value": 2,
+      "resume_after": true,
+      "result": {
+        "address": "0x1C",
+        "timeout_ms": 3000,
+        "messages": [
+          { "value": 0, "text": "State {8} did not load in time" },
+          { "value": 1, "text": "State {8} loaded" },
+          { "value": 2, "text": "No state in slot {8}" },
+          { "value": 3, "text": "No save states for this game" },
+          { "value": 4, "text": "State {8} could not be loaded" }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "label": "State Slot",
+      "address": "0x18",
+      "mask": "0xFFFFFFFC",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "1", "value": 0 },
+        { "label": "2", "value": 1 },
+        { "label": "3", "value": 2 },
+        { "label": "4", "value": 3 }
+      ]
+    },
+    {
+      "id": 1,
+      "label": "Region",
+      "address": "0x0",
+      "mask": "0xFFFFFFF8",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "Auto", "value": 0 },
+        { "label": "NTSC", "value": 1 },
+        { "label": "PAL", "value": 2 },
+        { "label": "Dendy", "value": 3 },
+        { "label": "Vs. System", "value": 4 }
+      ]
+    },
+    {
+      "id": 2,
+      "label": "Palette",
+      "address": "0x0",
+      "mask": "0xFFFFFFC7",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "Kitrinx", "value": 0 },
+        { "label": "Smooth", "value": "0x08" },
+        { "label": "Wavebeam", "value": "0x10" },
+        { "label": "Sony CXA", "value": "0x18" },
+        { "label": "PC-10 Better", "value": "0x20" },
+        { "label": "Tao", "value": "0x28" }
+      ]
+    },
+    {
+      "id": 3,
+      "label": "Mask Edges",
+      "address": "0x0",
+      "mask": "0xFFFFFF3F",
+      "default": "0xC0",
+      "type": "list",
+      "items": [
+        { "label": "Auto", "value": "0xC0" },
+        { "label": "Off", "value": 0 },
+        { "label": "Left", "value": "0x40" },
+        { "label": "Both", "value": "0x80" }
+      ]
+    },
+    {
+      "id": 4,
+      "label": "Extra Sprites",
+      "address": "0x0",
+      "mask": "0xFFFFFEFF",
+      "default": 0,
+      "type": "checkbox",
+      "value": "0x100"
+    },
+    {
+      "id": 5,
+      "label": "Button Layout",
+      "address": "0x0",
+      "mask": "0xFFFFFDFF",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "A / B", "value": 0 },
+        { "label": "B / Y", "value": "0x200" }
+      ]
+    },
+    {
+      "id": 15,
+      "label": "Controllers",
+      "address": "0x0",
+      "mask": "0xFFFFF3FF",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "Normal", "value": 0 },
+        { "label": "Swap P1/P2", "value": "0x400" },
+        { "label": "Four Score", "value": "0x800" },
+        { "label": "Four Score (Swap)", "value": "0xC00" }
+      ]
+    },
+    {
+      "id": 17,
+      "label": "FDS Disk",
+      "address": "0x0",
+      "mask": "0xFFFFCFFF",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "Auto / Fast", "value": 0 },
+        { "label": "Auto / Original", "value": "0x2000" },
+        { "label": "L1 / Fast", "value": "0x1000" },
+        { "label": "L1 / Original", "value": "0x3000" }
+      ]
+    },
+    {
+      "id": 13,
+      "label": "Aspect Ratio",
+      "address": "0x2C",
+      "mask": "0xFFFFFFF8",
+      "default": 0,
+      "type": "list",
+      "items": [
+        { "label": "4:3 (224p)", "value": 0 },
+        { "label": "4:3 (240p)", "value": 4 },
+        { "label": "4:3 Int (224p)", "value": 3 },
+        { "label": "4:3 Int (240p)", "value": 7 },
+        { "label": "8:7 (224p)", "value": 1 },
+        { "label": "8:7 (240p)", "value": 5 },
+        { "label": "8:7 Int (224p)", "value": 2 },
+        { "label": "8:7 Int (240p)", "value": 6 }
+      ]
+    },
+    {
+      "id": 12,
+      "label": "Interpolation",
+      "address": "0x28",
+      "mask": "0xFFFFFFDF",
+      "default": "0x20",
+      "type": "list",
+      "items": [
+        { "label": "Nearest", "value": 0 },
+        { "label": "Bilinear", "value": "0x20" }
+      ]
+    },
+    {
+      "id": 9,
+      "label": "Scanlines",
+      "address": "0x28",
+      "mask": "0xFFFFFFFC",
+      "default": 2,
+      "type": "list",
+      "items": [
+        { "label": "Off", "value": 0 },
+        { "label": "50%", "value": 1 },
+        { "label": "75%", "value": 2 },
+        { "label": "100%", "value": 3 }
+      ]
+    },
+    {
+      "id": 10,
+      "label": "CRT Mask",
+      "address": "0x28",
+      "mask": "0xFFFFFFF3",
+      "default": 4,
+      "type": "list",
+      "items": [
+        { "label": "Off", "value": 0 },
+        { "label": "25%", "value": 4 },
+        { "label": "50%", "value": 8 },
+        { "label": "75%", "value": 12 }
+      ]
+    },
+    {
+      "id": 11,
+      "label": "Mask Type",
+      "address": "0x28",
+      "mask": "0xFFFFFFEF",
+      "default": "0x10",
+      "type": "list",
+      "items": [
+        { "label": "RGB Stripes", "value": 0 },
+        { "label": "Magenta/Green", "value": "0x10" }
+      ]
+    }
+  ]
+}

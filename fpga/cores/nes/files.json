@@ -1,0 +1,82 @@
+{
+  "files": [
+    {
+      "id": 0,
+      "label": "ROM",
+      "extensions": ["nes", "fds", "nsf"],
+      "optional": false,
+      "read_only": true,
+      "user_selected": true,
+      "address": "0x30400000",
+      "max_size": "0xC00000",
+      "max_transfer_speed": 10000,
+      "verify": true
+    },
+    {
+      "id": 1,
+      "label": "FDS BIOS",
+      "filename": "fds_bios.bin",
+      "optional": true,
+      "read_only": true,
+      "address": "0x303B0000",
+      "max_size": "0x2000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 2,
+      "label": "Save",
+      "extensions": ["sav"],
+      "optional": true,
+      "dependent_on_0": true,
+      "initialize": true,
+      "save_on_pause": true,
+      "address": "0x303C0000",
+      "max_size": "0x40000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 3,
+      "label": "State 1",
+      "extensions": ["ss1"],
+      "optional": true,
+      "dependent_on_0": true,
+      "save_on_pause": true,
+      "address": "0x31800000",
+      "max_size": "0x144000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 4,
+      "label": "State 2",
+      "extensions": ["ss2"],
+      "optional": true,
+      "dependent_on_0": true,
+      "save_on_pause": true,
+      "address": "0x31A00000",
+      "max_size": "0x144000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 5,
+      "label": "State 3",
+      "extensions": ["ss3"],
+      "optional": true,
+      "dependent_on_0": true,
+      "save_on_pause": true,
+      "address": "0x31C00000",
+      "max_size": "0x144000",
+      "max_transfer_speed": 10000
+    },
+    {
+      "id": 6,
+      "label": "State 4",
+      "extensions": ["ss4"],
+      "optional": true,
+      "dependent_on_0": true,
+      "save_on_pause": true,
+      "address": "0x31E00000",
+      "max_size": "0x144000",
+      "max_transfer_speed": 10000
+    }
+  ]
+}

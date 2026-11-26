@@ -34,8 +34,9 @@ OUT := $(RELEASE_DIR)/$(VER)
 
 SNES_ZIP := $(OUT)/jeremy.SNES-$(VER).zip
 PSX_ZIP := $(OUT)/jeremy.PSX-$(VER).zip
+NES_ZIP := $(OUT)/jeremy.NES-$(VER).zip
 UF2 := $(OUT)/gamebub-handheld-$(HW)-$(FW_VER)-$(VER).uf2
-ASSETS := $(SNES_ZIP) $(PSX_ZIP) $(if $(filter no,$(FIRMWARE)),,$(UF2))
+ASSETS := $(SNES_ZIP) $(PSX_ZIP) $(NES_ZIP) $(if $(filter no,$(FIRMWARE)),,$(UF2))
 
 FIRMWARE_ELF := firmware/handheld/target/xtensa-esp32s3-espidf/release/handheld
 BITSTREAMS := $(foreach c,boot gameboy gba,fpga/build/$(c)/$(c).bit.hs)
@@ -88,10 +89,18 @@ $(PSX_ZIP): fpga/build/psx/psx.bit $(wildcard fpga/cores/psx/*) fpga/scripts/pac
 	cd $(OUT)/.stage-psx && zip -qr $(abspath $@) jeremy.PSX
 	rm -rf $(OUT)/.stage-psx
 
+$(NES_ZIP): fpga/build/nes/nes.bit $(wildcard fpga/cores/nes/*) fpga/scripts/package_core.py
+	@test -n "$(VER)" || { echo "VER is empty: tag a release or pass VER=..." >&2; exit 1; }
+	rm -rf $(OUT)/.stage-nes $@ && mkdir -p $(OUT)/.stage-nes
+	python3 fpga/scripts/package_core.py --name nes --build-root fpga/build/nes \
+	    --out $(OUT)/.stage-nes --flat --version $(VER)
+	cd $(OUT)/.stage-nes && zip -qr $(abspath $@) jeremy.NES
+	rm -rf $(OUT)/.stage-nes
+
 $(OUT)/SHA256SUMS: $(ASSETS)
 	cd $(OUT) && sha256sum $(notdir $(ASSETS)) > SHA256SUMS
 
-$(BITSTREAMS) fpga/build/snes/snes.bit fpga/build/psx/psx.bit:
+$(BITSTREAMS) fpga/build/snes/snes.bit fpga/build/psx/psx.bit fpga/build/nes/nes.bit:
 	@echo "$@ is missing: run 'make bitstreams' (or 'make -C fpga <core>') first" >&2; exit 1
 
 $(BIOS):
